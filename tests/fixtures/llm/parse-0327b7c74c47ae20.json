@@ -1,0 +1,36 @@
+{
+  "key": "parse-0327b7c74c47ae20",
+  "task": "parse",
+  "prompt": "<question>\nWho teaches Dutch and Flemish language and culture on the US West Coast and could host the Minister-President at UC Berkeley?\n</question>",
+  "result": {
+    "value": {
+      "topics": [
+        {
+          "text": "Dutch and Flemish language and culture",
+          "span": {
+            "start": 12,
+            "end": 50
+          },
+          "origin": "parsed",
+          "ref": null
+        }
+      ],
+      "institutions": [],
+      "place": {
+        "text": "US West Coast",
+        "span": {
+          "start": 58,
+          "end": 71
+        },
+        "origin": "parsed",
+        "kind": "anywhere_us"
+      },
+      "ask": "host"
+    },
+    "model": "claude-haiku-5-5",
+    "cost_usd": 0.00113262,
+    "tokens_in": 2496,
+    "tokens_out": 1876,
+    "billing": "subscription"
+  }
+}

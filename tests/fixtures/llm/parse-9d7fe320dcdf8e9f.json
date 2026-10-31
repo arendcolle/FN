@@ -1,0 +1,36 @@
+{
+  "key": "parse-9d7fe320dcdf8e9f",
+  "task": "parse",
+  "prompt": "<question>\nWhich Flemish founders who have already expanded to the US can share lessons at a Big Leap USA event for Belgian startups?\n</question>",
+  "result": {
+    "value": {
+      "topics": [
+        {
+          "text": "expanded to the US",
+          "span": {
+            "start": 40,
+            "end": 58
+          },
+          "origin": "parsed",
+          "ref": null
+        }
+      ],
+      "institutions": [],
+      "place": {
+        "text": "US",
+        "span": {
+          "start": 56,
+          "end": 58
+        },
+        "origin": "parsed",
+        "kind": "anywhere_us"
+      },
+      "ask": "talk"
+    },
+    "model": "claude-haiku-5-5",
+    "cost_usd": 0.00123593,
+    "tokens_in": 6360,
+    "tokens_out": 1484,
+    "billing": "subscription"
+  }
+}

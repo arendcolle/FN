@@ -1,0 +1,36 @@
+{
+  "key": "parse-de924a9ffc2ee66a",
+  "task": "parse",
+  "prompt": "<question>\nWhich Flemish-run firms in the Bay Area help Flemish companies enter the US market, so they can sign partnerships during the West Coast mission?\n</question>",
+  "result": {
+    "value": {
+      "topics": [
+        {
+          "text": "enter the US market",
+          "span": {
+            "start": 63,
+            "end": 82
+          },
+          "origin": "parsed",
+          "ref": null
+        }
+      ],
+      "institutions": [],
+      "place": {
+        "text": "Bay Area",
+        "span": {
+          "start": 31,
+          "end": 39
+        },
+        "origin": "parsed",
+        "kind": "metro"
+      },
+      "ask": "other"
+    },
+    "model": "claude-haiku-5-5",
+    "cost_usd": 0.00115061,
+    "tokens_in": 6206,
+    "tokens_out": 1378,
+    "billing": "subscription"
+  }
+}

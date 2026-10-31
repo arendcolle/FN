@@ -1,0 +1,45 @@
+{
+  "key": "parse-a275f91b3a6efb51",
+  "task": "parse",
+  "prompt": "<question>\nWhich marine scientists and ocean-policy experts in New York could join a panel on ocean governance at Flanders House?\n</question>",
+  "result": {
+    "value": {
+      "topics": [
+        {
+          "text": "marine scientists",
+          "span": {
+            "start": 6,
+            "end": 23
+          },
+          "origin": "parsed",
+          "ref": null
+        },
+        {
+          "text": "ocean governance",
+          "span": {
+            "start": 83,
+            "end": 99
+          },
+          "origin": "parsed",
+          "ref": null
+        }
+      ],
+      "institutions": [],
+      "place": {
+        "text": "New York",
+        "span": {
+          "start": 52,
+          "end": 60
+        },
+        "origin": "parsed",
+        "kind": "metro"
+      },
+      "ask": "join"
+    },
+    "model": "claude-haiku-5-5",
+    "cost_usd": 0.0008904200000000001,
+    "tokens_in": 2490,
+    "tokens_out": 1394,
+    "billing": "subscription"
+  }
+}

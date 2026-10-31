@@ -1,0 +1,45 @@
+{
+  "key": "parse-1b670ced2398a6ff",
+  "task": "parse",
+  "prompt": "<question>\nWho could discuss building reuse and low-carbon heritage conservation at our As Found exhibition debate in London?\n</question>",
+  "result": {
+    "value": {
+      "topics": [
+        {
+          "text": "building reuse",
+          "span": {
+            "start": 18,
+            "end": 32
+          },
+          "origin": "parsed",
+          "ref": null
+        },
+        {
+          "text": "low-carbon heritage conservation",
+          "span": {
+            "start": 37,
+            "end": 69
+          },
+          "origin": "parsed",
+          "ref": null
+        }
+      ],
+      "institutions": [],
+      "place": {
+        "text": "London",
+        "span": {
+          "start": 107,
+          "end": 113
+        },
+        "origin": "parsed",
+        "kind": "metro"
+      },
+      "ask": "join"
+    },
+    "model": "claude-haiku-5-5",
+    "cost_usd": 0.00112849,
+    "tokens_in": 6169,
+    "tokens_out": 1344,
+    "billing": "subscription"
+  }
+}

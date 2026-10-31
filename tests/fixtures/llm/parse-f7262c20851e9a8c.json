@@ -1,0 +1,45 @@
+{
+  "key": "parse-f7262c20851e9a8c",
+  "task": "parse",
+  "prompt": "<question>\nWho from Antwerp and from the Bronx could compare big-infrastructure transformation and community involvement in a talk at Flanders House in New York?\n</question>",
+  "result": {
+    "value": {
+      "topics": [
+        {
+          "text": "big-infrastructure transformation",
+          "span": {
+            "start": 50,
+            "end": 83
+          },
+          "origin": "parsed",
+          "ref": null
+        },
+        {
+          "text": "community involvement",
+          "span": {
+            "start": 88,
+            "end": 109
+          },
+          "origin": "parsed",
+          "ref": null
+        }
+      ],
+      "institutions": [],
+      "place": {
+        "text": "New York",
+        "span": {
+          "start": 141,
+          "end": 149
+        },
+        "origin": "parsed",
+        "kind": "metro"
+      },
+      "ask": "talk"
+    },
+    "model": "claude-haiku-5-5",
+    "cost_usd": 0.00102392,
+    "tokens_in": 2500,
+    "tokens_out": 1657,
+    "billing": "subscription"
+  }
+}

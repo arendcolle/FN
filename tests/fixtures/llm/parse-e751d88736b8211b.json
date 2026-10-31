@@ -1,0 +1,54 @@
+{
+  "key": "parse-e751d88736b8211b",
+  "task": "parse",
+  "prompt": "<question>\nWhich Flemish media executive can speak at Flanders House in New York about how AI search changes publishing and subscriptions?\n</question>",
+  "result": {
+    "value": {
+      "topics": [
+        {
+          "text": "AI search",
+          "span": {
+            "start": 81,
+            "end": 90
+          },
+          "origin": "parsed",
+          "ref": null
+        },
+        {
+          "text": "publishing",
+          "span": {
+            "start": 99,
+            "end": 109
+          },
+          "origin": "parsed",
+          "ref": null
+        },
+        {
+          "text": "subscriptions",
+          "span": {
+            "start": 114,
+            "end": 127
+          },
+          "origin": "parsed",
+          "ref": null
+        }
+      ],
+      "institutions": [],
+      "place": {
+        "text": "New York",
+        "span": {
+          "start": 62,
+          "end": 70
+        },
+        "origin": "parsed",
+        "kind": "metro"
+      },
+      "ask": "talk"
+    },
+    "model": "claude-haiku-5-5",
+    "cost_usd": 0.0012516099999999998,
+    "tokens_in": 6304,
+    "tokens_out": 1537,
+    "billing": "subscription"
+  }
+}

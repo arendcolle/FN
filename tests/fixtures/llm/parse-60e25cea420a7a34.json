@@ -1,0 +1,45 @@
+{
+  "key": "parse-60e25cea420a7a34",
+  "task": "parse",
+  "prompt": "<question>\nWhich fashion experts and Antwerp-linked designers could speak on a panel about Antwerp style at the Flanders Day fashion event in New York?\n</question>",
+  "result": {
+    "value": {
+      "topics": [
+        {
+          "text": "fashion",
+          "span": {
+            "start": 6,
+            "end": 13
+          },
+          "origin": "parsed",
+          "ref": null
+        },
+        {
+          "text": "Antwerp style",
+          "span": {
+            "start": 80,
+            "end": 93
+          },
+          "origin": "parsed",
+          "ref": null
+        }
+      ],
+      "institutions": [],
+      "place": {
+        "text": "New York",
+        "span": {
+          "start": 131,
+          "end": 139
+        },
+        "origin": "parsed",
+        "kind": "metro"
+      },
+      "ask": "join"
+    },
+    "model": "claude-haiku-5-5",
+    "cost_usd": 0.00134151,
+    "tokens_in": 6458,
+    "tokens_out": 1659,
+    "billing": "subscription"
+  }
+}

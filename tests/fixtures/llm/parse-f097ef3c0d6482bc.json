@@ -1,0 +1,36 @@
+{
+  "key": "parse-f097ef3c0d6482bc",
+  "task": "parse",
+  "prompt": "<question>\nWho could explain US-EU health-data transfers at a BIO breakfast panel in San Diego?\n</question>",
+  "result": {
+    "value": {
+      "topics": [
+        {
+          "text": "US-EU health-data transfers",
+          "span": {
+            "start": 18,
+            "end": 45
+          },
+          "origin": "parsed",
+          "ref": null
+        }
+      ],
+      "institutions": [],
+      "place": {
+        "text": "San Diego",
+        "span": {
+          "start": 75,
+          "end": 84
+        },
+        "origin": "parsed",
+        "kind": "metro"
+      },
+      "ask": "join"
+    },
+    "model": "claude-haiku-5-5",
+    "cost_usd": 0.0012212500000000001,
+    "tokens_in": 6324,
+    "tokens_out": 1466,
+    "billing": "subscription"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "key": "parse-ae62cd967e0584da",
+  "task": "parse",
+  "prompt": "<question>\nWhich Belgian or Flemish-linked scholars and political figures in the Boston area could join the Fayat scholars' halfway seminar and the Harvard Belgian Society reception?\n</question>",
+  "result": {
+    "value": {
+      "topics": [],
+      "institutions": [],
+      "place": {
+        "text": "Boston area",
+        "span": {
+          "start": 70,
+          "end": 81
+        },
+        "origin": "parsed",
+        "kind": "metro"
+      },
+      "ask": "other"
+    },
+    "model": "claude-haiku-5-5",
+    "cost_usd": 0.0010813199999999998,
+    "tokens_in": 6195,
+    "tokens_out": 1248,
+    "billing": "subscription"
+  }
+}

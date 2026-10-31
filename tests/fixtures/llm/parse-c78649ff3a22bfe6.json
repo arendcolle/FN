@@ -1,0 +1,45 @@
+{
+  "key": "parse-c78649ff3a22bfe6",
+  "task": "parse",
+  "prompt": "<question>\nWho could discuss California AI and media innovation for Belgian business delegates in Los Angeles?\n</question>",
+  "result": {
+    "value": {
+      "topics": [
+        {
+          "text": "AI",
+          "span": {
+            "start": 29,
+            "end": 31
+          },
+          "origin": "parsed",
+          "ref": null
+        },
+        {
+          "text": "media innovation",
+          "span": {
+            "start": 36,
+            "end": 52
+          },
+          "origin": "parsed",
+          "ref": null
+        }
+      ],
+      "institutions": [],
+      "place": {
+        "text": "Los Angeles",
+        "span": {
+          "start": 87,
+          "end": 98
+        },
+        "origin": "parsed",
+        "kind": "metro"
+      },
+      "ask": "talk"
+    },
+    "model": "claude-haiku-5-5",
+    "cost_usd": 0.00103774,
+    "tokens_in": 6033,
+    "tokens_out": 1215,
+    "billing": "subscription"
+  }
+}

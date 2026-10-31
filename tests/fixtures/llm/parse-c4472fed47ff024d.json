@@ -1,0 +1,54 @@
+{
+  "key": "parse-c4472fed47ff024d",
+  "task": "parse",
+  "prompt": "<question>\nWho in the Atlanta Belgian-American business community could discuss recruitment, retention and US-Belgian workplace culture?\n</question>",
+  "result": {
+    "value": {
+      "topics": [
+        {
+          "text": "recruitment",
+          "span": {
+            "start": 69,
+            "end": 80
+          },
+          "origin": "parsed",
+          "ref": null
+        },
+        {
+          "text": "retention",
+          "span": {
+            "start": 82,
+            "end": 91
+          },
+          "origin": "parsed",
+          "ref": null
+        },
+        {
+          "text": "US-Belgian workplace culture",
+          "span": {
+            "start": 96,
+            "end": 124
+          },
+          "origin": "parsed",
+          "ref": null
+        }
+      ],
+      "institutions": [],
+      "place": {
+        "text": "Atlanta",
+        "span": {
+          "start": 11,
+          "end": 18
+        },
+        "origin": "parsed",
+        "kind": "metro"
+      },
+      "ask": "talk"
+    },
+    "model": "claude-haiku-5-5",
+    "cost_usd": 0.00162174,
+    "tokens_in": 6815,
+    "tokens_out": 2074,
+    "billing": "subscription"
+  }
+}

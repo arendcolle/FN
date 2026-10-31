@@ -1,0 +1,54 @@
+{
+  "key": "parse-d608109bae83c2e9",
+  "task": "parse",
+  "prompt": "<question>\nWhich US-based tax, legal and engineering advisers help Belgian SMEs set up a US subsidiary, for a webinar on doing business under the new US administration?\n</question>",
+  "result": {
+    "value": {
+      "topics": [
+        {
+          "text": "tax",
+          "span": {
+            "start": 15,
+            "end": 18
+          },
+          "origin": "parsed",
+          "ref": null
+        },
+        {
+          "text": "legal",
+          "span": {
+            "start": 20,
+            "end": 25
+          },
+          "origin": "parsed",
+          "ref": null
+        },
+        {
+          "text": "engineering",
+          "span": {
+            "start": 30,
+            "end": 41
+          },
+          "origin": "parsed",
+          "ref": null
+        }
+      ],
+      "institutions": [],
+      "place": {
+        "text": "US-based",
+        "span": {
+          "start": 6,
+          "end": 14
+        },
+        "origin": "parsed",
+        "kind": "anywhere_us"
+      },
+      "ask": "talk"
+    },
+    "model": "claude-haiku-5-5",
+    "cost_usd": 0.00165205,
+    "tokens_in": 6917,
+    "tokens_out": 2098,
+    "billing": "subscription"
+  }
+}

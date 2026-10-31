@@ -1,0 +1,45 @@
+{
+  "key": "parse-0c894bede2e1fdc0",
+  "task": "parse",
+  "prompt": "<question>\nWelke Vlaamse experten in telecom en 6G-onderzoek in de regio New York en New Jersey kunnen deelnemen aan een rondetafel?\n</question>",
+  "result": {
+    "value": {
+      "topics": [
+        {
+          "text": "telecom",
+          "span": {
+            "start": 26,
+            "end": 33
+          },
+          "origin": "parsed",
+          "ref": null
+        },
+        {
+          "text": "6G-onderzoek",
+          "span": {
+            "start": 37,
+            "end": 49
+          },
+          "origin": "parsed",
+          "ref": null
+        }
+      ],
+      "institutions": [],
+      "place": {
+        "text": "New York en New Jersey",
+        "span": {
+          "start": 62,
+          "end": 84
+        },
+        "origin": "parsed",
+        "kind": "metro"
+      },
+      "ask": "join"
+    },
+    "model": "claude-haiku-5-5",
+    "cost_usd": 0.0009170200000000002,
+    "tokens_in": 2508,
+    "tokens_out": 1440,
+    "billing": "subscription"
+  }
+}

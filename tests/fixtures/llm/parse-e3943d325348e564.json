@@ -1,0 +1,45 @@
+{
+  "key": "parse-e3943d325348e564",
+  "task": "parse",
+  "prompt": "<question>\nWho are Flemish experts in telecom and 6G research in the New York and New Jersey area, for a roundtable at Flanders House with Vint Cerf?\n</question>",
+  "result": {
+    "value": {
+      "topics": [
+        {
+          "text": "telecom",
+          "span": {
+            "start": 27,
+            "end": 34
+          },
+          "origin": "parsed",
+          "ref": null
+        },
+        {
+          "text": "6G research",
+          "span": {
+            "start": 39,
+            "end": 50
+          },
+          "origin": "parsed",
+          "ref": null
+        }
+      ],
+      "institutions": [],
+      "place": {
+        "text": "New York and New Jersey area",
+        "span": {
+          "start": 58,
+          "end": 86
+        },
+        "origin": "parsed",
+        "kind": "metro"
+      },
+      "ask": "join"
+    },
+    "model": "claude-haiku-5-5",
+    "cost_usd": 0.0011047399999999999,
+    "tokens_in": 6397,
+    "tokens_out": 1553,
+    "billing": "subscription"
+  }
+}

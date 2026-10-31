@@ -1,0 +1,54 @@
+{
+  "key": "parse-5d423891b37dc68c",
+  "task": "parse",
+  "prompt": "<question>\nWhich leading research groups in North Carolina in plant sciences, engineering and regenerative medicine could host a visit from the Flemish delegation?\n</question>",
+  "result": {
+    "value": {
+      "topics": [
+        {
+          "text": "plant sciences",
+          "span": {
+            "start": 51,
+            "end": 65
+          },
+          "origin": "parsed",
+          "ref": null
+        },
+        {
+          "text": "engineering",
+          "span": {
+            "start": 67,
+            "end": 78
+          },
+          "origin": "parsed",
+          "ref": null
+        },
+        {
+          "text": "regenerative medicine",
+          "span": {
+            "start": 83,
+            "end": 104
+          },
+          "origin": "parsed",
+          "ref": null
+        }
+      ],
+      "institutions": [],
+      "place": {
+        "text": "North Carolina",
+        "span": {
+          "start": 33,
+          "end": 47
+        },
+        "origin": "parsed",
+        "kind": "anywhere_us"
+      },
+      "ask": "host"
+    },
+    "model": "claude-haiku-5-5",
+    "cost_usd": 0.0013365900000000001,
+    "tokens_in": 6414,
+    "tokens_out": 1666,
+    "billing": "subscription"
+  }
+}

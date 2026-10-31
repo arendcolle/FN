@@ -1,0 +1,36 @@
+{
+  "key": "parse-3cb0d4a355100b67",
+  "task": "parse",
+  "prompt": "<question>\nWhich Belgian or Flemish business leaders in Georgia could sit on a breakfast panel about the Belgium-US partnership?\n</question>",
+  "result": {
+    "value": {
+      "topics": [
+        {
+          "text": "Belgium-US partnership",
+          "span": {
+            "start": 94,
+            "end": 116
+          },
+          "origin": "parsed",
+          "ref": null
+        }
+      ],
+      "institutions": [],
+      "place": {
+        "text": "Georgia",
+        "span": {
+          "start": 45,
+          "end": 52
+        },
+        "origin": "parsed",
+        "kind": null
+      },
+      "ask": "join"
+    },
+    "model": "claude-haiku-5-5",
+    "cost_usd": 0.0018373600000000001,
+    "tokens_in": 7225,
+    "tokens_out": 2342,
+    "billing": "subscription"
+  }
+}
