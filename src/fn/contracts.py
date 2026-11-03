@@ -22,7 +22,7 @@ Relation = Literal[
 ]
 DateMethod = Literal[
     "page_date", "sitemap", "wayback_first_seen", "document_heading",
-    "record_field", "read_date", "sheet_date", "staff_edit",
+    "record_field", "read_date", "sheet_date", "staff_edit", "stated_in_quote",
 ]
 DatePrecision = Literal["year", "month", "day"]
 SourceKind = Literal["page", "record", "seed_page", "import", "vendor_record", "vendor_page"]
@@ -32,7 +32,7 @@ SearchKind = Literal["search", "job"]
 LaneName = Literal["seeds", "openalex", "web"]
 ChipOrigin = Literal["parsed", "edited"]
 Depth = Literal["quick"]
-IdentifierScheme = Literal["seed", "openalex", "orcid", "profile_url"]
+IdentifierScheme = Literal["seed", "openalex", "orcid", "profile_url", "mention"]
 Ask = Literal["talk", "mentor", "host", "join", "other"]
 PlaceKind = Literal["metro", "anywhere_us", "abroad"]
 CallKind = Literal["http", "llm"]
@@ -64,6 +64,15 @@ def group_key(key: str) -> str:
     """A name_key without its middle initials, so 'nick m vandewiele' and 'nick vandewiele' share one card."""
     tokens = key.split()
     return " ".join([tokens[0], *(t for t in tokens[1:-1] if len(t) > 1), tokens[-1]]) if len(tokens) > 2 else key
+
+
+TITLES = re.compile(r"^(?:(?:prof|dr|ir|mr|ms)(?:\.\s*|\s+))+", re.IGNORECASE)
+CREDENTIALS = re.compile(r"(?:[\s,]+(?:PhD|Ph\.D\.?|MBA|MD))+$")
+
+
+def clean_name(name: str) -> str:
+    """The name on one line, without leading titles (Prof., Dr., Mr., Ms.) and trailing credentials (PhD, MBA, MD)."""
+    return CREDENTIALS.sub("", TITLES.sub("", " ".join(normalize(name).split()))).strip(" ,")
 
 
 class HttpClient(Protocol):
@@ -285,6 +294,34 @@ class ClaimDraft(Model):
 class Identifier(Model):
     scheme: IdentifierScheme
     value: str
+
+
+# The extract task's answer: every person one part of a page names, with quotes the model copied from it.
+class PageRelation(Model):
+    relation: Relation
+    org: str
+    quote: str
+    year_from: int | None = None
+    year_to: int | None = None
+
+
+class PageMention(Model):
+    name: str
+    quote: str
+    role: str | None = None
+    relations: list[PageRelation] = []
+
+
+class PagePeople(Model):
+    people: list[PageMention]
+
+
+# A mention whose quotes were found in the page text: the cleaned name, its offsets and each kept relation's.
+class Located(Model):
+    name: str
+    role: str | None = None
+    span: Span
+    relations: list[tuple[PageRelation, Span]] = []
 
 
 class LaneHit(Model):

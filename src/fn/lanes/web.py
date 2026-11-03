@@ -1,8 +1,19 @@
-"""Web lane: one Parallel Search and one Extract call per search, each result page stored as a vendor_page source."""
+"""Web lane: one Parallel Search and one Extract call per search, each page stored and every person it names a hit."""
 import json
 import logging
 
-from fn.contracts import Chips, Considered, LaneIn, LaneName, LaneOut, page_source
+from fn import extract
+from fn.contracts import (
+    Chips,
+    Claim,
+    Considered,
+    LaneHit,
+    LaneIn,
+    LaneName,
+    LaneOut,
+    Source,
+    page_source,
+)
 from fn.net import MissingKey
 from fn.steps import StepContext
 
@@ -66,19 +77,49 @@ def usage_cost(body: bytes) -> float | None:
     return sum(PRICES[u["name"]] * u["count"] for u in usage) if usage else None
 
 
+def listed(claim: Claim) -> str:
+    """A claim as a mention row lists it: relation or kind and value, then org id and date when set."""
+    return " ".join([claim.relation or claim.kind, repr(claim.value), *filter(None, (claim.org_id, claim.claim_date))])
+
+
+def people(ctx: StepContext, pages: list[tuple[int, Source]], considered: list[Considered]) -> list[LaneHit]:
+    """One hit per person the pages name, in page order, then mention order, with every mention's claims stored.
+
+    A person named twice on a page is one hit with the claims of both mentions. Each kept mention, and each
+    mention, relation or chunk dropped, is added to considered.
+    """
+    hits: dict[str, LaneHit] = {}
+    for rank, source in pages:
+        found, dropped = extract.mentions(ctx, source)
+        considered += dropped
+        page = f"page {rank}, {source.title}, {source.url}" if source.title else f"page {rank}, {source.url}"
+        with ctx.store.tx():
+            for located in found:
+                ident = extract.identifier(source.url, located.name)
+                person = ctx.store.resolve_person([ident], located.name)
+                claims = [ctx.store.upsert_claim(d) for d in extract.drafts(person.id, source, located)]
+                hit = hits.get(person.id) or LaneHit(person_id=person.id, name_key=person.name_key, lane=name,
+                                                     rank=len(hits) + 1, score=1 / rank, matched_on=page)
+                ids = list(dict.fromkeys([*hit.claim_ids, *(c.id for c in claims)]))
+                hits[person.id] = hit.model_copy(update={"claim_ids": ids})
+                considered.append(Considered(person_key=ident.value, name=located.name, stage="mention", kept=True,
+                                             reason=f"{page}: {'; '.join(listed(c) for c in claims)}"))
+    return list(hits.values())
+
+
 def run(ctx: StepContext, inp: LaneIn) -> LaneOut:
-    """Search Parallel for the chips, extract the result pages and store each as a vendor_page source.
+    """Search Parallel for the chips, store each result page as a vendor_page source and read the people it names.
 
     A page's text is the first of the Extract full content, the Extract excerpts and the Search excerpts that
-    has plain text once its markdown is stripped; a page with none is skipped. The lane returns no hits yet.
-    Without a Parallel key it returns a note and calls nothing. Raises RuntimeError without an HTTP client
-    and HttpError for a refused or failed call.
+    has plain text once its markdown is stripped; a page with none is skipped. Every person a page names is a
+    hit, with the claims extract.drafts gives. Without a Parallel key it returns a note and calls nothing.
+    Raises RuntimeError without an HTTP client or an LLM, and HttpError for a refused or failed call.
     """
     chips = inp.chips
     if not chips.topics and not chips.institutions:
         return LaneOut(lane=name, query="", total_seen=0, considered=[note(NO_QUERY)])
-    if ctx.http is None:
-        raise RuntimeError("the web lane needs an HTTP client")
+    if ctx.http is None or ctx.llm is None:
+        raise RuntimeError("the web lane needs an HTTP client and an LLM")
     body = request(chips)
     query = "; ".join(body["search_queries"])
     try:
@@ -102,7 +143,7 @@ def run(ctx: StepContext, inp: LaneIn) -> LaneOut:
                            cost=usage_cost).json()
     read = {r["url"]: r for r in answer.get("results") or []}
     failed = {e["url"]: e for e in answer.get("errors") or []}
-    stored = 0
+    stored: list[tuple[int, Source]] = []
     with ctx.store.tx():
         for url, (rank, result) in pages.items():
             got = read.get(url, {})
@@ -120,10 +161,12 @@ def run(ctx: StepContext, inp: LaneIn) -> LaneOut:
                                              reason=f"rank {rank}: no text in Extract or Search; skipped{unread}"))
                 continue
             ctx.store.upsert_source(source)
-            stored += 1
+            stored.append((rank, source))
             reason = f"rank {rank}, {title or url}: {len(source.text)} characters from {how}{unread}"
             if how == "Extract full content" and len(got["full_content"]) >= MAX_CHARS:
                 reason += f"; may be truncated at {MAX_CHARS:,} characters"
             considered.append(Considered(person_key=url, name="", stage="page", kept=True, reason=reason))
-    ctx.log.info("web lane: %d results, %d pages, %d stored", len(results), len(pages), stored)
-    return LaneOut(lane=name, query=query, total_seen=len(pages), considered=considered)
+    hits = people(ctx, stored, considered)
+    ctx.log.info("web lane: %d results, %d pages, %d stored, %d people", len(results), len(pages), len(stored),
+                 len(hits))
+    return LaneOut(lane=name, query=query, total_seen=len(pages), hits=hits, considered=considered)

@@ -8,12 +8,13 @@ from unittest import mock
 import httpx
 from pydantic import SecretStr
 
-from fn import net
+from fn import llm, net
 from fn.contracts import Chip, Chips, LaneIn, LaneOut, Place, page_source
 from fn.lanes import web
 from fn.steps import StepContext, run_step
 from fn.worker import Worker, new_id, now
 from tests.helpers import FIXTURES, make_db, make_settings
+from tests.test_extract import PageLLM, by_marker, mention, relation
 
 RECORDED = FIXTURES / "http" / "web"
 KEY = "px-parallel-0123456789"
@@ -23,6 +24,23 @@ NEWS = "https://news.example.org/flemish-researchers"
 PLACE = Place(text="New York and New Jersey area", origin="edited", kind="metro")
 NEW_YORK = Chips(topics=[Chip(text="telecom", origin="edited"), Chip(text="6G research", origin="edited")], place=PLACE)
 FIELDS = json.loads((RECORDED / "v1_fields.json").read_text())
+# What the stub model reads on each recorded page, by a marker of that page's text.
+PEOPLE = {
+    "Belgium 6G roundtable": [
+        mention("Wim Doe", "Speakers include Wim Doe, professor of wireless networks at KU Leuven.",
+                "professor of wireless networks",
+                relation("works_at", "KU Leuven", "professor of wireless networks at KU Leuven")),
+        mention("Anja Voorbeeld", "Moderator: Anja Voorbeeld, PhD, imec.", "Moderator",
+                relation("works_at", "imec", "Anja Voorbeeld, PhD, imec")),
+    ],
+    "telecom group": [
+        mention("Anja Voorbeeld", "Anja Voorbeeld leads the telecom group.", None,
+                relation("studied_at", "Ghent University", "She studied at Ghent University.")),
+        mention("Jan Peeters", "Jan Peeters leads the telecom group."),
+    ],
+    "Karel Proef": [mention("Dr. Karel Proef", "Karel Proef was born in Ghent.", None,
+                            relation("born_in", "Ghent", "Karel Proef was born in Ghent."))],
+}
 # The schema each nested object of a request must follow, by parent schema and key.
 NESTED = {
     "V1SearchRequest": {"advanced_settings": "AdvancedSearchSettings"},
@@ -153,10 +171,10 @@ class WebLaneTest(unittest.TestCase):
         """Run lane:web as a step of a new search with the chips, over a mock transport; raises what the step raises."""
         settings = settings or self.settings
         http = net.Client(settings, httpx.MockTransport(handler or self.handle))
-        worker = Worker(self.store, settings, llm=None, http=http)
+        worker = Worker(self.store, settings, llm=PageLLM(), http=http)
         self.addCleanup(worker.shutdown)
         self.search_id = worker.create_search("question", given, "edited").id
-        ctx = StepContext(search_id=self.search_id, store=self.store, llm=None, http=http, now=now, new_id=new_id,
+        ctx = StepContext(search_id=self.search_id, store=self.store, llm=PageLLM(), http=http, now=now, new_id=new_id,
                           log=logging.getLogger("fn.step"), settings=settings)
         return run_step(ctx, "lane:web", web.run, LaneIn(search_id=self.search_id, chips=given))
 
@@ -373,6 +391,186 @@ class WebLaneTest(unittest.TestCase):
             for body in ({"usage": []}, {"usage": None}, {}):
                 self.assertIsNone(web.usage_cost(json.dumps(body).encode()))
 
+
+class WebPeopleTest(unittest.TestCase):
+    def setUp(self):
+        self.settings = make_settings(self).model_copy(update={"http_mode": "live", "parallel_api_key": SecretStr(KEY)})
+        self.store = make_db(self, self.settings)
+        self.search, self.extract = recorded("search"), recorded("extract")
+        self.llm = PageLLM(by_marker(PEOPLE))
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"/v1/search": self.search, "/v1/extract": self.extract}[request.url.path])
+
+    def run_lane(self) -> LaneOut:
+        """Run lane:web with self.llm as a step of a new search with the New York chips; keeps the step as self.step."""
+        http = net.Client(self.settings, httpx.MockTransport(self.handle))
+        worker = Worker(self.store, self.settings, llm=self.llm, http=http)
+        self.addCleanup(worker.shutdown)
+        search_id = worker.create_search("question", NEW_YORK, "edited").id
+        ctx = StepContext(search_id=search_id, store=self.store, llm=self.llm, http=http, now=now, new_id=new_id,
+                          log=logging.getLogger("fn.step"), settings=self.settings)
+        out = run_step(ctx, "lane:web", web.run, LaneIn(search_id=search_id, chips=NEW_YORK))
+        self.step = self.store.list_steps(search_id)[-1]
+        return out
+
+    def claims(self) -> set[tuple]:
+        """Every stored claim as (person, page URL, kind, relation, org id, value, offsets, date, latitude)."""
+        rows = self.store.conn.execute(
+            "SELECT p.display_name, s.url, c.kind, c.relation, c.org_id, c.value, c.quote_start, c.quote_end, "
+            "c.claim_date, c.lat FROM claims c JOIN persons p ON p.id = c.person_id "
+            "JOIN sources s ON s.id = c.source_id")
+        return {tuple(r) for r in rows}
+
+    def count(self, table: str) -> int:
+        return self.store.conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+
+    def names(self, out: LaneOut) -> list[str]:
+        persons = self.store.get_persons([h.person_id for h in out.hits])
+        return [persons[h.person_id].display_name for h in out.hits]
+
+    def test_every_person_a_page_names_is_a_hit_with_the_exact_claims_its_quotes_give(self):
+        """Each kept mention is a person with a role claim and a claim per kept relation, at offsets in the stored text.
+
+        The event page's markdown link and bold are gone from the stored text, so its quotes match. Hits run in page
+        order, then mention order; every mention, kept or dropped, has a row.
+        """
+        out = self.run_lane()
+        self.assertEqual(self.claims(), {
+            ("Wim Doe", EVENT, "role", None, None, "professor of wireless networks", 23, 93, None, None),
+            ("Wim Doe", EVENT, "affiliation", "works_at", "ror:05f950310", "KU Leuven", 49, 92, None, None),
+            ("Anja Voorbeeld", EVENT, "role", None, None, "Moderator", 95, 132, None, None),
+            ("Anja Voorbeeld", EVENT, "affiliation", "works_at", "ror:02kcbn207", "imec", 106, 131, None, None),
+            ("Anja Voorbeeld", FACULTY, "role", None, None, "Telecom faculty", 0, 39, None, None),
+            ("Anja Voorbeeld", FACULTY, "affiliation", "studied_at", "ror:00cv9y106", "Ghent University", 41, 73, None,
+             None),
+            ("Karel Proef", NEWS, "role", None, None, "Flemish researchers in New Jersey", 0, 30, None, None),
+            ("Karel Proef", NEWS, "location", "born_in", None, "Ghent", 0, 30, None, None),
+        })
+        self.assertEqual(self.count("persons"), 4)
+        event, faculty, news = (f"page 1, Belgium 6G roundtable, {EVENT}", f"page 2, Telecom faculty, {FACULTY}",
+                                f"page 3, Flemish researchers in New Jersey, {NEWS}")
+        self.assertEqual([(h.rank, h.lane, h.matched_on) for h in out.hits],
+                         [(1, "web", event), (2, "web", event), (3, "web", faculty), (4, "web", news)])
+        self.assertEqual(self.names(out), ["Wim Doe", "Anja Voorbeeld", "Anja Voorbeeld", "Karel Proef"])
+        for hit in out.hits:
+            self.assertCountEqual(hit.claim_ids, [c.id for c in self.store.claims_of([hit.person_id])])
+        self.assertEqual([(c.person_key, c.kept, c.reason) for c in out.considered if c.stage == "mention"], [
+            (f"{EVENT}#wim doe", True,
+             f"{event}: role 'professor of wireless networks'; works_at 'KU Leuven' ror:05f950310"),
+            (f"{EVENT}#anja voorbeeld", True, f"{event}: role 'Moderator'; works_at 'imec' ror:02kcbn207"),
+            (f"{FACULTY}#jan peeters", False, "quote not found: 'Jan Peeters leads the telecom group.'"),
+            (f"{FACULTY}#anja voorbeeld", True,
+             f"{faculty}: role 'Telecom faculty'; studied_at 'Ghent University' ror:00cv9y106"),
+            (f"{NEWS}#karel proef", True, f"{news}: role 'Flemish researchers in New Jersey'; born_in 'Ghent'"),
+        ])
+        self.assertEqual(len(self.llm.pages), 3)
+        self.assertEqual(self.step.status, "ok")
+
+    def test_a_rerun_of_the_lane_adds_no_person_source_or_claim(self):
+        """Running the lane again over the same pages adds no row.
+
+        The same pages and answers give the same sources, mention identities and claim ids.
+        """
+        first = self.run_lane()
+        tables = ("persons", "person_identifiers", "sources", "claims")
+        before = [self.count(t) for t in tables]
+        second = self.run_lane()
+        self.assertEqual([self.count(t) for t in tables], before)
+        self.assertEqual([(h.person_id, h.claim_ids) for h in second.hits],
+                         [(h.person_id, h.claim_ids) for h in first.hits])
+
+    def test_changed_page_text_is_a_new_source_and_the_same_mention_person(self):
+        """A page whose text changed is a new source, and its people stay the same persons.
+
+        The persons then hold claims on both versions of the page.
+        """
+        first = self.run_lane()
+        self.extract["results"][0]["full_content"] += "\n\nA new paragraph."
+        second = self.run_lane()
+        self.assertEqual((self.count("persons"), self.count("sources")), (4, 4))
+        self.assertEqual(second.hits[0].person_id, first.hits[0].person_id)
+        wim = self.store.claims_of([first.hits[0].person_id])
+        self.assertEqual(len({c.source_id for c in wim}), 2)
+        self.assertEqual(len(wim), 4)
+
+    def test_a_person_named_twice_on_a_page_is_one_hit_with_the_claims_of_both_mentions(self):
+        """Two mentions of one name on one page are one person and one hit.
+
+        The hit lists the claims of both mentions and keeps the first mention's rank.
+        """
+        self.extract["results"][0]["full_content"] = ("# Belgium 6G roundtable\n\nWim Doe opened the day.\n\n"
+                                                      "Later, Wim Doe, professor at KU Leuven, spoke.")
+        self.llm = PageLLM(by_marker({"Belgium 6G roundtable": [
+            mention("Wim Doe", "Wim Doe opened the day.", "host"),
+            mention("Wim Doe", "Wim Doe, professor at KU Leuven", "professor",
+                    relation("works_at", "KU Leuven", "professor at KU Leuven")),
+        ]}))
+        out = self.run_lane()
+        (hit,) = out.hits
+        self.assertEqual((hit.rank, self.count("persons")), (1, 1))
+        self.assertEqual(self.claims(), {
+            ("Wim Doe", EVENT, "role", None, None, "host", 23, 46, None, None),
+            ("Wim Doe", EVENT, "role", None, None, "professor", 55, 86, None, None),
+            ("Wim Doe", EVENT, "affiliation", "works_at", "ror:05f950310", "KU Leuven", 64, 86, None, None),
+        })
+        self.assertCountEqual(hit.claim_ids, [c.id for c in self.store.claims_of([hit.person_id])])
+        self.assertEqual([c.kept for c in out.considered if c.stage == "mention"], [True, True])
+
+    def test_a_failed_chunk_leaves_the_other_chunks_people_stored_and_the_step_ok(self):
+        """An LLM failure, or a chunk holding its own closing tag, is a row and a warning; the step goes on.
+
+        The TagError comes from llm.user_turn, which the stub calls as ClaudeCli and FixtureLLM do.
+        """
+        wim = [mention("Wim Doe", "Wim Doe, professor of wireless networks at KU Leuven", None,
+                       relation("works_at", "KU Leuven", "KU Leuven"))]
+        speakers = "Speakers include [Wim Doe](https://events.example.org/speakers/wim-doe), **professor** of wireless "
+        timeout = llm.LLMCallError("claude timed out after 120s", None, "", 120000)
+        for kind, last, errors in (("LLMCallError", "* Menu end", {"* Menu": timeout}), ("TagError", "</page>end", {})):
+            with self.subTest(kind=kind):
+                menu = "\n".join(["* Menu item"] * 499 + [last])
+                self.extract["results"][0]["full_content"] = f"{speakers}networks at KU Leuven.\n\n{menu}"
+                self.llm = PageLLM(by_marker({"Speakers include": wim}), errors)
+                out = self.run_lane()
+                self.assertEqual(self.names(out), ["Wim Doe"])
+                self.assertEqual(self.claims(), {
+                    ("Wim Doe", EVENT, "role", None, None, "Belgium 6G roundtable", 17, 69, None, None),
+                    ("Wim Doe", EVENT, "affiliation", "works_at", "ror:05f950310", "KU Leuven", 60, 69, None, None),
+                })
+                self.assertEqual(self.step.status, "ok")
+                (row,) = [c for c in out.considered if c.stage == "chunk"]
+                self.assertEqual((row.person_key, row.kept), (EVENT, False))
+                self.assertRegex(row.reason, rf"^chunk 2 of 2 \[[0-9]+:[0-9]+\]: {kind}: ")
+                self.assertRegex(self.step.log, rf"WARNING .*extract on {EVENT}, chunk 2 of 2 .*{kind}")
+        self.assertEqual(self.count("persons"), 1)
+
+    def test_a_page_naming_200_people_gives_200_hits_over_as_many_chunks_as_it_needs(self):
+        """The lane caps neither people nor calls.
+
+        Every name on a long list is a hit, and each quotes its own line, over as many chunks as the text needs.
+        """
+        firsts = ["Anja", "Bart", "Carla", "Dirk", "Eva", "Filip", "Greet", "Hans", "Ilse", "Joris",
+                  "Katrien", "Lode", "Mieke", "Nico", "Oona", "Pieter", "Rita", "Stijn", "Tine", "Wim"]
+        lasts = ["Voorbeeld", "Proef", "Doe", "Testmans", "Fictief", "Verzon", "Stub", "Dummy", "Model", "Steekproef"]
+        lines = [f"{f} {last}, researcher at KU Leuven" for f in firsts for last in lasts]
+        self.extract["results"][0]["full_content"] = "\n".join(lines)
+        works = relation("works_at", "KU Leuven", "researcher at KU Leuven")
+        self.llm = PageLLM(lambda page: [mention(line.split(",")[0], line, "researcher", works)
+                                         for line in page.split("\n") if line.endswith("researcher at KU Leuven")])
+        out = self.run_lane()
+        self.assertGreater(len("\n".join(lines)), 6000)
+        self.assertEqual(len([p for p in self.llm.pages if "researcher" in p]), 2)
+        self.assertEqual(self.names(out), [line.split(",")[0] for line in lines])
+        claims = self.store.claims_of([h.person_id for h in out.hits])
+        self.assertEqual(len({c.quote_start for c in claims if c.kind == "affiliation"}), 200)
+
+    def test_without_an_llm_the_lane_fails_before_any_call(self):
+        """A lane that cannot read people fails its step at once, like the parse step, and sends nothing."""
+        self.llm, sent = None, []
+        self.handle = lambda request: sent.append(request) or httpx.Response(500)
+        with self.assertRaisesRegex(RuntimeError, "needs an HTTP client and an LLM"):
+            self.run_lane()
+        self.assertEqual(sent, [])
 
 if __name__ == "__main__":
     unittest.main()

@@ -131,8 +131,8 @@ class OpenAlexLaneTest(unittest.TestCase):
         self.assertEqual(out.total_seen, 362)
         self.assertIn("ror:https://ror.org/042nb2s44", out.query)
         self.assertEqual(self.considered(out, "A5107900815").reason, "no author record returned")
-        self.assertNotEqual(self.store.match_claims('"Bruxelles"', exclude="seed_page"), [])
-        self.assertEqual(self.store.match_claims('"Bruxelles"', exclude="record"), [])
+        self.assertNotEqual(self.store.match_claims('"Bruxelles"', exclude=("seed_page",)), [])
+        self.assertEqual(self.store.match_claims('"Bruxelles"', exclude=("record",)), [])
 
     def test_an_affiliation_claim_carries_the_years_its_record_lists(self):
         """Janjevic's ULB claim keeps the five years OpenAlex lists, sorted, and still runs from 2013 to 2018."""
