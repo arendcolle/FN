@@ -47,6 +47,10 @@ The other 32 rows stay dropped on a knockout other than K6 or as a duplicate of 
 
 The completeness critic named five gaps that nobody has researched yet: KBO Public Search director listings, the delegation's own LinkedIn posts as a precedent source, Instagram for the creative group, Google SERP resellers, and a source for the company list in business asks.
 
+### Ties are evidence, not a label (2026-11-02)
+
+FN does not store or compute a tie type. A person's ties are affiliation claims with source, quote and date, the ranker scores those claims directly, and an institution's region is an organization fact from ROR. Any badge or filter is computed from the claims when it is shown. This replaces the "tie typer" and the tie label wherever this file mentions them; `notes/mvp0/architecture.md` has the details.
+
 ### Seed lists scraped (2026-10-30)
 
 Each list has a script in `scripts/seeds/`, a JSONL file in `data/seeds/` and a raw copy plus text layer in the gitignored `data/seeds/raw/`. `scripts/seeds/check.py` checks every file against an independent hand count, the gold picks by full name, the row schema and the quote-in-raw-text rule, and it passes.
