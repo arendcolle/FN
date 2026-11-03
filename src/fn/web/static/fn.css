@@ -1,0 +1,8 @@
+body { font: 12px system-ui; margin: 1em; }
+fieldset, table, th, td { border: 1px solid #bbb; }
+table { border-collapse: collapse; }
+th, td { padding: 2px 6px; text-align: left; vertical-align: top; }
+pre { white-space: pre-wrap; }
+.error { color: #a00; }
+#map { height: 70vh; border: 1px solid #bbb; }
+.maplibregl-popup-content { max-height: 50vh; overflow-y: auto; }

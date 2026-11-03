@@ -1,0 +1,36 @@
+{
+  "key": "parse-5def4f939ae90fd4",
+  "task": "parse",
+  "prompt": "<question>\nWho knows offshore wind near Boston?\n</question>",
+  "result": {
+    "value": {
+      "topics": [
+        {
+          "text": "offshore wind",
+          "span": {
+            "start": 10,
+            "end": 23
+          },
+          "origin": "parsed",
+          "ref": null
+        }
+      ],
+      "institutions": [],
+      "place": {
+        "text": "Boston",
+        "span": {
+          "start": 29,
+          "end": 35
+        },
+        "origin": "parsed",
+        "kind": "metro"
+      },
+      "ask": null
+    },
+    "model": "claude-haiku-5-5",
+    "cost_usd": 0.00031884999999999997,
+    "tokens_in": 2467,
+    "tokens_out": 588,
+    "billing": "subscription"
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "key": "parse-72c5775a0a6f60dd",
+  "task": "parse",
+  "prompt": "<question>\nWhich Belgian business leaders in the US could give a KU Leuven alumni lecture at Flanders House on small tech versus big tech?\n</question>",
+  "result": {
+    "value": {
+      "topics": [
+        {
+          "text": "small tech versus big tech",
+          "span": {
+            "start": 100,
+            "end": 126
+          },
+          "origin": "parsed",
+          "ref": null
+        }
+      ],
+      "institutions": [
+        {
+          "text": "KU Leuven",
+          "span": {
+            "start": 54,
+            "end": 63
+          },
+          "origin": "parsed",
+          "ref": null
+        }
+      ],
+      "place": {
+        "text": "US",
+        "span": {
+          "start": 38,
+          "end": 40
+        },
+        "origin": "parsed",
+        "kind": "anywhere_us"
+      },
+      "ask": "talk"
+    },
+    "model": "claude-haiku-5-5",
+    "cost_usd": 0.00091732,
+    "tokens_in": 2497,
+    "tokens_out": 1445,
+    "billing": "subscription"
+  }
+}

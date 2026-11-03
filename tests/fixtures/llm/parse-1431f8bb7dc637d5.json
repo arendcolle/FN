@@ -1,0 +1,54 @@
+{
+  "key": "parse-1431f8bb7dc637d5",
+  "task": "parse",
+  "prompt": "<question>\nWho could speak on climate science, governance and renewable-energy innovation at Flanders House in New York?\n</question>",
+  "result": {
+    "value": {
+      "topics": [
+        {
+          "text": "climate science",
+          "span": {
+            "start": 19,
+            "end": 34
+          },
+          "origin": "parsed",
+          "ref": null
+        },
+        {
+          "text": "governance",
+          "span": {
+            "start": 36,
+            "end": 46
+          },
+          "origin": "parsed",
+          "ref": null
+        },
+        {
+          "text": "renewable-energy innovation",
+          "span": {
+            "start": 51,
+            "end": 78
+          },
+          "origin": "parsed",
+          "ref": null
+        }
+      ],
+      "institutions": [],
+      "place": {
+        "text": "New York",
+        "span": {
+          "start": 100,
+          "end": 108
+        },
+        "origin": "parsed",
+        "kind": "metro"
+      },
+      "ask": "talk"
+    },
+    "model": "claude-haiku-5-5",
+    "cost_usd": 0.00166145,
+    "tokens_in": 6895,
+    "tokens_out": 2118,
+    "billing": "subscription"
+  }
+}

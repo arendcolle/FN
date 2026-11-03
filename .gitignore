@@ -1,0 +1,10 @@
+# Lists of named people stay local: the repo is public
+data/seeds/*.jsonl
+data/seeds/raw/
+data/gold/
+tests/fixtures/http/openalex/
+var/
+*.sqlite3*
+__pycache__/
+.venv/
+.playwright-mcp/

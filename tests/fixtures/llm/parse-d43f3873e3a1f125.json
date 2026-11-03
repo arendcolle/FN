@@ -1,0 +1,45 @@
+{
+  "key": "parse-d43f3873e3a1f125",
+  "task": "parse",
+  "prompt": "<question>\nWhich Belgian designers and creatives in New York could show their work at a fashion evening hosted by the delegation?\n</question>",
+  "result": {
+    "value": {
+      "topics": [
+        {
+          "text": "designers",
+          "span": {
+            "start": 14,
+            "end": 23
+          },
+          "origin": "parsed",
+          "ref": null
+        },
+        {
+          "text": "fashion",
+          "span": {
+            "start": 77,
+            "end": 84
+          },
+          "origin": "parsed",
+          "ref": null
+        }
+      ],
+      "institutions": [],
+      "place": {
+        "text": "New York",
+        "span": {
+          "start": 41,
+          "end": 49
+        },
+        "origin": "parsed",
+        "kind": "metro"
+      },
+      "ask": "other"
+    },
+    "model": "claude-haiku-5-5",
+    "cost_usd": 0.00121898,
+    "tokens_in": 6303,
+    "tokens_out": 1471,
+    "billing": "subscription"
+  }
+}

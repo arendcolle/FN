@@ -1,0 +1,46 @@
+{
+  "key": "parse-2e80ec44b0bf66e4",
+  "task": "parse",
+  "prompt": "<question>\nWhich Ghent University-connected AI experts could give keynotes at our Bay Area alumni dinner?\n</question>",
+  "result": {
+    "value": {
+      "topics": [
+        {
+          "text": "AI",
+          "span": {
+            "start": 33,
+            "end": 35
+          },
+          "origin": "parsed",
+          "ref": null
+        }
+      ],
+      "institutions": [
+        {
+          "text": "Ghent University",
+          "span": {
+            "start": 6,
+            "end": 22
+          },
+          "origin": "parsed",
+          "ref": null
+        }
+      ],
+      "place": {
+        "text": "Bay Area",
+        "span": {
+          "start": 71,
+          "end": 79
+        },
+        "origin": "parsed",
+        "kind": "metro"
+      },
+      "ask": "talk"
+    },
+    "model": "claude-haiku-5-5",
+    "cost_usd": 0.00071032,
+    "tokens_in": 2487,
+    "tokens_out": 1035,
+    "billing": "subscription"
+  }
+}

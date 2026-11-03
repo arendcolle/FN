@@ -1,0 +1,36 @@
+{
+  "key": "parse-76578700875f007e",
+  "task": "parse",
+  "prompt": "<question>\nWhich Flemish AI leaders at US tech companies or universities could join an executive AI roundtable at Georgia Tech in Atlanta?\n</question>",
+  "result": {
+    "value": {
+      "topics": [
+        {
+          "text": "AI",
+          "span": {
+            "start": 14,
+            "end": 16
+          },
+          "origin": "parsed",
+          "ref": null
+        }
+      ],
+      "institutions": [],
+      "place": {
+        "text": "Atlanta",
+        "span": {
+          "start": 119,
+          "end": 126
+        },
+        "origin": "parsed",
+        "kind": "metro"
+      },
+      "ask": "join"
+    },
+    "model": "claude-haiku-5-5",
+    "cost_usd": 0.00122069,
+    "tokens_in": 6352,
+    "tokens_out": 1459,
+    "billing": "subscription"
+  }
+}

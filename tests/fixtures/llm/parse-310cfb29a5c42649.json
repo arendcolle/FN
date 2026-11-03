@@ -1,0 +1,36 @@
+{
+  "key": "parse-310cfb29a5c42649",
+  "task": "parse",
+  "prompt": "<question>\nWhich Belgian faculty at MIT could present their research to a Belgian delegation visiting Boston?\n</question>",
+  "result": {
+    "value": {
+      "topics": [],
+      "institutions": [
+        {
+          "text": "MIT",
+          "span": {
+            "start": 25,
+            "end": 28
+          },
+          "origin": "parsed",
+          "ref": null
+        }
+      ],
+      "place": {
+        "text": "Boston",
+        "span": {
+          "start": 91,
+          "end": 97
+        },
+        "origin": "parsed",
+        "kind": "metro"
+      },
+      "ask": "talk"
+    },
+    "model": "claude-haiku-5-5",
+    "cost_usd": 0.00047654,
+    "tokens_in": 2486,
+    "tokens_out": 903,
+    "billing": "subscription"
+  }
+}

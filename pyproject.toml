@@ -1,0 +1,23 @@
+[project]
+name = "fn"
+version = "0.1.0"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "fastapi",
+    "httpx",
+    "pydantic",
+    "uvicorn",
+]
+
+[project.scripts]
+fn-serve = "fn.web.app:serve"
+fn-seed = "fn.seedload:main"
+fn-gold = "fn.gold:main"
+fn-orgs = "fn.orgjob:main"
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv]
+python-preference = "only-managed"

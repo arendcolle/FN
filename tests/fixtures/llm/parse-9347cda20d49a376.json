@@ -1,0 +1,45 @@
+{
+  "key": "parse-9347cda20d49a376",
+  "task": "parse",
+  "prompt": "<question>\nWho in New York knew the Flemish artist Jan Yoors or works on Roma culture, for a panel at Columbia University?\n</question>",
+  "result": {
+    "value": {
+      "topics": [
+        {
+          "text": "Jan Yoors",
+          "span": {
+            "start": 40,
+            "end": 49
+          },
+          "origin": "parsed",
+          "ref": null
+        },
+        {
+          "text": "Roma culture",
+          "span": {
+            "start": 62,
+            "end": 74
+          },
+          "origin": "parsed",
+          "ref": null
+        }
+      ],
+      "institutions": [],
+      "place": {
+        "text": "New York",
+        "span": {
+          "start": 7,
+          "end": 15
+        },
+        "origin": "parsed",
+        "kind": "metro"
+      },
+      "ask": "join"
+    },
+    "model": "claude-haiku-5-5",
+    "cost_usd": 0.00104572,
+    "tokens_in": 2494,
+    "tokens_out": 1703,
+    "billing": "subscription"
+  }
+}

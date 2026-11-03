@@ -1,0 +1,54 @@
+{
+  "key": "parse-c8c6d25e99cda586",
+  "task": "parse",
+  "prompt": "<question>\nWhich entrepreneurs could share lessons from failure and growth with Belgian delegates visiting Los Angeles?\n</question>",
+  "result": {
+    "value": {
+      "topics": [
+        {
+          "text": "entrepreneurs",
+          "span": {
+            "start": 6,
+            "end": 19
+          },
+          "origin": "parsed",
+          "ref": null
+        },
+        {
+          "text": "failure",
+          "span": {
+            "start": 45,
+            "end": 52
+          },
+          "origin": "parsed",
+          "ref": null
+        },
+        {
+          "text": "growth",
+          "span": {
+            "start": 57,
+            "end": 63
+          },
+          "origin": "parsed",
+          "ref": null
+        }
+      ],
+      "institutions": [],
+      "place": {
+        "text": "Los Angeles",
+        "span": {
+          "start": 96,
+          "end": 107
+        },
+        "origin": "parsed",
+        "kind": "metro"
+      },
+      "ask": "talk"
+    },
+    "model": "claude-haiku-5-5",
+    "cost_usd": 0.00127191,
+    "tokens_in": 6358,
+    "tokens_out": 1556,
+    "billing": "subscription"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "key": "parse-9039843197d830df",
+  "task": "parse",
+  "prompt": "<question>\nWhich Flemish entrepreneurs with an office in New York could coach ten Flemish start-ups before their week in New York?\n</question>",
+  "result": {
+    "value": {
+      "topics": [],
+      "institutions": [],
+      "place": {
+        "text": "New York",
+        "span": {
+          "start": 46,
+          "end": 54
+        },
+        "origin": "parsed",
+        "kind": "metro"
+      },
+      "ask": "mentor"
+    },
+    "model": "claude-haiku-5-5",
+    "cost_usd": 0.0009708200000000001,
+    "tokens_in": 2492,
+    "tokens_out": 1554,
+    "billing": "subscription"
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "key": "parse-6ce63aba4002df94",
+  "task": "parse",
+  "prompt": "<question>\nWhich supply chain and logistics experts with a Belgian tie near Atlanta could join a panel with OMP and the Port of Antwerp?\n</question>",
+  "result": {
+    "value": {
+      "topics": [
+        {
+          "text": "supply chain",
+          "span": {
+            "start": 6,
+            "end": 18
+          },
+          "origin": "parsed",
+          "ref": null
+        },
+        {
+          "text": "logistics",
+          "span": {
+            "start": 23,
+            "end": 32
+          },
+          "origin": "parsed",
+          "ref": null
+        }
+      ],
+      "institutions": [],
+      "place": {
+        "text": "Atlanta",
+        "span": {
+          "start": 65,
+          "end": 72
+        },
+        "origin": "parsed",
+        "kind": "metro"
+      },
+      "ask": "join"
+    },
+    "model": "claude-haiku-5-5",
+    "cost_usd": 0.00118779,
+    "tokens_in": 6265,
+    "tokens_out": 1428,
+    "billing": "subscription"
+  }
+}

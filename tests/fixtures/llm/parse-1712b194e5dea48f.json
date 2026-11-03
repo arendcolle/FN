@@ -1,0 +1,26 @@
+{
+  "key": "parse-1712b194e5dea48f",
+  "task": "parse",
+  "prompt": "<question>\nWhich young Flemish alumnus at a top US university represents Flanders well and mentors new Fayat scholars, for the first Fayat Ambassador award?\n</question>",
+  "result": {
+    "value": {
+      "topics": [],
+      "institutions": [],
+      "place": {
+        "text": "US",
+        "span": {
+          "start": 37,
+          "end": 39
+        },
+        "origin": "parsed",
+        "kind": "anywhere_us"
+      },
+      "ask": "mentor"
+    },
+    "model": "claude-haiku-5-5",
+    "cost_usd": 0.00055952,
+    "tokens_in": 2503,
+    "tokens_out": 727,
+    "billing": "subscription"
+  }
+}
