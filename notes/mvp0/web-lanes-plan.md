@@ -411,3 +411,10 @@ Each task is one commit. The tests run with `uv run python -m unittest`, and a t
 5. **No regression.** The dev success measure stays at 3 or more of the 4 reachable dev picks, as on main, and no pick main finds is missed on the branch. The web lane adds many people to section `new`, so this checks that they do not push known picks out of the top 10.
 6. **Screenshot.** The GS-02 results page shows a web card with its quote marked on the source page, and a LinkedIn card with dated KU Leuven claims. If the live run was refused, the LinkedIn part is reported as not run.
 7. **Spend.** Total vendor spend for the build is reported: Parallel under $1, Apify under $0.50 in at most two runs.
+
+## Build decisions
+
+- **Task 1.** The POST cache key holds the full request URL with its query parameters, so a later change to Apify's `timeout` or `maxTotalChargeUsd` makes a new cache entry. A call that a caller's `keep` or `cost` function breaks is still recorded, with the error, and leaves no cache file. Cache files are written to a temporary file and renamed into place.
+- **Task 2.** A replay run with no recorded Parallel answer fails `lane:web` with `CacheMiss`, as a replay miss fails the OpenAlex lane. A quiet note would let a replayed gold run pass with no web results. A gold run that should include the web lane runs with `FN_HTTP` live.
+- **Task 2.** Parallel bills Extract per URL as `sku_extract_excerpts`, also when it returns full content (live call, 2026-11-03), so `PRICES` holds `sku_search` and `sku_extract_excerpts` at $0.001 each. One web lane run costs $0.011.
+- **Task 2.** Institution queries carry no place text; the place is in the objective. A page whose markdown has no plain text, such as an image-only page, falls to the next text candidate. `page_source` puts a vendor title on one line.

@@ -1,0 +1,31 @@
+{
+  "search_id": "search_00000000000000000000000000000001",
+  "results": [
+    {
+      "url": "https://events.example.org/belgium-6g-roundtable",
+      "title": "Belgium 6G roundtable",
+      "publish_date": "2026-05-12",
+      "excerpts": ["Speakers include [Wim Doe](https://events.example.org/speakers/wim-doe), professor of wireless networks at KU Leuven."]
+    },
+    {
+      "url": "https://example.edu/faculty/telecom",
+      "title": "Telecom faculty",
+      "publish_date": null,
+      "excerpts": ["Anja Voorbeeld leads the telecom group."]
+    },
+    {
+      "url": "https://news.example.org/flemish-researchers",
+      "title": "Flemish researchers in New Jersey",
+      "publish_date": "2026-03-02",
+      "excerpts": ["Karel Proef was born in Ghent.", "He now works on **6G** in Princeton."]
+    },
+    {
+      "url": "https://events.example.org/belgium-6g-roundtable",
+      "title": "Belgium 6G roundtable (copy)",
+      "publish_date": "2026-05-12",
+      "excerpts": ["A second listing of the same page."]
+    }
+  ],
+  "session_id": "session_00000000000000000000000000000001",
+  "usage": [{"name": "sku_search", "count": 1}]
+}

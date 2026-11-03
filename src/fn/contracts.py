@@ -25,11 +25,11 @@ DateMethod = Literal[
     "record_field", "read_date", "sheet_date", "staff_edit",
 ]
 DatePrecision = Literal["year", "month", "day"]
-SourceKind = Literal["page", "record", "seed_page", "import", "vendor_record"]
+SourceKind = Literal["page", "record", "seed_page", "import", "vendor_record", "vendor_page"]
 StepStatus = Literal["running", "ok", "error", "skipped", "interrupted"]
 SearchStatus = Literal["queued", "running", "done", "failed", "interrupted"]
 SearchKind = Literal["search", "job"]
-LaneName = Literal["seeds", "openalex"]
+LaneName = Literal["seeds", "openalex", "web"]
 ChipOrigin = Literal["parsed", "edited"]
 Depth = Literal["quick"]
 IdentifierScheme = Literal["seed", "openalex", "orcid", "profile_url"]
@@ -166,6 +166,40 @@ def record_source(url: str, title: str, fields: list[tuple[str, object]], raw: d
         text=text, raw_json=json.dumps(raw, ensure_ascii=False, sort_keys=True), content_hash=content_hash,
         source_date=source_date, date_method="record_field" if source_date else None, fetched_at=fetched_at,
     ), spans
+
+
+# One pass over vendor markdown: escapes, link and image text (one bracket level inside), then **, *, __, _ on a line.
+MARKDOWN = re.compile(
+    r"\\([!-/:-@\[-`{-~])"
+    r"|!?\[((?:[^\[\]]|\[[^\]]*\])*)\]\((?:[^()]|\([^()]*\))*\)"
+    r"|(\*\*|\*)(?=\S)(.+?)(?<=\S)\3(?!\*)"
+    r"|(?<!\w)(__|_)(?=\S)(.+?)(?<=\S)\5(?!\w)"
+)
+
+
+def _plain(match: re.Match) -> str:
+    escaped, anchor, _, starred, _, underscored = match.groups()
+    if escaped is not None:
+        return escaped
+    return MARKDOWN.sub(_plain, next(g for g in (anchor, starred, underscored) if g is not None))
+
+
+def page_source(url: str, title: str | None, markdown: str, raw: dict, fetched_at: datetime,
+                source_date: str | None) -> Source:
+    """A vendor_page Source whose text is the vendor's markdown as plain text, so a quote matches what the reader sees.
+
+    Links keep their anchor text; emphasis marks, heading markers and backslash escapes go. The id holds the
+    content hash, so a page whose text changed is stored as a new source.
+    """
+    text = normalize(MARKDOWN.sub(_plain, re.sub(r"^#{1,6}[ \t]+", "", markdown, flags=re.MULTILINE)))
+    content_hash = hashlib.sha256(text.encode()).hexdigest()
+    return Source(
+        id=hashlib.sha1(f"vendor_page\0{url}\0{content_hash}".encode()).hexdigest(), kind="vendor_page", url=url,
+        title=" ".join(title.split()) or None if title else None, text=text,
+        raw_json=json.dumps(raw, ensure_ascii=False, sort_keys=True),
+        content_hash=content_hash, source_date=source_date, date_method="record_field" if source_date else None,
+        fetched_at=fetched_at,
+    )
 
 
 class OrgFacts(Model):
