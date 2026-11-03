@@ -3,6 +3,7 @@ import hashlib
 import json
 import re
 import unicodedata
+from collections.abc import Callable
 from datetime import datetime
 from typing import Literal, Protocol
 
@@ -35,7 +36,8 @@ IdentifierScheme = Literal["seed", "openalex", "orcid", "profile_url"]
 Ask = Literal["talk", "mentor", "host", "join", "other"]
 PlaceKind = Literal["metro", "anywhere_us", "abroad"]
 CallKind = Literal["http", "llm"]
-LLMMode = Literal["live", "record", "replay"]
+LLMMode = Literal["live", "record", "replay", "prefer"]
+CacheMode = Literal["refresh", "prefer", "only"]
 GoldTie = Literal["flemish", "belgian", "none", "unverified"]
 PickVerdict = Literal["found", "missed", "no lane in slice"]
 GoldGroup = Literal["dev", "held-out", "other"]
@@ -66,6 +68,10 @@ def group_key(key: str) -> str:
 
 class HttpClient(Protocol):
     def get(self, url: str, params: dict[str, str] | None = None) -> httpx.Response: ...
+
+    def post(self, url: str, body: dict, params: dict[str, str] | None = None, *, timeout_s: float | None = None,
+             cost: Callable[[bytes], float | None] | None = None, keep: Callable[[bytes], bool] | None = None,
+             cache: CacheMode = "refresh") -> httpx.Response: ...
 
 
 class Model(BaseModel):
