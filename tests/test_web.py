@@ -134,7 +134,7 @@ class WebTest(unittest.TestCase):
             quote=text, quote_start=0, quote_end=len(text), source=source))
         client = self.client()
         search_id = self.run_search(client, "q", Chips(topics=[Chip(text="KVAB", origin="edited")]))
-        page = client.get(f"/searches/{search_id}").text
+        page = client.get(f"/debug/searches/{search_id}").text
         self.assertIn("org facts not stored for wikidata:Q1301699", page)
         self.assertNotIn("No Belgian organization found", page)
 
@@ -153,7 +153,7 @@ class WebTest(unittest.TestCase):
             valid_to="2018"))
         client = self.client()
         search_id = self.run_search(client, "q", Chips(topics=[Chip(text="ULB", origin="edited")]))
-        page = client.get(f"/searches/{search_id}").text
+        page = client.get(f"/debug/searches/{search_id}").text
         belgian = page[page.index("Claims at Belgian organizations"):page.index("Record 1:")]
         self.assertIn("<th>Years</th>", belgian)
         self.assertIn("<td>2013-2018</td>", belgian)
@@ -173,7 +173,7 @@ class WebTest(unittest.TestCase):
                 person_id=person.id, kind="affiliation", relation="worked_at", org_id="ror:01r9htc13",
                 value=text.split(", ")[1], quote=text, quote_start=0, quote_end=len(text), source=source, **dates))
         client = self.client()
-        page = client.get(f"/searches/{self.run_search(client, 'q', Chips(topics=[Chip(text='ULB', origin='edited')]))}").text
+        page = client.get(f"/debug/searches/{self.run_search(client, 'q', Chips(topics=[Chip(text='ULB', origin='edited')]))}").text
         start = page.index("Anne Example</legend>")
         return page[start:page.index("</fieldset>", start)]
 
@@ -197,6 +197,32 @@ class WebTest(unittest.TestCase):
         """The score line names each part with its rank, the belgian_years part too."""
         card = self.anne_card([("anne", "Anne Example, ULB", {"claim_date": "2020"})])
         self.assertIn("Score 0.0328 from seeds #1, belgian_years #1. ", card)
+
+    def test_the_results_page_names_people_and_shows_no_debug_content(self):
+        """Staff see each person's name, never a score, chip, trace, record table, source fact or /debug link.
+
+        The /debug page links to the search's debug page, which keeps that content and links to the source facts.
+        """
+        text = "Anne Example, ULB"
+        source = Source(id="src", kind="page", url="https://example.org/ulb", title="ULB staff", text=text,
+                        content_hash="h")
+        person = self.store.resolve_person([Identifier(scheme="seed", value="anne")], "Anne Example")
+        claim = self.store.upsert_claim(ClaimDraft(
+            person_id=person.id, kind="affiliation", relation="worked_at", value="ULB", quote=text, quote_start=0,
+            quote_end=len(text), source=source, claim_date="2018"))
+        client = self.client()
+        search_id = self.run_search(client, "q", Chips(topics=[Chip(text="ULB", origin="edited")]))
+        staff = client.get(f"/searches/{search_id}").text
+        self.assertIn("Anne Example", staff)
+        for hidden in ("/debug", "Score", "Chips", "trace", "Record 1", "Request errors"):
+            self.assertNotIn(hidden, staff)
+        self.assertIn(f'href="/debug/searches/{search_id}"', client.get("/debug").text)
+        debug = client.get(f"/debug/searches/{search_id}").text
+        self.assertIn("Score 0.0164 from seeds #1", debug)
+        self.assertIn(f'href="/debug/sources/src?claim={claim.id}"', debug)
+        self.assertNotIn("content hash", client.get(f"/sources/src?claim={claim.id}").text)
+        self.assertIn("content hash", client.get(f"/debug/sources/src?claim={claim.id}").text)
+        self.assertEqual(client.get("/debug/sources/src?claim=nope").status_code, 404)
 
     def test_security_headers_on_every_response(self):
         """Pages, error pages and refusals carry the CSP and Referrer-Policy headers."""
@@ -268,7 +294,7 @@ class WebTest(unittest.TestCase):
         response = client.post("/searches", data={"question": "Who knows wind?"}, follow_redirects=False)
         search_id = response.headers["location"].rsplit("/", 1)[1]
         self.wait_ended(search_id)
-        done = client.get(f"/searches/{search_id}").text
+        done = client.get(f"/debug/searches/{search_id}").text
         self.assertIn('value="wind"', done)
         self.assertNotIn("refresh", done)
         queued_id = self.create_search(client, "waiting")
@@ -313,7 +339,7 @@ class WebTest(unittest.TestCase):
         self.assertEqual(inp.headers["content-type"], "application/json")
         self.assertEqual(inp.json(), {"question": "Who knows wind?"})
         self.assertEqual(out.json()["chips"]["topics"][0]["text"], "wind")
-        self.assertIn("debug", client.get(f"/searches/{search_id}").text)
+        self.assertIn("debug", client.get("/debug").text)
         self.assertIn(f"/debug/steps/{step.id}/output.json", client.get(f"/debug/searches/{search_id}").text)
 
     def test_rerun_with_edited_chips_skips_parse_and_links_back(self):
@@ -333,7 +359,7 @@ class WebTest(unittest.TestCase):
         self.assertEqual([(s.step, s.status) for s in self.store.list_steps(new_id)],
                          [("parse", "skipped"), ("lane:seeds", "ok"), ("lane:openalex", "ok"), ("resolve", "ok"),
                           ("rank", "ok"), ("save", "ok")])
-        self.assertIn(source_id, client.get(f"/searches/{new_id}").text)
+        self.assertIn(source_id, client.get(f"/debug/searches/{new_id}").text)
 
     def test_rerun_accepts_no_chips_and_refuses_bad_ones(self):
         """Removing every chip is a valid rerun; an oversized chip, too many chips or an unknown ask is refused."""
@@ -395,7 +421,7 @@ class SeedCardsTest(unittest.TestCase):
 
         Its Belgian section lists the claims at orgs with country code BE, each with the org's region and name language.
         """
-        page = self.client.get(f"/searches/{self.search_id}").text
+        page = self.client.get(f"/debug/searches/{self.search_id}").text
         start = page.index("Michel Goemans</legend>")
         card = page[start:page.index("</fieldset>", start)]
         for text in ("Same name in 2 records, not merged", "Record 1: Michel Goemans, in Complete list of Francqui",
@@ -469,7 +495,7 @@ class ContractsV1Test(unittest.TestCase):
                                    "lane_ranks_json", "reason_claim_ids_json", "score_parts_json"])
         (candidate,) = self.store.list_candidates("old")
         self.assertEqual(candidate.score_parts, [])
-        response = self.client.get("/searches/old")
+        response = self.client.get("/debug/searches/old")
         self.assertEqual(response.status_code, 200)
         for text in ("new #1 Anne Example", "Score 0.0164 from seeds #1", "No Belgian organization found in no source"):
             self.assertIn(text, response.text)

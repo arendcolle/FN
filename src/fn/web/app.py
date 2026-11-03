@@ -127,7 +127,8 @@ def trace_url(search_id: str, name: str) -> str:
 def source_cell(claim: Claim, sources: dict[str, Source]) -> list[Safe]:
     source = sources[claim.source_id]
     return [h.a(source.title or source.url, href=source.url), " ",
-            h.a("quote in source", href=f"/sources/{claim.source_id}?claim={claim.id}#quote")]
+            h.a("quote in source", href=f"/sources/{claim.source_id}?claim={claim.id}#quote"), " ",
+            h.a("source facts", href=f"/debug/sources/{claim.source_id}?claim={claim.id}")]
 
 
 def date_text(claim: Claim) -> str:
@@ -219,36 +220,51 @@ def cards(store: Store, search: Search) -> Safe | None:
     return Safe("".join(card(search.id, c, data) for c in candidates))
 
 
-def search_page(search: Search, message: str | None = None, results: Safe | None = None) -> str:
-    active = search.status in ("queued", "running")
+def chips_form(search: Search, message: str | None = None) -> list[Safe]:
+    """The search's chips as a form that reruns the question with the edited chips."""
     chips = search.chips
     if chips is None:
-        chips_html = h.p("No chips yet.")
+        return [h.h2("Chips"), h.p("No chips yet.")]
+    return [h.h2("Chips" if search.chips_origin is None else f"Chips ({search.chips_origin})"), h.form(
+        h.fieldset(h.legend("Topics"), chip_inputs("topics", chips.topics)),
+        h.fieldset(h.legend("Institutions"), chip_inputs("institutions", chips.institutions)),
+        h.fieldset(h.legend("Place"), h.input(type="text", name="place", value=chips.place.text if chips.place else "")),
+        h.fieldset(h.legend("Ask"), h.select(
+            h.option("", value=""),
+            [h.option(a, value=a, selected=chips.ask == a) for a in ASKS],
+            name="ask",
+        )),
+        h.p(message, class_="error") if message else None,
+        h.p(h.button("Run again with these chips", type="submit")),
+        method="post", action=f"/searches/{search.id}/rerun",
+    )]
+
+
+SECTIONS = {"network": "In your network", "new": "New"}
+
+
+def people(store: Store, search: Search) -> list[Safe]:
+    """The search's people by section, network first, each section with its count."""
+    candidates = store.list_candidates(search.id)
+    persons = store.get_persons([c.person_id for c in candidates])
+    return [[h.h2(f"{title} {len(group)}"), [h.h3(persons[c.person_id].display_name) for c in group]]
+            for section, title in SECTIONS.items() if (group := [c for c in candidates if c.section == section])]
+
+
+def search_page(search: Search, found: list[Safe]) -> str:
+    active = search.status in ("queued", "running")
+    if active:
+        state = h.p("Searching…")
+    elif search.status in ("failed", "interrupted"):
+        state, found = h.p("This search stopped."), []
     else:
-        chips_html = h.form(
-            h.fieldset(h.legend("Topics"), chip_inputs("topics", chips.topics)),
-            h.fieldset(h.legend("Institutions"), chip_inputs("institutions", chips.institutions)),
-            h.fieldset(h.legend("Place"), h.input(type="text", name="place", value=chips.place.text if chips.place else "")),
-            h.fieldset(h.legend("Ask"), h.select(
-                h.option("", value=""),
-                [h.option(a, value=a, selected=chips.ask == a) for a in ASKS],
-                name="ask",
-            )),
-            h.p(message, class_="error") if message else None,
-            h.p(h.button("Run again with these chips", type="submit")),
-            method="post", action=f"/searches/{search.id}/rerun",
-        )
+        state = None if found else h.p("No people found.")
     return page(
         "Search",
         h.h1(search.question),
-        h.p(f"Status: {search.status}", " ", h.a("map", href=f"/searches/{search.id}/map"), " ",
-            h.a("debug", href=f"/debug/searches/{search.id}")),
-        h.p("Edited rerun of ", h.a(search.rerun_of, href=f"/searches/{search.rerun_of}")) if search.rerun_of else None,
-        h.pre(search.error) if search.error else None,
-        h.h2("Chips" if search.chips_origin is None else f"Chips ({search.chips_origin})"),
-        chips_html,
-        h.h2("Results") if results else None,
-        results,
+        h.p(h.a("map", href=f"/searches/{search.id}/map")),
+        state,
+        found,
         refresh=2 if active else None,
     )
 
@@ -279,7 +295,7 @@ def map_page(search: Search) -> str:
     return page(
         "Map",
         h.h1(search.question),
-        h.p(h.a("list", href=f"/searches/{search.id}"), f" Status: {search.status}"),
+        h.p(h.a("list", href=f"/searches/{search.id}")),
         h.div(id="map", data_geo=f"/api/searches/{search.id}/geo"),
         refresh=2 if search.status in ("queued", "running") else None,
         extra_head=[h.link(rel="stylesheet", href="/static/maplibre-gl.css"),
@@ -287,7 +303,16 @@ def map_page(search: Search) -> str:
     )
 
 
-def debug_search_page(store: Store, search: Search) -> str:
+def debug_index_page(searches: list[Search]) -> str:
+    rows = [[h.a(s.question[:120], href=f"/debug/searches/{s.id}"), s.status, s.created_at.isoformat()] for s in searches]
+    return page("Debug", h.h1("Debug"), table(["Question", "Status", "Created"], rows), debug=True)
+
+
+def debug_search_page(store: Store, search: Search, message: str | None = None) -> str:
+    """The search's facts, chips, steps with their logs and tracebacks, and one card per candidate with how it scored.
+
+    message is a refused chip edit, shown in the chips form.
+    """
     steps = store.list_steps(search.id)
     rows = []
     for step in steps:
@@ -311,6 +336,7 @@ def debug_search_page(store: Store, search: Search) -> str:
         ["code sha", f"{search.code_sha} dirty={search.dirty}"], ["llm mode", search.llm_mode],
         ["boot", search.boot_id], ["rerun of", h.a(search.rerun_of, href=f"/debug/searches/{search.rerun_of}") if search.rerun_of else ""],
     ]
+    results = cards(store, search)
     return page(
         "Debug search",
         h.h1(search.question),
@@ -320,9 +346,13 @@ def debug_search_page(store: Store, search: Search) -> str:
         table(["Field", "Value"], facts),
         h.pre(search.error) if search.error else None,
         h.details(h.summary("settings"), h.pre(search.settings_json)),
+        chips_form(search, message),
         h.h2("Steps"),
         table(["#", "Step", "Status", "Time", "Cost", "Model", "Calls", "Payloads"], rows),
         details,
+        h.h2("Results") if results else None,
+        results,
+        debug=True,
     )
 
 
@@ -337,6 +367,7 @@ def calls_page(store: Store, step: StepRun) -> str:
         h.h1(f"Calls of step {step.step}"),
         h.p(h.a("debug page", href=f"/debug/searches/{step.search_id}")),
         table(["#", "Kind", "Request", "Status", "Time", "Tokens in/out", "Cost", "Error"], rows),
+        debug=True,
     )
 
 
@@ -399,22 +430,33 @@ def trace_page(store: Store, search: Search, name: str) -> str:
         form,
         h.p(f"Group key: {key}; a lane person key or a person id also matches") if key else None,
         table(["#", "Step", "Stage", "Kept", "Reason"], rows) if key else None,
+        debug=True,
     )
 
 
 def source_page(source: Source, claim: Claim | None) -> str:
     text = source.text
     body = h.pre(text[:claim.quote_start], h.mark(claim.quote, id="quote"), text[claim.quote_end:]) if claim else h.pre(text)
-    facts = [["kind", source.kind], ["date", f"{source.source_date or 'none'} ({source.date_method or 'no method'})"],
-             ["fetched", source.fetched_at.isoformat() if source.fetched_at else ""], ["content hash", source.content_hash]]
     return page(
         "Source",
         h.h1(source.title or source.url),
         h.p(h.a(source.url, href=source.url)),
+        body,
+    )
+
+
+def debug_source_page(source: Source, claim: Claim | None) -> str:
+    facts = [["kind", source.kind], ["date", f"{source.source_date or 'none'} ({source.date_method or 'no method'})"],
+             ["fetched", source.fetched_at.isoformat() if source.fetched_at else ""], ["content hash", source.content_hash]]
+    query = f"?claim={claim.id}#quote" if claim else ""
+    return page(
+        "Debug source",
+        h.h1(source.title or source.url),
+        h.p(h.a("source page", href=f"/sources/{source.id}{query}")),
         table(["Field", "Value"], facts),
         h.p(f"Marked: the quote of claim {claim.kind} {claim.value!r} at [{claim.quote_start}:{claim.quote_end}]")
         if claim else None,
-        body,
+        debug=True,
     )
 
 
@@ -479,7 +521,7 @@ def get_search(request: Request, search_id: str) -> Search:
 @router.get("/searches/{search_id}")
 async def show(request: Request, search_id: str) -> HTMLResponse:
     found = get_search(request, search_id)
-    return HTMLResponse(search_page(found, results=cards(store_of(request), found)))
+    return HTMLResponse(search_page(found, people(store_of(request), found)))
 
 
 @router.get("/searches/{search_id}/map")
@@ -492,14 +534,24 @@ async def geo_json(request: Request, search_id: str) -> JSONResponse:
     return JSONResponse(geo_features(store_of(request), get_search(request, search_id)))
 
 
-@router.get("/sources/{source_id}")
-async def show_source(request: Request, source_id: str, claim: str = "") -> HTMLResponse:
+def get_source(request: Request, source_id: str, claim: str) -> tuple[Source, Claim | None]:
+    """The source and, when claim is given, that claim; 404 when either is missing or the claim quotes another source."""
     store = store_of(request)
     source = store.get_sources([source_id]).get(source_id)
     marked = store.get_claim(claim) if claim else None
     if source is None or (claim and (marked is None or marked.source_id != source_id)):
         raise HTTPException(404, "No such source or claim")
-    return HTMLResponse(source_page(source, marked))
+    return source, marked
+
+
+@router.get("/sources/{source_id}")
+async def show_source(request: Request, source_id: str, claim: str = "") -> HTMLResponse:
+    return HTMLResponse(source_page(*get_source(request, source_id, claim)))
+
+
+@router.get("/debug/sources/{source_id}")
+async def debug_source(request: Request, source_id: str, claim: str = "") -> HTMLResponse:
+    return HTMLResponse(debug_source_page(*get_source(request, source_id, claim)))
 
 
 @router.get("/debug/searches/{search_id}/trace")
@@ -513,11 +565,16 @@ async def rerun(request: Request, search_id: str) -> Response:
     try:
         chips = chips_from_form(await form_of(request), source.chips)
     except ValueError as exc:
-        return HTMLResponse(search_page(source, str(exc)), 400)
+        return HTMLResponse(debug_search_page(store_of(request), source, str(exc)), 400)
     worker = worker_of(request)
     found = worker.create_search(source.question, chips, "edited", rerun_of=source.id)
     worker.submit(found.id)
     return RedirectResponse(f"/searches/{found.id}", 303)
+
+
+@router.get("/debug")
+async def debug_index(request: Request) -> HTMLResponse:
+    return HTMLResponse(debug_index_page(store_of(request).list_searches(50)))
 
 
 @router.get("/debug/searches/{search_id}")
@@ -559,7 +616,7 @@ async def step_calls(request: Request, step_id: str) -> HTMLResponse:
 async def request_errors(request: Request) -> HTMLResponse:
     errors = store_of(request).list_request_errors()
     body = [[h.h3(f"{e.route} at {e.at.isoformat()}"), h.pre(e.traceback)] for e in errors] or h.p("No request errors.")
-    return HTMLResponse(page("Request errors", h.h1("Request errors"), body))
+    return HTMLResponse(page("Request errors", h.h1("Request errors"), body, debug=True))
 
 
 def create_app(settings: Settings, llm: StructuredLLM | None, http: HttpClient | None = None) -> FastAPI:

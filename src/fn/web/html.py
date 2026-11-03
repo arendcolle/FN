@@ -89,8 +89,11 @@ def table(headers: list[object], rows: Iterable[list[object]]) -> Safe:
     )
 
 
-def page(title: str, *body: object, refresh: int | None = None, extra_head: object = None) -> str:
-    """A full document with the site nav; refresh reloads every that many seconds, extra_head adds head children."""
+def page(title: str, *body: object, refresh: int | None = None, extra_head: object = None, debug: bool = False) -> str:
+    """A full document with the site nav, or the debug nav when debug; refresh reloads every that many seconds.
+
+    extra_head adds head children. Only debug pages link to other debug pages.
+    """
     head = h.head(
         h.meta(charset="utf-8"),
         h.title(title),
@@ -98,5 +101,6 @@ def page(title: str, *body: object, refresh: int | None = None, extra_head: obje
         h.link(rel="stylesheet", href="/static/fn.css"),
         extra_head,
     )
-    nav = h.p(h.a("Searches", href="/"), " ", h.a("Request errors", href="/debug/errors"))
+    nav = (h.p(h.a("Debug", href="/debug"), " ", h.a("Request errors", href="/debug/errors")) if debug
+           else h.p(h.a("Searches", href="/")))
     return "<!doctype html>" + tag("html", head, h.body(nav, body), lang="en")
