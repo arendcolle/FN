@@ -3,13 +3,14 @@ import logging
 import subprocess
 import traceback
 import uuid
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 
 from fn import search
 from fn.config import Settings
-from fn.contracts import ChipOrigin, Chips, HttpClient, Search
+from fn.contracts import ChipOrigin, Chips, HttpClient, Search, SearchKind
 from fn.llm import StructuredLLM
 from fn.steps import StepContext, redact
 from fn.store import Store
@@ -47,11 +48,11 @@ class Worker:
 
     def create_search(
         self, question: str, chips: Chips | None = None, chips_origin: ChipOrigin | None = None,
-        rerun_of: str | None = None,
+        rerun_of: str | None = None, kind: SearchKind = "search",
     ) -> Search:
-        """Store a queued search stamped with this boot, the code state and the settings."""
+        """Store a queued search, or job, stamped with this boot, the code state and the settings."""
         found = Search(
-            id=new_id(), question=question, chips=chips, chips_origin=chips_origin, status="queued",
+            id=new_id(), kind=kind, question=question, chips=chips, chips_origin=chips_origin, status="queued",
             created_at=now(), rerun_of=rerun_of, code_sha=self.code_sha, dirty=self.dirty,
             llm_mode=self.settings.llm_mode, boot_id=self.boot_id,
             settings_json=redact(self.settings.model_dump_json(), self.settings.secrets()),
@@ -71,8 +72,8 @@ class Worker:
             error = redact("".join(traceback.format_exception(exc)), self.settings.secrets())
             log.error("search %s crashed outside its guard\n%s", search_id, error)
 
-    def execute(self, search_id: str) -> Search:
-        """Run one search to its end and return it.
+    def execute(self, search_id: str, workflow: Callable[[StepContext, Search], None] | None = None) -> Search:
+        """Run one search to its end with workflow, the Quick steps by default, and return it.
 
         Any exception inside the run marks the search failed with the redacted traceback.
         Raises LookupError when no search has this id.
@@ -86,7 +87,7 @@ class Worker:
             log=logging.getLogger("fn.step"), settings=self.settings,
         )
         try:
-            search.run(ctx, found)
+            (workflow or search.run)(ctx, found)
         except Exception:
             error = redact(traceback.format_exc(), self.settings.secrets())
             log.error("search %s failed\n%s", search_id, error)

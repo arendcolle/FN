@@ -3,7 +3,7 @@ import json
 import logging
 import unittest
 
-from fn import ties
+from fn import orgs
 from fn.contracts import (
     Chip,
     Chips,
@@ -70,7 +70,7 @@ class FtsQueryTest(unittest.TestCase):
 
     def test_query_quotes_tokens_and_adds_institution_aliases_as_phrases(self):
         chips = Chips(topics=[Chip(text='say "hi" OR', origin="edited")], institutions=[Chip(text="MIT", origin="edited")])
-        self.assertEqual(seeds.fts_query(chips, ties.aliases),
+        self.assertEqual(seeds.fts_query(chips, lambda text: orgs.names(orgs.org_id(text))),
                          '"say" OR """hi""" OR "OR" OR "MIT" OR "M.I.T." OR "Massachusetts Institute of Technology"')
 
 
@@ -111,8 +111,6 @@ class SeedLaneSearchTest(unittest.TestCase):
         self.assertCountEqual(goemans.person_ids, [self.seed_person("francqui|michel-goemans|1987|"),
                                                    self.seed_person("baef|michel-goemans|1987|")])
         self.assertEqual(goemans.person_id, self.seed_person("francqui|michel-goemans|1987|"))
-        self.assertEqual(goemans.tie.tie, "belgian")
-        self.assertEqual(len(goemans.tie.checked), 2)
         flags = self.store.list_flags(found.id)
         self.assertIn((goemans.person_id, self.seed_person("baef|michel-goemans|1987|")),
                       [(f.person_id, f.other_person_id) for f in flags])

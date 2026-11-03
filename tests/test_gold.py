@@ -7,8 +7,8 @@ from unittest import mock
 
 import httpx
 
-from fn import gold, net
-from fn.contracts import Candidate, GoldPick, Identifier, TieLabel
+from fn import gold, net, orgs
+from fn.contracts import Candidate, ClaimDraft, GoldPick, Identifier, OrgFacts, Source
 from fn.lanes import openalex
 from fn.worker import Worker
 from tests.helpers import StubHttp, StubLLM, make_db, make_settings
@@ -17,9 +17,9 @@ from tests.test_openalex import route
 GS10_CHIPS = {"institutions": [{"text": "MIT", "span": {"start": 25, "end": 28}, "origin": "parsed"}]}
 
 
-def candidate(person_ids: list[str], section: str = "new", rank: int = 1, tie: str = "belgian") -> Candidate:
+def candidate(person_ids: list[str], section: str = "new", rank: int = 1) -> Candidate:
     return Candidate(search_id="s", person_id=person_ids[0], person_ids=person_ids, section=section, rank=rank,
-                     score=0.1, lane_ranks={"seeds": rank}, tie=TieLabel(tie=tie, rules_version="1"))
+                     score=0.1, lane_ranks={"seeds": rank})
 
 
 def pick(name: str, **fields) -> GoldPick:
@@ -80,15 +80,6 @@ class JudgeTest(unittest.TestCase):
         self.assertEqual(low.lost_reason, "ranked new #11, below the top 10")
         network = gold.judge(pick("A B"), candidate(["p"], "network", 2), ("", ""))
         self.assertEqual((network.verdict, network.section), ("found", "network"))
-
-    def test_tie_agreement_maps_the_gold_vocabulary_and_skips_unverified(self):
-        """Gold 'none' agrees with none_found, a different tie differs, and 'unverified' is neither."""
-        same = gold.judge(pick("A B", gold_tie="none"), candidate(["p"], tie="none_found"), ("", ""))
-        differs = gold.judge(pick("A B", gold_tie="flemish"), candidate(["p"], tie="belgian"), ("", ""))
-        unknown = gold.judge(pick("A B", gold_tie="unverified"), candidate(["p"], tie="flemish"), ("", ""))
-        miss = gold.judge(pick("A B"), None, self.NOWHERE)
-        self.assertEqual([r.tie_agrees for r in (same, differs, unknown, miss)], [True, False, None, None])
-        self.assertEqual(miss.tie, None)
 
     def test_an_unreachable_pick_is_labelled_no_lane_in_slice_and_a_reachable_one_is_missed(self):
         """reach.json decides the label of a pick that is not in the list; its evidence becomes the reason."""
@@ -157,7 +148,9 @@ class RunCaseTest(unittest.TestCase):
         by_name = self.results(self.case.model_copy(update={"picks": [*self.case.picks, stranger]}))
         for name in ("Michel Goemans", "Pierre Lermusiaux", "Julien de Wit", "Milena Janjevic"):
             self.assertEqual((by_name[name].verdict, by_name[name].section), ("found", "new"), name)
-            self.assertIsNotNone(by_name[name].tie_agrees, name)
+            self.assertTrue(by_name[name].belgian.startswith("Belgian claims: "), name)
+        self.assertIn("Université Libre de Bruxelles (no region, name language unknown) affiliated_with 2018",
+                      by_name["Milena Janjevic"].belgian)
         self.assertEqual(by_name["Anne Deconinck"].verdict, "no lane in slice")
         self.assertIn("authors_institution_mit_p1.json", by_name["Anne Deconinck"].lost_reason)
         missed = by_name["Nobody Atall"]
@@ -165,18 +158,43 @@ class RunCaseTest(unittest.TestCase):
         self.assertIn("not found by any lane; lane:seeds query", missed.lost_reason)
         self.assertIn("lane:openalex query authors filter=last_known_institutions.ror", missed.lost_reason)
 
-    def test_a_pick_cut_by_the_openalex_hit_limit_is_missed_at_that_lane_with_its_rank(self):
-        """With the limit at 1, one reachable pick is found and the others say 'rank N, below the top 1' at lane:openalex."""
-        with mock.patch.object(openalex, "HIT_LIMIT", 1):
+    def test_the_belgian_text_gives_scored_years_the_count_and_rank_and_stored_records_of_unfound_picks(self):
+        """A found pick lists its scored claims with their years, then belgian_years N, rank R.
+
+        A pick no candidate carries names the Belgian claims of its stored records, or says none is stored.
+        """
+        facts = Source(id="org", kind="record", url="https://www.wikidata.org/wiki/Q1301699", text="id: Q1301699",
+                       content_hash="h0", fetched_at=datetime(2026, 11, 3, tzinfo=UTC))
+        orgs.save(self.store, [OrgFacts(id="wikidata:Q1301699", name="KVAB", country_code="BE")], facts, replace=True)
+        for name in ("Nobody Atall", "Julien de Wit"):
+            text = f"{name}, member of KVAB"
+            person = self.store.resolve_person([Identifier(scheme="seed", value=name)], name)
+            self.store.upsert_claim(ClaimDraft(
+                person_id=person.id, kind="role", relation="member_of", org_id="wikidata:Q1301699", value="KVAB",
+                quote=text, quote_start=0, quote_end=len(text),
+                source=Source(id=name, kind="page", url="https://example.org/kvab", text=text, content_hash=name)))
+        by_name = self.results(self.case.model_copy(update={"picks": [*self.case.picks, pick("Nobody Atall")]}))
+        self.assertEqual(by_name["Julien de Wit"].belgian,
+                         "Belgian claims: University of Liège (no region, name language unknown) affiliated_with 2023, "
+                         "years 2012, 2023; not scored: KVAB (no region, name language unknown) member_of no date; "
+                         "belgian_years 2, rank 3")
+        self.assertTrue(by_name["Milena Janjevic"].belgian.endswith("years 2013-2014, 2016-2018; belgian_years 5, rank 1"))
+        self.assertEqual(by_name["Anne Deconinck"].belgian, "no stored record")
+        self.assertEqual(by_name["Nobody Atall"].belgian,
+                         "stored, not in the result: KVAB (no region, name language unknown) member_of no date")
+
+    def test_a_pick_cut_by_the_openalex_fetch_limit_is_missed_at_that_lane_with_the_reason(self):
+        """With the fetch limit at 1 author, every reachable pick is missed at lane:openalex as 'not fetched'."""
+        with mock.patch.object(openalex, "MAX_AUTHORS", 1):
             by_name = self.results(self.case)
         reachable = [by_name[p.name] for p in self.case.picks if p.reachable]
-        self.assertEqual(sorted(p.verdict for p in reachable), ["found", "missed", "missed", "missed"])
-        for p in (p for p in reachable if p.verdict == "missed"):
+        self.assertEqual([p.verdict for p in reachable], ["missed"] * 4)
+        for p in reachable:
             self.assertEqual(p.lost_step, "lane:openalex", p.name)
-            self.assertRegex(p.lost_reason, r"^rank \d+, below the top 1,", p.name)
+            self.assertEqual(p.lost_reason, "not fetched: beyond the first 1 authors seen", p.name)
 
     def test_two_runs_give_the_same_pick_rows(self):
-        """Search ids differ between runs, but every pick row (verdict, section, rank, tie, lost at) is the same."""
+        """Search ids differ between runs, but every pick row (verdict, section, rank, Belgian claims, lost at) is the same."""
         first, second = (gold.run_case(self.worker(), self.case) for _ in range(2))
         self.assertNotEqual(first.search_id, second.search_id)
         self.assertEqual(first.picks, second.picks)
@@ -202,7 +220,7 @@ class RunCaseTest(unittest.TestCase):
         rows = list(csv.DictReader(io.StringIO(gold.top5_csv([result]))))
         self.assertLessEqual(len(rows), 5)
         self.assertEqual(list(rows[0]), gold.TOP5_COLUMNS)
-        self.assertEqual({(r["good_pick"], r["tie_correct"]) for r in rows}, {("", "")})
+        self.assertEqual({r["good_pick"] for r in rows}, {""})
         self.assertTrue(all(r["reason_quote"] for r in rows))
 
 

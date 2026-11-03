@@ -1,21 +1,29 @@
+import json
 import logging
 import os
+import shutil
 import stat
+import tempfile
 import time
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from fastapi.testclient import TestClient
 
+from fn import db, orgs
 from fn.contracts import (
     Chip,
     Chips,
     ClaimDraft,
     Identifier,
+    OrgFacts,
     ParseIn,
     ParseOut,
     Place,
+    Search,
     Source,
+    StepRun,
 )
 from fn.steps import StepContext, run_step, setup_logging
 from fn.store import Store
@@ -114,6 +122,81 @@ class WebTest(unittest.TestCase):
                 self.assertIn("&lt;script&gt;", response.text)
         self.assertEqual(client.get("/sources/src?claim=nope").status_code, 404)
         self.assertEqual(client.get("/sources/nope").status_code, 404)
+
+    def test_a_claim_at_an_org_without_stored_facts_is_named_not_counted_as_not_belgian(self):
+        """A KVAB claim with no orgs row (fn-orgs not run) shows 'org facts not stored for' its id, never the absence line."""
+        text = "Anne Example, member of KVAB"
+        source = Source(id="src", kind="page", url="https://example.org/kvab", title="KVAB members", text=text,
+                        content_hash="h")
+        person = self.store.resolve_person([Identifier(scheme="seed", value="anne")], "Anne Example")
+        self.store.upsert_claim(ClaimDraft(
+            person_id=person.id, kind="role", relation="member_of", org_id="wikidata:Q1301699", value="KVAB",
+            quote=text, quote_start=0, quote_end=len(text), source=source))
+        client = self.client()
+        search_id = self.run_search(client, "q", Chips(topics=[Chip(text="KVAB", origin="edited")]))
+        page = client.get(f"/searches/{search_id}").text
+        self.assertIn("org facts not stored for wikidata:Q1301699", page)
+        self.assertNotIn("No Belgian organization found", page)
+
+    def test_card_writes_a_spanned_claims_years_and_shows_the_belgian_years_part(self):
+        """The Years column writes a 2013 to 2018 claim as '2013-2018', and Score parts has its belgian_years row."""
+        text = "Anne Example, ULB 2013-2018"
+        source = Source(id="src", kind="page", url="https://example.org/ulb", title="ULB staff", text=text,
+                        content_hash="h")
+        record = Source(id="org", kind="record", url="https://ror.org/01r9htc13", text="id: ror", content_hash="h2",
+                        fetched_at=now())
+        orgs.save(self.store, [OrgFacts(id="ror:01r9htc13", name="ULB", country_code="BE")], record, replace=True)
+        person = self.store.resolve_person([Identifier(scheme="seed", value="anne")], "Anne Example")
+        self.store.upsert_claim(ClaimDraft(
+            person_id=person.id, kind="affiliation", relation="worked_at", org_id="ror:01r9htc13", value="ULB",
+            quote=text, quote_start=0, quote_end=len(text), source=source, claim_date="2018", valid_from="2013",
+            valid_to="2018"))
+        client = self.client()
+        search_id = self.run_search(client, "q", Chips(topics=[Chip(text="ULB", origin="edited")]))
+        page = client.get(f"/searches/{search_id}").text
+        belgian = page[page.index("Claims at Belgian organizations"):page.index("Record 1:")]
+        self.assertIn("<th>Years</th>", belgian)
+        self.assertIn("<td>2013-2018</td>", belgian)
+        self.assertIn("<td>belgian_years</td><td>1</td><td>0.0164</td>"
+                      "<td>6 years at Belgian organizations; 1 / (60 + 1)</td><td>ULB</td>", page)
+
+    def anne_card(self, records: list[tuple[str, str, dict]]) -> str:
+        """Anne Example's card from a ULB topic search; each (key, quote, dates) is one record with one ULB claim."""
+        facts = Source(id="org", kind="record", url="https://ror.org/01r9htc13", text="id: ror", content_hash="h0",
+                       fetched_at=now())
+        orgs.save(self.store, [OrgFacts(id="ror:01r9htc13", name="ULB", country_code="BE")], facts, replace=True)
+        for key, text, dates in records:
+            source = Source(id=f"src-{key}", kind="page", url=f"https://example.org/{key}", title=f"{key} page",
+                            text=text, content_hash=f"h-{key}")
+            person = self.store.resolve_person([Identifier(scheme="seed", value=key)], "Anne Example")
+            self.store.upsert_claim(ClaimDraft(
+                person_id=person.id, kind="affiliation", relation="worked_at", org_id="ror:01r9htc13",
+                value=text.split(", ")[1], quote=text, quote_start=0, quote_end=len(text), source=source, **dates))
+        client = self.client()
+        page = client.get(f"/searches/{self.run_search(client, 'q', Chips(topics=[Chip(text='ULB', origin='edited')]))}").text
+        start = page.index("Anne Example</legend>")
+        return page[start:page.index("</fieldset>", start)]
+
+    def test_card_writes_only_the_years_a_source_lists(self):
+        """A claim valid 2012 to 2023 whose source lists 2012 and 2023 shows '2012, 2023' and counts 2 years."""
+        card = self.anne_card([("anne", "Anne Example, ULB", {"claim_date": "2023", "valid_from": "2012",
+                                                               "valid_to": "2023", "years": [2012, 2023]})])
+        self.assertIn("<td>2012, 2023</td>", card[card.index("Claims at Belgian organizations"):])
+        self.assertIn("2 years at Belgian organizations", card)
+
+    def test_card_marks_the_claims_that_scored(self):
+        """The hit record's Belgian claim is marked scored; a same-name record's Belgian claim is shown unmarked."""
+        card = self.anne_card([("anne", "Anne Example, ULB", {"claim_date": "2020"}),
+                               ("anne-2", "Anne Example, Brussels university", {"claim_date": "2001"})])
+        belgian = card[card.index("Claims at Belgian organizations"):card.index("Record 1:")]
+        self.assertIn("<th>Scored</th>", belgian)
+        self.assertIn("<td>2020</td><td>yes</td>", belgian)
+        self.assertIn("<td>2001</td><td></td>", belgian)
+
+    def test_card_score_line_names_every_part(self):
+        """The score line names each part with its rank, the belgian_years part too."""
+        card = self.anne_card([("anne", "Anne Example, ULB", {"claim_date": "2020"})])
+        self.assertIn("Score 0.0328 from seeds #1, belgian_years #1. ", card)
 
     def test_security_headers_on_every_response(self):
         """Pages, error pages and refusals carry the CSP and Referrer-Policy headers."""
@@ -249,7 +332,7 @@ class WebTest(unittest.TestCase):
         self.assertEqual((found.chips.place.text, found.chips.place.origin, found.chips.ask), ("Boston", "edited", "talk"))
         self.assertEqual([(s.step, s.status) for s in self.store.list_steps(new_id)],
                          [("parse", "skipped"), ("lane:seeds", "ok"), ("lane:openalex", "ok"), ("resolve", "ok"),
-                          ("tie", "ok"), ("rank", "ok"), ("save", "ok")])
+                          ("rank", "ok"), ("save", "ok")])
         self.assertIn(source_id, client.get(f"/searches/{new_id}").text)
 
     def test_rerun_accepts_no_chips_and_refuses_bad_ones(self):
@@ -307,31 +390,100 @@ class SeedCardsTest(unittest.TestCase):
         self.search_id = worker.pool.submit(worker.create_search, "Belgian faculty at MIT?", chips, "edited").result(10).id
         worker.submit(self.search_id).result(timeout=10)
 
-    def test_card_lists_each_record_with_quote_source_date_and_tie(self):
-        """Goemans' card holds his Francqui and BAEF records with quotes, source links, dates and the tie checked."""
+    def test_card_lists_each_record_with_quote_source_date_and_the_belgian_claims(self):
+        """Goemans' card holds his Francqui and BAEF records with quotes, source links, dates and score parts.
+
+        Its Belgian section lists the claims at orgs with country code BE, each with the org's region and name language.
+        """
         page = self.client.get(f"/searches/{self.search_id}").text
         start = page.index("Michel Goemans</legend>")
         card = page[start:page.index("</fieldset>", start)]
         for text in ("Same name in 2 records, not merged", "Record 1: Michel Goemans, in Complete list of Francqui",
                      "Record 2: Michel Goemans, in BAEF Belgian Fellows", "Michel GOEMANS", "GOEMANS, Michel",
                      "Massachusetts Institute of Technology (matched)", "1987 (year, record_field)",
-                     "Tie: belgian, from Université catholique de Louvain; checked Complete list of Francqui",
-                     'href="https://www.francquifoundation.be/', "/trace?name=Michel+Goemans"):
+                     'href="https://www.francquifoundation.be/', "/trace?name=Michel+Goemans",
+                     "<td>seeds</td><td>", "<td>1 / (60 + "):
             self.assertIn(text, card)
+        belgian = card[card.index("Claims at Belgian organizations"):card.index("Record 1:")]
+        for text in ("<td>UCLouvain</td><td>WAL</td><td>fr</td><td>affiliation affiliated_with</td>",
+                     "<td>Fondation Francqui</td><td>BRU</td><td>fr</td><td>role fellow_of</td>",
+                     "<td>Belgian American Educational Foundation</td><td>BRU</td><td>en</td><td>role fellow_of</td>"):
+            self.assertIn(text, belgian)
+        self.assertEqual(belgian.count("<tr>"), 4)
         link = card[card.index('href="/sources/') + 6:]
         response = self.client.get(link[:link.index('"')].replace("&amp;", "&"))
         self.assertEqual(response.status_code, 200)
         self.assertRegex(response.text, r'<mark id="quote">Michel GOEMANS[^<]*Massachusetts Institute of Technology')
 
     def test_trace_shows_where_a_name_went_in_every_step(self):
-        """The trace lists the seed lane's verdict, the entry, the tie and the rank, and says where a name is absent."""
+        """The trace lists the seed lane's verdict, the entry and the rank, and says where a name is absent."""
         page = self.client.get(f"/debug/searches/{self.search_id}/trace", params={"name": "michel GOEMANS"}).text
         for text in ("<td>fts</td><td>kept</td><td>fts rank", "<td>entry</td><td>kept</td><td>2 records",
-                     ": belgian</td>", "<td>rank</td><td>kept</td><td>new #"):
+                     "<td>rank</td><td>kept</td><td>new #"):
             self.assertIn(text, page)
         missing = self.client.get(f"/debug/searches/{self.search_id}/trace", params={"name": "Anne Deconinck"}).text
         self.assertIn('not present; query "MIT" OR "M.I.T." OR', missing.replace("&quot;", '"'))
         self.assertIn("Trace a person", self.client.get(f"/debug/searches/{self.search_id}/trace").text)
+
+
+class ContractsV1Test(unittest.TestCase):
+    def setUp(self):
+        """A search stored by the code before migration 004: v1 step payloads and a candidate row with its old column."""
+        self.settings = make_settings(self)
+        old = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, old)
+        for path in sorted(db.MIGRATIONS.glob("00[1-3]_*.sql")):
+            shutil.copy(path, old / path.name)
+        self.store = Store(self.settings.db_path)
+        self.addCleanup(self.store.close)
+        with mock.patch.object(db, "MIGRATIONS", old):
+            self.store.migrate()
+        self.store.create_search(Search(id="old", question="Who knows wind?", status="done", created_at=now(),
+                                        code_sha=None, dirty=False, llm_mode="replay", settings_json="{}", boot_id="b"))
+        person = self.store.resolve_person([Identifier(scheme="seed", value="anne")], "Anne Example")
+        hit = {"person_id": person.id, "name_key": person.name_key, "lane": "seeds", "rank": 1, "score": 1.0,
+               "matched_on": "wind", "claim_ids": []}
+        label = {"tie": "belgian", "claim_ids": [], "checked": [], "rules_version": "2"}
+        candidate = {"search_id": "old", "person_id": person.id, "person_ids": [person.id], "section": "new", "rank": 1,
+                     "score": 1 / 61, "lane_ranks": {"seeds": 1}, "reason_claim_ids": [], "tie": label}
+        outputs = [("lane:seeds", "LaneOut", {"lane": "seeds", "query": '"wind"', "total_seen": 1, "hits": [hit],
+                                               "considered": []}),
+                   ("rank", "RankOut", {"candidates": [candidate]})]
+        for seq, (step, model, output) in enumerate(outputs, 1):
+            run = StepRun(id=f"st{seq}", search_id="old", seq=seq, step=step, status="ok", started_at=now(),
+                          ended_at=now(), input_model="LaneIn", output_model=model, contracts_version="1")
+            self.store.start_step(run, "{}")
+            self.store.finish_step(run, json.dumps(output))
+        self.store.conn.execute("INSERT INTO candidates VALUES ('old', ?, ?, 'new', 1, ?, ?, '[]', ?)",
+                                (person.id, json.dumps([person.id]), 1 / 61, '{"seeds": 1}', json.dumps(label)))
+        self.assertEqual(self.store.migrate(), [4, 5])
+        app = create_app(self.settings, StubLLM(error=AssertionError("no LLM")), StubHttp())
+        self.client = TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=False)
+        self.client.__enter__()
+        self.addCleanup(self.client.__exit__, None, None, None)
+
+    def test_an_old_candidate_row_gets_empty_score_parts_and_its_card_renders(self):
+        """Migration 004 swaps the old column for score_parts_json, '[]' on old rows, and the results page shows the card."""
+        columns = [r[1] for r in self.store.conn.execute("PRAGMA table_info(candidates)")]
+        self.assertEqual(columns, ["search_id", "person_id", "person_ids_json", "section", "rank", "score",
+                                   "lane_ranks_json", "reason_claim_ids_json", "score_parts_json"])
+        (candidate,) = self.store.list_candidates("old")
+        self.assertEqual(candidate.score_parts, [])
+        response = self.client.get("/searches/old")
+        self.assertEqual(response.status_code, 200)
+        for text in ("new #1 Anne Example", "Score 0.0164 from seeds #1", "No Belgian organization found in no source"):
+            self.assertIn(text, response.text)
+        self.assertNotIn("Score parts", response.text)
+        self.assertIn("score parts not stored (contracts v1)", response.text)
+
+    def test_the_trace_notes_v1_payloads_instead_of_parsing_them(self):
+        """Each traced step stored under contracts v1 shows one note row; the page does not fail on the old rank payload."""
+        response = self.client.get("/debug/searches/old/trace", params={"name": "Anne Example"})
+        self.assertEqual(response.status_code, 200)
+        for seq, step in ((1, "lane:seeds"), (2, "rank")):
+            self.assertIn(f"<td>{seq}</td><td>{step}</td><td>-</td><td>-</td>"
+                          "<td>stored under contracts v1, not shown</td>", response.text)
+        self.assertEqual(self.store.list_request_errors(), [])
 
 
 class LoggingTest(unittest.TestCase):

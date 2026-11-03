@@ -56,6 +56,13 @@ class NetTest(unittest.TestCase):
             self.assertNotIn(SECRET, text)
         self.assertIn("GET https://api.openalex.org/works?q=wind", calls[0].request)
 
+    def test_every_request_names_fn_and_its_repository_in_the_user_agent(self):
+        """Each request to any host carries FN's agent with the repository URL as contact, never httpx's default."""
+        client = self.client([httpx.Response(200, text="ok"), httpx.Response(200, text="ok")])
+        self.step(client, "https://www.wikidata.org/w/api.php", "https://api.ror.org/v2/organizations/x")
+        self.assertEqual({r.headers["user-agent"] for r in self.sent},
+                         {f"FN/0.1 (https://github.com/arendcolle/FN) httpx/{httpx.__version__}"})
+
     def test_retry_after_is_honoured_once_up_to_30s_and_a_longer_wait_fails_the_step(self):
         """A 429 asking for 2 s is retried after 2 s; one asking for 120 s fails the step and names the wait."""
         ok = self.client([httpx.Response(429, headers={"Retry-After": "2"}), httpx.Response(200, text="ok")])

@@ -1,0 +1,1 @@
+ALTER TABLE claims ADD COLUMN years_json TEXT NOT NULL DEFAULT '[]';

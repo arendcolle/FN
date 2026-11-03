@@ -14,6 +14,8 @@ TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 MAX_BYTES = 5 * 1024 * 1024
 MAX_RETRY_AFTER_S = 30
 OPENALEX_HOST = "api.openalex.org"
+# Wikimedia refuses httpx's default agent; its policy asks for a name and a contact.
+USER_AGENT = f"FN/0.1 (https://github.com/arendcolle/FN) httpx/{httpx.__version__}"
 
 
 class HttpError(RuntimeError):
@@ -36,7 +38,8 @@ class Client:
         self.settings = settings
         self.cache = settings.var_dir / "cache"
         self.sleep = sleep
-        self.http = httpx.Client(transport=transport, timeout=TIMEOUT, follow_redirects=False)
+        self.http = httpx.Client(transport=transport, timeout=TIMEOUT, follow_redirects=False,
+                                 headers={"User-Agent": USER_AGENT})
 
     def _request(self, url: str, params: dict[str, str] | None) -> httpx.Request:
         request = self.http.build_request("GET", url, params=params)

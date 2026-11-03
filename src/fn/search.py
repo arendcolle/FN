@@ -1,7 +1,7 @@
 """The Quick workflow: which steps run in which order."""
 import sys
 
-from fn import parse, rank, resolve, ties
+from fn import parse, rank, resolve
 from fn.contracts import (
     LaneIn,
     ParseIn,
@@ -11,7 +11,6 @@ from fn.contracts import (
     SaveIn,
     SaveOut,
     Search,
-    TieIn,
 )
 from fn.lanes import LANES
 from fn.llm import StructuredLLM, from_settings
@@ -23,7 +22,7 @@ def save(ctx: StepContext, inp: SaveIn) -> SaveOut:
 
 
 def run(ctx: StepContext, search: Search) -> None:
-    """Run the Quick steps in order; resolve runs before tie so same-name records get a tie label too."""
+    """Run the Quick steps in order: parse, each lane, resolve, rank and save."""
     inp = ParseIn(question=search.question)
     if search.chips is not None:
         chips = skip_step(ctx, "parse", inp, ParseOut(chips=search.chips)).chips
@@ -33,9 +32,7 @@ def run(ctx: StepContext, search: Search) -> None:
     lane_in = LaneIn(search_id=search.id, chips=chips, depth=search.depth)
     outs = [run_step(ctx, f"lane:{lane.name}", lane.run, lane_in) for lane in LANES]
     resolved = run_step(ctx, "resolve", resolve.run, ResolveIn(outs=outs))
-    person_ids = [p for entry in resolved.entries for p in entry.person_ids]
-    labels = run_step(ctx, "tie", ties.run, TieIn(search_id=search.id, person_ids=person_ids)).labels
-    ranked = run_step(ctx, "rank", rank.run, RankIn(entries=resolved.entries, labels=labels, chips=chips))
+    ranked = run_step(ctx, "rank", rank.run, RankIn(entries=resolved.entries, chips=chips))
     run_step(ctx, "save", save, SaveIn(candidates=ranked.candidates, flags=resolved.flags))
 
 

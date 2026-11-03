@@ -18,7 +18,7 @@ def group(outs: list[LaneOut], same_name: dict[str, list[tuple[str, str]]]) -> R
     """Group hits by group key into entries, add the other stored records of that key, and flag each extra record.
 
     same_name holds (person id, name key) per group key. Persons appear in the order their best hit
-    was found; lane_ranks keeps each lane's best rank.
+    was found, the hit ones also in hit_person_ids; lane_ranks keeps each lane's best rank.
     """
     entries: dict[str, tuple[dict[str, str], dict[LaneName, int], list[str]]] = {}
     for out in outs:
@@ -29,11 +29,13 @@ def group(outs: list[LaneOut], same_name: dict[str, list[tuple[str, str]]]) -> R
             claim_ids.extend(c for c in hit.claim_ids if c not in claim_ids)
     found, flags = [], []
     for key, (persons, lane_ranks, claim_ids) in entries.items():
+        hit_person_ids = list(persons)
         for person_id, own in same_name.get(key, []):
             persons.setdefault(person_id, own)
         person_ids = list(persons)
         flag = f"same name in {len(person_ids)} records, not merged" if len(person_ids) > 1 else None
-        found.append(Entry(name_key=key, person_ids=person_ids, lane_ranks=lane_ranks, claim_ids=claim_ids, flag=flag))
+        found.append(Entry(name_key=key, person_ids=person_ids, hit_person_ids=hit_person_ids, lane_ranks=lane_ranks,
+                           claim_ids=claim_ids, flag=flag))
         first = persons[person_ids[0]]
         flags += [MatchFlag(person_id=person_ids[0], other_person_id=p,
                             reason=SAME_NAME if persons[p] == first else SAME_BUT_INITIALS) for p in person_ids[1:]]

@@ -17,6 +17,7 @@ from tests.helpers import (
     make_db,
     make_seeded_db,
     make_settings,
+    save_recorded_orgs,
 )
 
 RECORDED = FIXTURES / "http" / "openalex"
@@ -65,6 +66,7 @@ class OpenAlexLaneTest(unittest.TestCase):
     def setUp(self):
         self.settings = make_settings(self).model_copy(update={"http_mode": "live"})
         self.store = make_db(self, self.settings)
+        save_recorded_orgs(self.store, self.settings)
 
     def search(self, chips: Chips, handler=route) -> LaneOut:
         http = net.Client(self.settings, httpx.MockTransport(handler))
@@ -102,7 +104,7 @@ class OpenAlexLaneTest(unittest.TestCase):
         person_id = self.person(BAEYENS)
         claims = self.claims(person_id)
         imec = claims[("affiliation", "IMEC")]
-        self.assertEqual((imec.org_id, imec.valid_from, imec.valid_to, imec.date_method), ("imec", "1996", "2002", "record_field"))
+        self.assertEqual((imec.org_id, imec.valid_from, imec.valid_to, imec.date_method), ("ror:02kcbn207", "1996", "2002", "record_field"))
         self.assertIn("affiliations.4.institution.display_name: IMEC", imec.quote)
         self.assertNotIn("location", {kind for kind, _ in claims})
         row = self.considered(out, BAEYENS)
@@ -111,7 +113,6 @@ class OpenAlexLaneTest(unittest.TestCase):
         self.assertIn("IMEC 1996-2002", row.reason)
         self.assertIn(person_id, [h.person_id for h in out.hits])
         self.assertIn("place 'New York and New Jersey area' is New York City, US", out.considered[0].reason)
-        self.assertEqual(self.store.list_candidates(self.found.id)[0].tie.tie, "flemish")
 
     def test_janjevic_gets_a_ulb_affiliation_and_a_cambridge_location_claim(self):
         """Both MIT pages are read; the ULB and Cambridge claims quote their records, and seed FTS never sees them."""
@@ -120,7 +121,7 @@ class OpenAlexLaneTest(unittest.TestCase):
         person_id = self.person(JANJEVIC)
         claims = self.claims(person_id)
         ulb = claims[("affiliation", "Université Libre de Bruxelles")]
-        self.assertEqual((ulb.org_id, ulb.claim_date, ulb.valid_from), ("ulb", "2018", "2013"))
+        self.assertEqual((ulb.org_id, ulb.claim_date, ulb.valid_from), ("ror:01r9htc13", "2018", "2013"))
         where = claims[("location", "Cambridge, Massachusetts, United States")]
         self.assertEqual((where.lat, where.lon, where.date_method), (42.3751, -71.10561, "read_date"))
         self.assertTrue(where.quote.startswith("geo.city: Cambridge\n"))
@@ -132,6 +133,12 @@ class OpenAlexLaneTest(unittest.TestCase):
         self.assertEqual(self.considered(out, "A5107900815").reason, "no author record returned")
         self.assertNotEqual(self.store.match_claims('"Bruxelles"', exclude="seed_page"), [])
         self.assertEqual(self.store.match_claims('"Bruxelles"', exclude="record"), [])
+
+    def test_an_affiliation_claim_carries_the_years_its_record_lists(self):
+        """Janjevic's ULB claim keeps the five years OpenAlex lists, sorted, and still runs from 2013 to 2018."""
+        self.search(Chips(institutions=[Chip(text="MIT", origin="edited")]))
+        ulb = self.claims(self.person(JANJEVIC))[("affiliation", "Université Libre de Bruxelles")]
+        self.assertEqual((ulb.years, ulb.valid_from, ulb.valid_to), ([2013, 2014, 2016, 2017, 2018], "2013", "2018"))
 
     def test_author_without_a_belgian_affiliation_is_dropped_with_that_reason(self):
         """An author whose record has no BE affiliation is in considered as dropped, and no person is stored."""
@@ -149,6 +156,71 @@ class OpenAlexLaneTest(unittest.TestCase):
                          ("Thierry E. Klein", "record", False, "no Belgian affiliation in the OpenAlex record"))
         self.assertEqual(out.hits, [])
         self.assertEqual(self.store.conn.execute("SELECT COUNT(*) FROM persons").fetchone()[0], 0)
+
+    def test_affiliation_institutions_are_saved_as_orgs_without_replacing_fn_orgs_rows(self):
+        """An institution without a ROR id is stored under its OpenAlex id and country; a ROR one keeps its fn-orgs row."""
+        record = author("A1", "Some Author", MIT, {"KU Leuven": [2020], MIT["display_name"]: [2021]})
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/works":
+                work = {"id": "https://openalex.org/W1", "display_name": "w", "publication_year": 2020,
+                        "authorships": [{"author": {"id": record["id"], "display_name": record["display_name"]}}]}
+                return httpx.Response(200, json={"meta": {"count": 1}, "results": [work]})
+            if request.url.path == "/authors":
+                return httpx.Response(200, json={"meta": {"count": 1}, "results": [record]})
+            return route(request)
+
+        mit_before = self.store.get_orgs(["ror:042nb2s44"])["ror:042nb2s44"]
+        self.search(Chips(topics=[Chip(text="wind", origin="edited")]), handler)
+        claims = self.claims(self.person("A1"))
+        self.assertEqual(claims[("affiliation", "KU Leuven")].org_id, "openalex:I99464096")
+        leuven = self.store.get_orgs(["openalex:I99464096"])["openalex:I99464096"]
+        self.assertEqual((leuven.name, leuven.country_code, leuven.region), ("KU Leuven", "BE", None))
+        self.assertEqual(leuven.source_id, claims[("affiliation", "KU Leuven")].source_id)
+        self.assertEqual(self.store.get_orgs(["ror:042nb2s44"])["ror:042nb2s44"], mit_before)
+
+    def test_every_kept_author_is_a_hit_in_the_order_seen(self):
+        """Without a place chip all 150 Belgian authors are hits, ranked in the order the works list them.
+
+        The last author is on a second work too, and still ranks last: being seen more often orders nothing.
+        """
+        records = {f"A{i}": author(f"A{i}", f"Author {i}", MIT, {"KU Leuven": [2020]}) for i in range(150)}
+        teams = [list(records.values()), [records["A149"]]]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/works":
+                works = [{"id": f"https://openalex.org/W{i}", "display_name": "w", "publication_year": 2020,
+                          "authorships": [{"author": {"id": a["id"], "display_name": a["display_name"]}} for a in team]}
+                         for i, team in enumerate(teams)]
+                return httpx.Response(200, json={"meta": {"count": 2}, "results": works})
+            if request.url.path == "/authors":
+                ids = request.url.params["filter"].split(":", 1)[1].split("|")
+                return httpx.Response(200, json={"meta": {"count": len(ids)}, "results": [records[i] for i in ids]})
+            return route(request)
+
+        out = self.search(Chips(topics=[Chip(text="wind", origin="edited")]), handler)
+        self.assertEqual([(h.rank, h.name_key) for h in out.hits], [(i + 1, f"author {i}") for i in range(150)])
+        ranked = [c for c in out.considered if c.stage == "rank"]
+        self.assertEqual(len(ranked), 150)
+        self.assertTrue(all(c.kept for c in ranked))
+        self.assertTrue(self.considered(out, "A149").reason.startswith("rank 150, seen #150; "))
+
+    def test_a_higher_belgian_share_does_not_move_an_author_up(self):
+        """In one place group an author seen first with one Belgian year of six ranks above one seen later with only Belgian years."""
+        early = author("A1", "Early Author", MIT, {MIT["display_name"]: [2015, 2016, 2017, 2018, 2019], "KU Leuven": [2020]})
+        later = author("A2", "Later Author", LEUVEN, {"KU Leuven": [2020]})
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/works":
+                work = {"id": "https://openalex.org/W1", "display_name": "w", "publication_year": 2020,
+                        "authorships": [{"author": {"id": a["id"], "display_name": a["display_name"]}} for a in (early, later)]}
+                return httpx.Response(200, json={"meta": {"count": 1}, "results": [work]})
+            if request.url.path == "/authors":
+                return httpx.Response(200, json={"meta": {"count": 2}, "results": [early, later]})
+            return route(request)
+
+        out = self.search(Chips(topics=[Chip(text="wind", origin="edited")]), handler)
+        self.assertEqual([(h.rank, h.name_key) for h in out.hits], [(1, "early author"), (2, "later author")])
 
     def test_place_only_chips_make_no_call(self):
         """Chips that are only a place produce no hits, no calls and say so in considered."""
@@ -213,7 +285,7 @@ class OpenAlexLaneTest(unittest.TestCase):
             self.assertIn(f"Found by {lane}: {escape(how)}", html)
 
     def test_an_author_outside_the_radius_ranks_below_one_inside_and_the_hit_names_the_distance(self):
-        """Place orders before score: a Leuven author on two works ranks below a Cambridge author on one, for Boston."""
+        """Place orders first: a Leuven author seen first and on two works ranks below a Cambridge author on one, for Boston."""
         far = author("A1", "Far Author", LEUVEN, {"KU Leuven": [2020]})
         near = author("A2", "Near Author", MIT, {"KU Leuven": [2010], MIT["display_name"]: [2020]})
 
@@ -229,7 +301,7 @@ class OpenAlexLaneTest(unittest.TestCase):
 
         out = self.search(Chips(topics=[Chip(text="wind", origin="edited")],
                                 place=Place(text="Boston", origin="edited", kind="metro")), handler)
-        self.assertEqual([h.score > 2 for h in out.hits], [False, True])
+        self.assertEqual([h.score for h in out.hits], [1, 2])
         self.assertEqual([self.considered(out, a).reason.split(",")[0] for a in ("A2", "A1")], ["rank 1", "rank 2"])
         self.assertIn("km from Boston, US (inside the radius)", out.hits[0].matched_on)
         self.assertIn("last known KU Leuven, Leuven", out.hits[1].matched_on)

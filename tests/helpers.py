@@ -1,4 +1,4 @@
-"""Shared test setup: a migrated temp database, test settings, a stub LLM and a stub HTTP client."""
+"""Shared test setup: a migrated temp database, test settings, a stub LLM, a stub HTTP client and recorded org facts."""
 import atexit
 import io
 import shutil
@@ -11,9 +11,9 @@ from pathlib import Path
 import httpx
 from pydantic import BaseModel, SecretStr
 
-from fn import geo, seedload
+from fn import geo, net, orgjob, seedload
 from fn.config import Settings
-from fn.contracts import LLMResult
+from fn.contracts import LLMResult, Search
 from fn.steps import current_recorder
 from fn.store import Store
 
@@ -36,20 +36,42 @@ def make_db(test: unittest.TestCase, settings: Settings | None = None) -> Store:
     return store
 
 
+def recorded_orgs(request: httpx.Request) -> httpx.Response:
+    """Serve the ROR and Wikidata responses recorded in fixtures/http/ror and fixtures/http/wikidata; 404 for others."""
+    if request.url.host == "api.ror.org":
+        path = FIXTURES / "http" / "ror" / f"{request.url.path.rsplit('/', 1)[-1]}.json"
+    else:
+        params = request.url.params
+        parts = [params.get("action"), params.get("ids") or params.get("entity"), params.get("property")]
+        path = FIXTURES / "http" / "wikidata" / ("-".join(p for p in parts if p) + ".json")
+    if not path.exists():
+        return httpx.Response(404, json={"error": f"no fixture for {request.url}"})
+    return httpx.Response(200, content=path.read_bytes())
+
+
+def save_recorded_orgs(store: Store, settings: Settings, handler=recorded_orgs) -> Search:
+    """Run the fn-orgs job over the alias file against the recorded responses, or handler; returns the ended job."""
+    client = net.Client(settings.model_copy(update={"http_mode": "live"}), httpx.MockTransport(handler))
+    return orgjob.refresh(store, settings, client)
+
+
 @cache
 def _seeded() -> Path:
     directory = Path(tempfile.mkdtemp(prefix="fn-seeded-"))
     atexit.register(shutil.rmtree, directory, ignore_errors=True)
-    store = Store(directory / "fn.sqlite3")
+    settings = Settings(var_dir=directory, env="test", llm_mode="replay", http_mode="replay")
+    store = Store(settings.db_path)
     store.migrate()
     seedload.load(store)
+    if (job := save_recorded_orgs(store, settings)).status != "done":
+        raise RuntimeError(f"the recorded org facts did not load: {job.error}")
     store.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     store.close()
-    return directory / "fn.sqlite3"
+    return settings.db_path
 
 
 def make_seeded_db(test: unittest.TestCase, settings: Settings | None = None) -> Store:
-    """make_db with every seed row loaded; the seed load runs once per test process and is copied."""
+    """make_db with every seed row and the recorded org facts loaded; the load runs once per test process and is copied."""
     settings = settings or make_settings(test)
     shutil.copy(_seeded(), settings.db_path)
     return make_db(test, settings)

@@ -5,7 +5,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from fn import ties
+from fn import orgs
 from fn.config import ROOT
 from fn.contracts import (
     ClaimDraft,
@@ -19,12 +19,13 @@ from fn.contracts import (
 from fn.store import Store
 
 SEEDS = ROOT / "data" / "seeds"
+# Each list's organization by its name in data/org_aliases.csv.
 LISTS: dict[str, tuple[Relation, str]] = {
-    "baef": ("fellow_of", "baef"),
-    "francqui": ("fellow_of", "francqui"),
-    "kvab": ("member_of", "kvab"),
-    "climate": ("member_of", "belgian-climate-centre"),
-    "consuls": ("consul_for", "belgium"),
+    "baef": ("fellow_of", "Belgian American Educational Foundation"),
+    "francqui": ("fellow_of", "Francqui Foundation"),
+    "kvab": ("member_of", "KVAB"),
+    "climate": ("member_of", "Belgian Climate Centre"),
+    "consuls": ("consul_for", "Belgium"),
 }
 RELATIONS: dict[str, Relation] = {
     "home": "affiliated_with", "host": "hosted_by", "employer": "works_at", "member_of": "member_of",
@@ -68,10 +69,11 @@ def drafts(row: dict, person_id: str, source: Source) -> list[ClaimDraft]:
         base |= {"claim_date": source.source_date, "date_precision": PRECISION[len(source.source_date)],
                  "date_method": source.date_method}
     relation, list_org = LISTS[row["list"]]
-    found = [ClaimDraft(kind="role", relation=relation, org_id=list_org, value=row["role"] or row["source_title"], **base)]
+    found = [ClaimDraft(kind="role", relation=relation, org_id=orgs.org_id(list_org),
+                        value=row["role"] or row["source_title"], **base)]
     for inst in row["institutions"]:
         found.append(ClaimDraft(kind="affiliation", relation=RELATIONS[inst["relation"]],
-                                org_id=ties.org_id(inst["name"]), value=inst["name"], **base))
+                                org_id=orgs.org_id(inst["name"]), value=inst["name"], **base))
     if row["field"]:
         found.append(ClaimDraft(kind="topic", value=row["field"], **base))
     return found

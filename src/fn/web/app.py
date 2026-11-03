@@ -17,9 +17,10 @@ from pydantic import ValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from fn import config, net
+from fn import config, net, orgs, rank
 from fn.config import Settings
 from fn.contracts import (
+    CONTRACTS_VERSION,
     Ask,
     Candidate,
     Chip,
@@ -27,14 +28,13 @@ from fn.contracts import (
     Claim,
     HttpClient,
     LaneOut,
+    Org,
     Place,
     RankOut,
     ResolveOut,
     Search,
     Source,
     StepRun,
-    TieLabel,
-    TieOut,
     group_key,
     name_key,
 )
@@ -59,7 +59,7 @@ SECURITY_HEADERS = {
     "Referrer-Policy": "no-referrer",
 }
 ASKS = get_args(Ask)
-TRACED = {"LaneOut": LaneOut, "ResolveOut": ResolveOut, "TieOut": TieOut, "RankOut": RankOut}
+TRACED = {"LaneOut": LaneOut, "ResolveOut": ResolveOut, "RankOut": RankOut}
 
 router = APIRouter()
 
@@ -124,30 +124,59 @@ def trace_url(search_id: str, name: str) -> str:
     return f"/debug/searches/{search_id}/trace?{urlencode({'name': name})}"
 
 
-def tie_text(tie: TieLabel, claims: dict[str, Claim], sources: dict[str, Source]) -> str:
-    checked = ", ".join(sources[s].title or sources[s].url for s in tie.checked if s in sources) or "no source"
-    if tie.tie == "none_found":
-        return f"Tie: not found; checked {checked}"
-    return f"Tie: {tie.tie}, from {', '.join(claims[c].value for c in tie.claim_ids if c in claims)}; checked {checked}"
+def source_cell(claim: Claim, sources: dict[str, Source]) -> list[Safe]:
+    source = sources[claim.source_id]
+    return [h.a(source.title or source.url, href=source.url), " ",
+            h.a("quote in source", href=f"/sources/{claim.source_id}?claim={claim.id}#quote")]
+
+
+def date_text(claim: Claim) -> str:
+    return f"{claim.claim_date} ({claim.date_precision}, {claim.date_method})" if claim.claim_date else "no date"
+
+
+def titles(claims: list[Claim], sources: dict[str, Source]) -> str:
+    """The title (else URL) of each source the claims quote, once each, or 'no source'."""
+    return ", ".join(dict.fromkeys(sources[c.source_id].title or sources[c.source_id].url for c in claims)) or "no source"
+
+
+def belgian_rows(claims: list[Claim], sources: dict[str, Source], facts: dict[str, Org],
+                 scored: list[str]) -> list[Safe]:
+    """The claims at Belgian organizations with org region, name language and claim years, and the org ids without facts.
+
+    A claim whose id is in scored, the belgian_years part's claims, is marked yes. Only when every org id
+    has facts and none is Belgian does it say no Belgian organization was found.
+    """
+    found, missing = orgs.belgian_claims(claims, facts), orgs.missing_facts(claims, facts)
+    if not found and not missing:
+        return [h.p(f"No Belgian organization found in {titles(claims, sources)}")]
+    rows = [[org.name, org.region or "", org.name_lang or "", f"{c.kind} {c.relation or ''}".strip(), c.value,
+             c.quote, source_cell(c, sources), date_text(c), rank.years_text(rank.units(c)),
+             "yes" if c.id in scored else ""] for c, org in found]
+    return [h.p(f"org facts not stored for {', '.join(missing)}") if missing else None,
+            [h.h4("Claims at Belgian organizations"),
+             table(["Institution", "Region", "Name language", "Claim", "Value", "Quote", "Source", "Date", "Years",
+                    "Scored"], rows)]
+            if found else None]
 
 
 def card(search_id: str, candidate: Candidate, store_data: tuple) -> Safe:
-    persons, claims_by_person, claims, sources, flags, matched = store_data
-    lanes = ", ".join(f"{lane} #{rank}" for lane, rank in candidate.lane_ranks.items())
+    persons, claims_by_person, claims, sources, flags, matched, facts = store_data
+    lanes = ", ".join([f"{p.feature} #{p.rank}" for p in candidate.score_parts]
+                      or [f"{lane} #{r}" for lane, r in candidate.lane_ranks.items()])
     records = []
     for i, person_id in enumerate(candidate.person_ids, 1):
         own = claims_by_person.get(person_id, [])
-        titles = ", ".join(dict.fromkeys(sources[c.source_id].title or sources[c.source_id].url for c in own))
         rows = [[
             f"{c.kind} {c.relation or ''}".strip(),
             f"{c.value} (matched)" if c.id in candidate.reason_claim_ids else c.value,
             c.quote,
-            [h.a(sources[c.source_id].title or sources[c.source_id].url, href=sources[c.source_id].url), " ",
-             h.a("quote in source", href=f"/sources/{c.source_id}?claim={c.id}#quote")],
-            f"{c.claim_date} ({c.date_precision}, {c.date_method})" if c.claim_date else "no date",
+            source_cell(c, sources),
+            date_text(c),
         ] for c in own]
-        records += [h.h4(f"Record {i}: {persons[person_id].display_name}, in {titles or 'no source'}"),
+        records += [h.h4(f"Record {i}: {persons[person_id].display_name}, in {titles(own, sources)}"),
                     table(["Claim", "Value", "Quote", "Source", "Date"], rows)]
+    parts = [[p.feature, p.rank, f"{p.points:.4f}", p.detail, ", ".join(claims[c].value for c in p.claim_ids if c in claims)]
+             for p in candidate.score_parts]
     name = persons[candidate.person_id].display_name
     return h.fieldset(
         h.legend(f"{candidate.section} #{candidate.rank} {name}"),
@@ -156,7 +185,10 @@ def card(search_id: str, candidate: Candidate, store_data: tuple) -> Safe:
         h.p(f"Same name in {len(candidate.person_ids)} records, not merged: "
             f"{'; '.join(f.reason for f in flags if f.person_id == candidate.person_id)}")
         if len(candidate.person_ids) > 1 else None,
-        h.p(tie_text(candidate.tie, claims, sources)),
+        [h.h4("Score parts"), table(["Feature", "Rank", "Points", "Detail", "Claims"], parts)] if parts
+        else h.p("score parts not stored (contracts v1)") if candidate.score > 0 else None,
+        belgian_rows([c for p in candidate.person_ids for c in claims_by_person.get(p, [])], sources, facts,
+                     next((p.claim_ids for p in candidate.score_parts if p.feature == "belgian_years"), [])),
         records,
     )
 
@@ -172,7 +204,7 @@ def lane_matches(store: Store, search_id: str) -> dict[str, list[tuple[str, str]
 
 
 def cards(store: Store, search: Search) -> Safe | None:
-    """One card per candidate with what each lane matched, every record's claims, quotes, sources, dates, tie and flags."""
+    """One card per candidate: lane matches, score parts, claims at Belgian organizations, flags and each record's claims."""
     candidates = store.list_candidates(search.id)
     if not candidates:
         return h.p("No results.") if search.status == "done" else None
@@ -183,7 +215,7 @@ def cards(store: Store, search: Search) -> Safe | None:
         by_person.setdefault(claim.person_id, []).append(claim)
     data = (store.get_persons(person_ids), by_person, {c.id: c for c in own},
             store.get_sources(list({c.source_id for c in own})), store.list_flags(search.id),
-            lane_matches(store, search.id))
+            lane_matches(store, search.id), store.get_orgs(list({c.org_id for c in own if c.org_id})))
     return Safe("".join(card(search.id, c, data) for c in candidates))
 
 
@@ -309,10 +341,11 @@ def calls_page(store: Store, step: StepRun) -> str:
 
 
 def trace_rows(store: Store, search: Search, term: str) -> list[list[object]]:
-    """Where one person went in each lane, resolve, tie and rank step: considered, kept, dropped and why.
+    """Where one person went in each lane, resolve and rank step: considered, kept, dropped and why.
 
     term is a name, matched by group key, or a lane's person key or a person id. A row found by id adds
-    that person's name, so the later steps follow it.
+    that person's name, so the later steps follow it. A payload stored under another contracts version
+    gets a note row instead of being parsed.
     """
     keys = {k for k in [group_key(name_key(term))] if k}
     rows: list[list[object]] = []
@@ -321,6 +354,9 @@ def trace_rows(store: Store, search: Search, term: str) -> list[list[object]]:
         model = TRACED.get(step.output_model or "")
         output = store.get_payload(step.id)[1]
         if model is None or output is None:
+            continue
+        if step.contracts_version != CONTRACTS_VERSION:
+            rows.append([step.seq, step.step, "-", "-", f"stored under contracts v{step.contracts_version}, not shown"])
             continue
         out = model.model_validate_json(output)
         found: list[list[object]] = []
@@ -343,8 +379,6 @@ def trace_rows(store: Store, search: Search, term: str) -> list[list[object]]:
                     count = len(entry.person_ids)
                     reason = f"{count} record{'s' if count > 1 else ''}, lane ranks {entry.lane_ranks}"
                     found.append(["entry", "kept", f"{reason}; {entry.flag}" if entry.flag else reason])
-        elif isinstance(out, TieOut):
-            found = [["tie", "kept", f"{p}: {out.labels[p].tie}"] for p in person_ids if p in out.labels]
         elif isinstance(out, RankOut):
             found = [["rank", "kept", f"{c.section} #{c.rank}, score {c.score:.4f}"]
                      for c in out.candidates if c.person_id in person_ids]

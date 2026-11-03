@@ -47,13 +47,26 @@ class SeedLoadTest(unittest.TestCase):
         self.assertEqual(seedload.load(self.store), 4940)
         self.assertEqual(self.store.conn.total_changes - before, 0)
 
+    def test_a_rerun_rewrites_changed_org_ids_and_relations_and_a_second_rerun_changes_nothing(self):
+        """Stored claims whose org id or relation differs from the seed rows get them back; the next load writes nothing."""
+        query = "SELECT id, org_id, relation FROM claims WHERE org_id = ? ORDER BY id"
+        expected = self.store.conn.execute(query, ("ror:05f950310",)).fetchall()
+        self.store.conn.execute("UPDATE claims SET org_id = 'ku-leuven', relation = 'studied_at' WHERE org_id = 'ror:05f950310'")
+        self.assertEqual(self.store.conn.execute(query, ("ror:05f950310",)).fetchall(), [])
+        seedload.load(self.store)
+        self.assertEqual([tuple(r) for r in self.store.conn.execute(query, ("ror:05f950310",))], [tuple(r) for r in expected])
+        self.assertGreater(len(expected), 500)
+        before = self.store.conn.total_changes
+        seedload.load(self.store)
+        self.assertEqual(self.store.conn.total_changes - before, 0)
+
     def test_seed_fields_map_to_relations_orgs_and_dates(self):
         """home, host, employer and member_of map to relations; a year dates by record field, else the source date."""
         goemans = self.claims("francqui|michel-goemans|1987|")
-        self.assertEqual([(c.relation, c.org_id) for c in goemans["role"]], [("fellow_of", "francqui")])
+        self.assertEqual([(c.relation, c.org_id) for c in goemans["role"]], [("fellow_of", "ror:00m1rny06")])
         self.assertEqual({(c.value, c.relation, c.org_id) for c in goemans["affiliation"]}, {
-            ("Université catholique de Louvain", "affiliated_with", "uclouvain"),
-            ("Massachusetts Institute of Technology", "hosted_by", "mit")})
+            ("Université catholique de Louvain", "affiliated_with", "ror:02495e989"),
+            ("Massachusetts Institute of Technology", "hosted_by", "ror:042nb2s44")})
         self.assertEqual({(c.claim_date, c.date_precision, c.date_method) for cs in goemans.values() for c in cs},
                          {("1987", "year", "record_field")})
         self.assertEqual([c.value for c in goemans["topic"]], ["Combinative optimisation"])

@@ -69,14 +69,14 @@ class ParseTest(unittest.TestCase):
             search = self.search_with(llm, "Who knows wind?")
         self.assertEqual(search.status, "failed")
 
-    def test_refs_come_from_ties_csv_only(self):
-        """A ref the model sends is dropped; a known institution gets its ROR ref from ties.csv, others none."""
+    def test_refs_come_from_the_alias_file_only(self):
+        """A ref the model sends is dropped; a known institution gets its ROR ref from the alias file, others none."""
         llm = StubLLM({"topics": [{"text": "wind", "span": {"start": 10, "end": 14}, "origin": "parsed", "ref": "x"}],
                        "institutions": [{"text": "MIT", "span": {"start": 18, "end": 21}, "origin": "parsed", "ref": "y"},
                                         {"text": "Acme", "span": {"start": 26, "end": 30}, "origin": "parsed", "ref": "z"}]})
         chips = self.search_with(llm, "Who knows wind at MIT and Acme?").chips
         self.assertEqual([c.ref for c in [*chips.topics, *chips.institutions]],
-                         [None, "ror:https://ror.org/042nb2s44", None])
+                         [None, "ror:042nb2s44", None])
 
     def test_recorded_english_and_dutch_questions_parse_with_checked_spans(self):
         """Replayed parses of an English and a Dutch question give chips in the question's own language."""

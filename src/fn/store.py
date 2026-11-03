@@ -20,15 +20,16 @@ from fn.contracts import (
     Identifier,
     IdentifierScheme,
     MatchFlag,
+    Org,
     Person,
     RequestError,
+    ScorePart,
     Search,
     SearchStatus,
     Source,
     SourceKind,
     StepCall,
     StepRun,
-    TieLabel,
     group_key,
     name_key,
 )
@@ -37,11 +38,17 @@ STEP_COLUMNS = list(StepRun.model_fields)
 CALL_COLUMNS = list(StepCall.model_fields)
 PERSON_COLUMNS = list(Person.model_fields)
 SOURCE_COLUMNS = list(Source.model_fields)
-CLAIM_COLUMNS = list(Claim.model_fields)
+CLAIM_COLUMNS = [*(c for c in Claim.model_fields if c != "years"), "years_json"]
+ORG_COLUMNS = list(Org.model_fields)
 
 
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
+
+
+def _claim(row: dict) -> Claim:
+    data = dict(row)
+    return Claim.model_validate(data | {"years": json.loads(data.pop("years_json"))})
 
 
 class Store:
@@ -104,8 +111,8 @@ class Store:
         return self._search(row) if row else None
 
     def list_searches(self, limit: int) -> list[Search]:
-        """The newest searches first, at most limit of them."""
-        rows = self.conn.execute("SELECT * FROM searches ORDER BY created_at DESC LIMIT ?", (limit,))
+        """The newest searches of kind search first, at most limit of them; jobs are left out."""
+        rows = self.conn.execute("SELECT * FROM searches WHERE kind = 'search' ORDER BY created_at DESC LIMIT ?", (limit,))
         return [self._search(r) for r in rows]
 
     def set_search_status(
@@ -255,8 +262,9 @@ class Store:
     def upsert_claim(self, draft: ClaimDraft) -> Claim:
         """Store the claim and its source unless they are stored, and return it.
 
-        The id is the sha1 of person, kind, value, source and quote start. Raises ValueError when
-        the quote is not at its offsets in the source text as stored.
+        The id is the sha1 of person, kind, value, source and quote start; a stored claim with that id
+        takes the draft's org_id, relation and years. Raises ValueError when the quote is not at its offsets
+        in the source text as stored.
         """
         source = draft.source
         if source.text[draft.quote_start:draft.quote_end] != draft.quote or not draft.quote:
@@ -266,18 +274,39 @@ class Store:
                       **draft.model_dump(exclude={"source"}))
         with self.tx() as conn:
             self.upsert_source(source)
-            data = claim.model_dump()
+            data = claim.model_dump(exclude={"years"}) | {"years_json": json.dumps(claim.years)}
             conn.execute(
-                f"INSERT OR IGNORE INTO claims ({', '.join(data)}) VALUES ({', '.join('?' * len(data))})",
+                f"INSERT INTO claims ({', '.join(data)}) VALUES ({', '.join('?' * len(data))}) "
+                "ON CONFLICT (id) DO UPDATE SET org_id = excluded.org_id, relation = excluded.relation, "
+                "years_json = excluded.years_json WHERE org_id IS NOT excluded.org_id "
+                "OR relation IS NOT excluded.relation OR years_json IS NOT excluded.years_json",
                 list(data.values()),
             )
         return claim
+
+    def upsert_org(self, org: Org, replace: bool) -> None:
+        """Insert the org row; a stored row with its id is overwritten when replace is set, else kept."""
+        data = org.model_dump()
+        data["fetched_at"] = _iso(org.fetched_at)
+        update = ", ".join(f"{k} = excluded.{k}" for k in data if k != "id")
+        self.conn.execute(
+            f"INSERT INTO orgs ({', '.join(data)}) VALUES ({', '.join('?' * len(data))}) "
+            f"ON CONFLICT (id) DO {f'UPDATE SET {update}' if replace else 'NOTHING'}",
+            list(data.values()),
+        )
+
+    def get_orgs(self, org_ids: list[str]) -> dict[str, Org]:
+        rows = self.conn.execute(
+            f"SELECT {', '.join(ORG_COLUMNS)} FROM orgs WHERE id IN (SELECT value FROM json_each(?))",
+            (json.dumps(org_ids),),
+        )
+        return {r["id"]: Org.model_validate(dict(r)) for r in rows}
 
     def match_claims(self, query: str, exclude: SourceKind) -> list[tuple[Person, Claim, float]]:
         """Every person with a claim matching the FTS5 query, from a source not of kind exclude, best first.
 
         Each comes with its best claim and that claim's bm25, which is lower for a better match;
-        ties are ordered by person id.
+        equal scores are ordered by person id.
         """
         rows = self.conn.execute(
             "WITH m AS MATERIALIZED (SELECT rowid, bm25(claims_fts) AS score FROM claims_fts WHERE claims_fts MATCH ?) "
@@ -293,7 +322,7 @@ class Store:
             data = dict(row)
             person = Person.model_validate({c: data.pop(f"p_{c}") for c in PERSON_COLUMNS})
             best = data.pop("best")
-            found.append((person, Claim.model_validate(data), best))
+            found.append((person, _claim(data), best))
         return found
 
     def get_persons(self, person_ids: list[str]) -> dict[str, Person]:
@@ -329,11 +358,11 @@ class Store:
             "ORDER BY person_id, kind, value",
             (json.dumps(person_ids),),
         )
-        return [Claim.model_validate(dict(r)) for r in rows]
+        return [_claim(r) for r in rows]
 
     def get_claim(self, claim_id: str) -> Claim | None:
         row = self.conn.execute(f"SELECT {', '.join(CLAIM_COLUMNS)} FROM claims WHERE id = ?", (claim_id,)).fetchone()
-        return Claim.model_validate(dict(row)) if row else None
+        return _claim(row) if row else None
 
     def get_sources(self, source_ids: list[str]) -> dict[str, Source]:
         rows = self.conn.execute(
@@ -349,9 +378,10 @@ class Store:
             conn.execute("DELETE FROM match_flags WHERE search_id = ?", (search_id,))
             conn.executemany(
                 "INSERT INTO candidates (search_id, person_id, person_ids_json, section, rank, score, lane_ranks_json, "
-                "reason_claim_ids_json, tie_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "reason_claim_ids_json, score_parts_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [(search_id, c.person_id, json.dumps(c.person_ids), c.section, c.rank, c.score,
-                  json.dumps(c.lane_ranks), json.dumps(c.reason_claim_ids), c.tie.model_dump_json())
+                  json.dumps(c.lane_ranks), json.dumps(c.reason_claim_ids),
+                  json.dumps([p.model_dump() for p in c.score_parts]))
                  for c in candidates],
             )
             conn.executemany(
@@ -371,7 +401,7 @@ class Store:
                 search_id=r["search_id"], person_id=r["person_id"], person_ids=json.loads(r["person_ids_json"]),
                 section=r["section"], rank=r["rank"], score=r["score"], lane_ranks=json.loads(r["lane_ranks_json"]),
                 reason_claim_ids=json.loads(r["reason_claim_ids_json"]),
-                tie=TieLabel.model_validate_json(r["tie_json"]),
+                score_parts=[ScorePart.model_validate(p) for p in json.loads(r["score_parts_json"])],
             )
             for r in rows
         ]

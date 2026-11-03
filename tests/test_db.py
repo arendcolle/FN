@@ -30,13 +30,14 @@ class MigrateTest(unittest.TestCase):
     def test_failed_migration_rolls_back(self):
         """A migration that fails leaves no tables and no version behind."""
         store = make_db(self)
+        versions = [r[0] for r in store.conn.execute("SELECT version FROM schema_migrations")]
         bad = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, bad)
-        bad.joinpath("002_bad.sql").write_text("CREATE TABLE half (x);\nNOT SQL;")
+        bad.joinpath(f"{max(versions) + 1:03d}_bad.sql").write_text("CREATE TABLE half (x);\nNOT SQL;")
         with mock.patch.object(db, "MIGRATIONS", bad), self.assertRaises(sqlite3.OperationalError):
             store.migrate()
         self.assertIsNone(store.conn.execute("SELECT name FROM sqlite_master WHERE name = 'half'").fetchone())
-        self.assertEqual([r[0] for r in store.conn.execute("SELECT version FROM schema_migrations")], [1])
+        self.assertEqual([r[0] for r in store.conn.execute("SELECT version FROM schema_migrations")], versions)
 
 
 class ClaimsFtsTest(unittest.TestCase):

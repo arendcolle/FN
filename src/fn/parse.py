@@ -1,7 +1,7 @@
 """Question to chips, and the check that every chip span points at its own text."""
 import logging
 
-from fn import ties
+from fn import orgs
 from fn.contracts import Chip, Chips, ParseIn, ParseOut, Place, Span
 from fn.steps import StepContext
 
@@ -65,7 +65,7 @@ def check_spans(question: str, chips: Chips) -> Chips:
 def run(ctx: StepContext, inp: ParseIn) -> ParseOut:
     """Ask the LLM for chips and return them once their spans check out.
 
-    Any ref from the model is dropped; an institution chip gets its ref from ties.csv only.
+    Any ref from the model is dropped; an institution chip gets its ror: ref from data/org_aliases.csv only.
     Raises SpanError for a bad or missing span, and for a model answer that claims an edited chip.
     """
     if ctx.llm is None:
@@ -75,6 +75,6 @@ def run(ctx: StepContext, inp: ParseIn) -> ParseOut:
         raise SpanError("the model returned a chip with origin 'edited'")
     chips = chips.model_copy(update={
         "topics": [c.model_copy(update={"ref": None}) for c in chips.topics],
-        "institutions": [c.model_copy(update={"ref": ties.ref(c.text)}) for c in chips.institutions],
+        "institutions": [c.model_copy(update={"ref": orgs.ref(c.text)}) for c in chips.institutions],
     })
     return ParseOut(chips=check_spans(inp.question, chips))

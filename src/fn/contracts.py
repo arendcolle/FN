@@ -1,4 +1,6 @@
 """Every value that crosses a module boundary in fn."""
+import hashlib
+import json
 import re
 import unicodedata
 from datetime import datetime
@@ -7,10 +9,9 @@ from typing import Literal, Protocol
 import httpx
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-CONTRACTS_VERSION = "1"
+CONTRACTS_VERSION = "2"
 NORMALIZE_VERSION = 1
 
-TieType = Literal["flemish", "belgian", "dutch", "none_found"]
 ListStatus = Literal["candidate", "in_list", "skipped"]
 Section = Literal["network", "new"]
 ClaimKind = Literal["topic", "affiliation", "role", "location", "availability"]
@@ -26,6 +27,7 @@ DatePrecision = Literal["year", "month", "day"]
 SourceKind = Literal["page", "record", "seed_page", "import", "vendor_record"]
 StepStatus = Literal["running", "ok", "error", "skipped", "interrupted"]
 SearchStatus = Literal["queued", "running", "done", "failed", "interrupted"]
+SearchKind = Literal["search", "job"]
 LaneName = Literal["seeds", "openalex"]
 ChipOrigin = Literal["parsed", "edited"]
 Depth = Literal["quick"]
@@ -37,6 +39,9 @@ LLMMode = Literal["live", "record", "replay"]
 GoldTie = Literal["flemish", "belgian", "none", "unverified"]
 PickVerdict = Literal["found", "missed", "no lane in slice"]
 GoldGroup = Literal["dev", "held-out", "other"]
+# Ids the alias file holds and fn-orgs fetches; org rows from the OpenAlex lane may also use openalex: ids.
+REGISTRY_ID = re.compile(r"ror:0[a-z0-9]{6}[0-9]{2}|wikidata:Q[0-9]+")
+ORG_ID = re.compile(rf"{REGISTRY_ID.pattern}|openalex:I[0-9]+")
 
 
 def normalize(text: str) -> str:
@@ -95,6 +100,7 @@ class Chips(Model):
 
 class Search(Model):
     id: str
+    kind: SearchKind = "search"
     question: str
     depth: Depth = "quick"
     chips: Chips | None = None
@@ -133,6 +139,49 @@ class Source(Model):
         return url
 
 
+def record_source(url: str, title: str, fields: list[tuple[str, object]], raw: dict, fetched_at: datetime,
+                  source_date: str | None = None) -> tuple[Source, dict[str, tuple[int, int]]]:
+    """A record Source with one `path: value` line per field that has a value, and each line's offsets by path.
+
+    The id holds the content hash, so a record whose text changed is stored as a new source.
+    """
+    lines, spans, at = [], {}, 0
+    for path, value in fields:
+        if value is None or value == "":
+            continue
+        line = normalize(f"{path}: {value}")
+        spans[path] = (at, at + len(line))
+        lines.append(line)
+        at += len(line) + 1
+    text = "\n".join(lines)
+    content_hash = hashlib.sha256(text.encode()).hexdigest()
+    return Source(
+        id=hashlib.sha1(f"record\0{url}\0{content_hash}".encode()).hexdigest(), kind="record", url=url, title=title,
+        text=text, raw_json=json.dumps(raw, ensure_ascii=False, sort_keys=True), content_hash=content_hash,
+        source_date=source_date, date_method="record_field" if source_date else None, fetched_at=fetched_at,
+    ), spans
+
+
+class OrgFacts(Model):
+    id: str
+    name: str
+    country_code: str | None = None
+    region: str | None = None
+    name_lang: str | None = None
+
+    @field_validator("id")
+    @classmethod
+    def _id_form(cls, value: str) -> str:
+        if not ORG_ID.fullmatch(value):
+            raise ValueError(f"org id must be ror:<id>, wikidata:<Q> or openalex:<I>: {value!r}")
+        return value
+
+
+class Org(OrgFacts):
+    source_id: str
+    fetched_at: datetime
+
+
 class Claim(Model):
     id: str
     person_id: str
@@ -149,6 +198,8 @@ class Claim(Model):
     date_method: DateMethod | None = None
     valid_from: str | None = None
     valid_to: str | None = None
+    # The calendar years the source lists for this claim, when it lists them.
+    years: list[int] = []
     lat: float | None = None
     lon: float | None = None
 
@@ -176,6 +227,8 @@ class ClaimDraft(Model):
     date_method: DateMethod | None = None
     valid_from: str | None = None
     valid_to: str | None = None
+    # The calendar years the source lists for this claim, when it lists them.
+    years: list[int] = []
     lat: float | None = None
     lon: float | None = None
 
@@ -212,13 +265,6 @@ class Considered(Model):
     reason: str
 
 
-class TieLabel(Model):
-    tie: TieType
-    claim_ids: list[str] = []
-    checked: list[str] = []
-    rules_version: str
-
-
 class MatchFlag(Model):
     person_id: str
     other_person_id: str
@@ -229,9 +275,19 @@ class MatchFlag(Model):
 class Entry(Model):
     name_key: str
     person_ids: list[str]
+    # The records a lane hit, in person_ids order; records added only for a shared name are not in it and never score.
+    hit_person_ids: list[str] = []
     lane_ranks: dict[LaneName, int]
     claim_ids: list[str] = []
     flag: str | None = None
+
+
+class ScorePart(Model):
+    feature: LaneName | Literal["belgian_years"]
+    rank: int
+    points: float
+    claim_ids: list[str] = []
+    detail: str = ""
 
 
 class Candidate(Model):
@@ -243,7 +299,7 @@ class Candidate(Model):
     score: float
     lane_ranks: dict[LaneName, int]
     reason_claim_ids: list[str] = []
-    tie: TieLabel
+    score_parts: list[ScorePart] = []
 
 
 class StepRun(Model):
@@ -307,7 +363,7 @@ class LLMResult[T](Model):
     billing: str
 
 
-# Step models, in the order search.py runs them: parse, lane:<name> per lane, tie, resolve, rank, save.
+# Step models, in the order search.py runs them: parse, lane:<name> per lane, resolve, rank, save.
 class ParseIn(Model):
     question: str
 
@@ -330,15 +386,6 @@ class LaneOut(Model):
     considered: list[Considered] = []
 
 
-class TieIn(Model):
-    search_id: str
-    person_ids: list[str]
-
-
-class TieOut(Model):
-    labels: dict[str, TieLabel]
-
-
 class ResolveIn(Model):
     outs: list[LaneOut]
 
@@ -350,7 +397,6 @@ class ResolveOut(Model):
 
 class RankIn(Model):
     entries: list[Entry]
-    labels: dict[str, TieLabel]
     chips: Chips
 
 
@@ -365,6 +411,15 @@ class SaveIn(Model):
 
 class SaveOut(Model):
     count: int
+
+
+# The one step of the fn-orgs job.
+class OrgsIn(Model):
+    ids: list[str]
+
+
+class OrgsOut(Model):
+    orgs: list[Org]
 
 
 class GoldPick(Model):
@@ -389,8 +444,7 @@ class PickResult(Model):
     section: Section | None = None
     rank: int | None = None
     gold_tie: GoldTie
-    tie: TieType | None = None
-    tie_agrees: bool | None = None
+    belgian: str = ""
     lost_step: str = ""
     lost_reason: str = ""
 
@@ -402,7 +456,7 @@ class TopCard(Model):
     name: str
     lanes: str
     quote: str
-    tie: TieType
+    belgian: str
 
 
 class CaseResult(Model):

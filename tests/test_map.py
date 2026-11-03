@@ -6,7 +6,7 @@ from urllib.parse import urlsplit
 
 from fastapi.testclient import TestClient
 
-from fn.contracts import Candidate, ClaimDraft, Identifier, Search, Source, TieLabel
+from fn.contracts import Candidate, ClaimDraft, Identifier, Search, Source
 from fn.web.app import create_app
 from fn.worker import now
 from tests.helpers import StubHttp, StubLLM, make_db, make_settings
@@ -61,14 +61,13 @@ class GeoTest(unittest.TestCase):
         search = Search(id="s1", question="q", status="done", created_at=now(), code_sha=None, dirty=False,
                         llm_mode="replay", settings_json="{}", boot_id="b")
         self.store.create_search(search)
-        tie = TieLabel(tie="none_found", rules_version="t")
         self.store.save_candidates("s1", [
             Candidate(search_id="s1", person_id=ann, person_ids=[ann, ann_twin], section="new", rank=1, score=1.0,
-                      lane_ranks={"openalex": 1}, tie=tie),
+                      lane_ranks={"openalex": 1}),
             Candidate(search_id="s1", person_id=bob, person_ids=[bob], section="new", rank=2, score=0.5,
-                      lane_ranks={"seeds": 1}, tie=tie),
+                      lane_ranks={"seeds": 1}),
             Candidate(search_id="s1", person_id=cy, person_ids=[cy], section="new", rank=3, score=0.4,
-                      lane_ranks={"seeds": 2}, tie=tie),
+                      lane_ranks={"seeds": 2}),
         ], [])
         response = self.client.get("/api/searches/s1/geo")
         self.assertEqual(response.status_code, 200)

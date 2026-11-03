@@ -5,24 +5,25 @@ import json
 import sys
 from datetime import UTC, datetime
 
-from fn import config, net
+from fn import config, net, orgs, rank
 from fn.config import ROOT
 from fn.contracts import (
     Candidate,
     CaseResult,
+    Claim,
     GoldCase,
     GoldGroup,
     GoldPick,
+    Org,
     Person,
     PickResult,
-    TieType,
     TopCard,
     group_key,
     name_key,
 )
 from fn.llm import from_settings
 from fn.store import Store
-from fn.web.app import trace_rows
+from fn.web.app import titles, trace_rows
 from fn.worker import Worker
 
 GOLD_SET = ROOT / "data" / "gold" / "gold-set.json"
@@ -31,9 +32,8 @@ DEV = ("GS-02", "GS-10")
 HELD_OUT = ("GS-15", "GS-16", "GS-23", "GS-24", "GS-28")
 TOP_N = 10
 DEV_TARGET = 3
-GOLD_TIE: dict[str, TieType] = {"flemish": "flemish", "belgian": "belgian", "none": "none_found"}
-TOP5_COLUMNS = ["case", "position", "section", "section_rank", "name", "lanes", "reason_quote", "tie",
-                "good_pick", "tie_correct"]
+TOP5_COLUMNS = ["case", "position", "section", "section_rank", "name", "lanes", "reason_quote", "belgian_claims",
+                "good_pick"]
 
 
 def group_of(case_id: str) -> GoldGroup:
@@ -97,21 +97,71 @@ def lost_at(rows: list[list[object]], near: Candidate | None) -> tuple[str, str]
             "not found by any lane; " + "; ".join(f"{r[1]} {str(r[4]).removeprefix('not present; ')}" for r in lanes))
 
 
-def judge(pick: GoldPick, near: Candidate | None, lost: tuple[str, str]) -> PickResult:
+def claim_line(claim: Claim, org: Org) -> str:
+    lang = f"name in {org.name_lang}" if org.name_lang else "name language unknown"
+    return (f"{org.name} ({org.region or 'no region'}, {lang}) {claim.relation or claim.kind} "
+            f"{claim.claim_date or 'no date'}")
+
+
+def claims_text(store: Store, claims: list[Claim], facts: dict[str, Org], scored: list[str]) -> str:
+    """The claims at Belgian organizations and the org ids without facts, as the card lists them.
+
+    The claims in scored come first, each with its years; the other Belgian claims follow 'not scored:'.
+    Only when every org id has facts and none is Belgian does it name the sources read instead.
+    """
+    found, missing = orgs.belgian_claims(claims, facts), orgs.missing_facts(claims, facts)
+    if not found and not missing:
+        sources = store.get_sources([c.source_id for c in claims])
+        return f"No Belgian organization found in {titles(claims, sources)}"
+    lines = [f"{claim_line(c, o)}, years {rank.years_text(rank.units(c))}" for c, o in found if c.id in scored]
+    others = [claim_line(c, o) for c, o in found if c.id not in scored]
+    lines += ["not scored: " + "; ".join(others)] if others else []
+    parts = ["Belgian claims: " + "; ".join(lines)] if lines else []
+    return "; ".join(parts + ([f"org facts not stored for {', '.join(missing)}"] if missing else []))
+
+
+def belgian_text(store: Store, candidate: Candidate) -> str:
+    """The claims_text of the candidate's records, then its belgian_years count and, on the list, its rank."""
+    claims = store.claims_of(candidate.person_ids)
+    facts = store.get_orgs([c.org_id for c in claims if c.org_id])
+    part = next((p for p in candidate.score_parts if p.feature == "belgian_years"), None)
+    if part is None:
+        return f"{claims_text(store, claims, facts, [])}; belgian_years 0"
+    count = len(rank.counted([c for c in claims if c.id in part.claim_ids], facts)[1])
+    return f"{claims_text(store, claims, facts, part.claim_ids)}; belgian_years {count}, rank {part.rank}"
+
+
+def stored_text(store: Store, name: str) -> str:
+    """For a pick no candidate carries: the Belgian claims of the stored records with its group key.
+
+    Returns 'no stored record' when the store holds none.
+    """
+    key = group_key(name_key(name))
+    person_ids = [p for p, _ in store.person_ids_by_group_key([key]).get(key, [])]
+    if not person_ids:
+        return "no stored record"
+    claims = store.claims_of(person_ids)
+    facts = store.get_orgs([c.org_id for c in claims if c.org_id])
+    found, missing = orgs.belgian_claims(claims, facts), orgs.missing_facts(claims, facts)
+    lines = [claim_line(c, o) for c, o in found]
+    lines += [f"org facts not stored for {', '.join(missing)}"] if missing else []
+    if not lines:
+        lines = [f"No Belgian organization found in {titles(claims, store.get_sources([c.source_id for c in claims]))}"]
+    return "stored, not in the result: " + "; ".join(lines)
+
+
+def judge(pick: GoldPick, near: Candidate | None, lost: tuple[str, str], belgian: str = "") -> PickResult:
     """Found when the pick ranks in the top 10 of its section; a pick no lane can reach is labelled so, not missed.
 
     lost is (step, reason), used only for a pick that is not found. A pick reach.json calls unreachable
-    keeps the trace's step and takes reach.json's evidence as its reason.
+    keeps the trace's step and takes reach.json's evidence as its reason. belgian describes the pick's Belgian claims.
     """
     found = near is not None and near.rank <= TOP_N
     unreachable = near is None and pick.reachable is False
-    want = GOLD_TIE.get(pick.gold_tie)
     return PickResult(
         case_id=pick.case_id, name=pick.name, gold_tie=pick.gold_tie,
         verdict="found" if found else "no lane in slice" if unreachable else "missed",
-        section=near.section if near else None, rank=near.rank if near else None,
-        tie=near.tie.tie if near else None,
-        tie_agrees=near.tie.tie == want if near and want else None,
+        section=near.section if near else None, rank=near.rank if near else None, belgian=belgian,
         lost_step="" if found else lost[0],
         lost_reason="" if found else pick.reach_evidence if unreachable else lost[1],
     )
@@ -141,14 +191,14 @@ def run_case(worker: Worker, case: GoldCase) -> CaseResult:
             lost = search_failure(store, search.id, search.error)
         else:
             lost = lost_at(trace_rows(store, search, pick.name), near)
-        picks.append(judge(pick, near, lost))
+        picks.append(judge(pick, near, lost, belgian_text(store, near) if near else stored_text(store, pick.name)))
     top = []
     for position, c in enumerate(candidates[:5], 1):
         claim = store.get_claim(c.reason_claim_ids[0]) if c.reason_claim_ids else None
         top.append(TopCard(
             position=position, section=c.section, rank=c.rank, name=persons[c.person_id].display_name,
             lanes="; ".join(f"{lane} #{rank}" for lane, rank in c.lane_ranks.items()),
-            quote=claim.quote if claim else "", tie=c.tie.tie,
+            quote=claim.quote if claim else "", belgian=belgian_text(store, c),
         ))
     chips = search.chips
     shown = "; ".join([
@@ -161,13 +211,9 @@ def run_case(worker: Worker, case: GoldCase) -> CaseResult:
 
 def pick_line(r: PickResult) -> str:
     where = f"{r.section} #{r.rank}" if r.section else "not in the result list"
-    if r.tie is None:
-        tie = f"gold tie {r.gold_tie}"
-    else:
-        agree = "agrees" if r.tie_agrees else "unverified in the gold set" if r.tie_agrees is None else "differs"
-        tie = f"tie {r.tie} vs gold {r.gold_tie}, {agree}"
+    belgian = f"; {r.belgian}" if r.belgian else ""
     lost = f"; lost at {r.lost_step}: {r.lost_reason}" if r.lost_step else ""
-    return f"{r.case_id} {r.name}: {r.verdict}, {where}, {tie}{lost}"
+    return f"{r.case_id} {r.name}: {r.verdict}, {where}, gold tie {r.gold_tie}{belgian}{lost}"
 
 
 def cell(value: object) -> str:
@@ -208,7 +254,7 @@ def summary(results: list[CaseResult]) -> str:
 def report(results: list[CaseResult], started: datetime, code_sha: str | None, dirty: bool, llm_mode: str,
            http_mode: str) -> str:
     """The markdown report: run header, summary per group, then one picks table per case."""
-    head = ["Pick", "Result", "Section", "Rank", "Gold tie", "Tie found", "Tie", "Lost at", "Reason"]
+    head = ["Pick", "Result", "Section", "Rank", "Gold tie", "Belgian claims", "Lost at", "Reason"]
     parts = [
         f"# Gold run {started:%Y-%m-%d %H:%M:%S} UTC",
         (f"code sha `{code_sha}`, dirty {dirty}, llm mode {llm_mode}, http mode {http_mode}, "
@@ -223,21 +269,20 @@ def report(results: list[CaseResult], started: datetime, code_sha: str | None, d
             f"### {r.case_id} ({r.group})",
             f"{r.question}\n\nsearch `{r.search_id}` {r.status}; chips: {r.chips}",
             md_table(head, [[
-                p.name, p.verdict, p.section or "", p.rank or "", p.gold_tie, p.tie or "",
-                "" if p.tie_agrees is None else "agrees" if p.tie_agrees else "differs", p.lost_step, p.lost_reason,
+                p.name, p.verdict, p.section or "", p.rank or "", p.gold_tie, p.belgian, p.lost_step, p.lost_reason,
             ] for p in r.picks]),
         ]
     return "\n\n".join(parts) + "\n"
 
 
 def top5_csv(results: list[CaseResult]) -> str:
-    """The top five cards of each case, with empty good_pick and tie_correct columns for the owner to mark."""
+    """The top five cards of each case with their Belgian claims, and an empty good_pick column for the owner to mark."""
     out = io.StringIO()
     writer = csv.writer(out)
     writer.writerow(TOP5_COLUMNS)
     for r in results:
         for c in r.top:
-            writer.writerow([r.case_id, c.position, c.section, c.rank, c.name, c.lanes, c.quote, c.tie, "", ""])
+            writer.writerow([r.case_id, c.position, c.section, c.rank, c.name, c.lanes, c.quote, c.belgian, ""])
     return out.getvalue()
 
 
