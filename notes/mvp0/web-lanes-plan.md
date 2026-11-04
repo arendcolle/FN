@@ -426,3 +426,12 @@ Each task is one commit. The tests run with `uv run python -m unittest`, and a t
 - **Task 4.** Parallel fast mode returned different pages for the same Search body an hour apart: Nokia people pages at 23:39, New York telecom business directories at 00:00. Vetter's web hit came from the first set, so it is not repeatable.
 - **Task 5.** `page_key` also decodes percent escapes and drops a trailing slash from the path, so one page spelled either way is the event page. Parallel returns both spellings of the Nokia Bell Labs Murray Hill page (with and without the slash), GS-33's source ends in a slash and GS-29's path holds `%20`. This widens the rule in the task text above and needs the owner's OK.
 - **Task 5, hand check (live, 2026-11-04).** `FN_LLM=prefer fn-gold GS-02` with LinkedIn served from the cache: the report shows the Lanes and Event page columns and a search cost of $0.0459 (Parallel $0.011, LinkedIn $0, the rest is the Haiku cost the CLI reports on the subscription). Vetter is `missed` at new #113 (web #5); Sweldens, Baeyens and Klein are `no lane in slice` with each lane's trace reason. No GS-02 pick was found, so no `event page` label was seen on real data.
+
+## Done check result (2026-11-04)
+
+- The whole suite passes: 263 tests.
+- fn-gold over all 28 cases finds 3 of 99 picks on main and on the branch, the same three GS-10 picks. The dev measure stays at 3 of 4, and no pick main finds is lost, so the no-regression gate holds.
+- The GS-02 target is not met: 0 of 4 picks found. Vetter is a web hit at new #132 from a page with no Belgian tie, and the one LinkedIn run read 25 of 43 matches, none of them a GS-02 pick.
+- The web lane reached 6 picks no lane reached on main. None ranks in the top 10, because none of their pages states a Belgian tie the ranker can score. 4 of 28 questions give no topic or institution chip, so both new lanes skip them.
+- Spend for the build: Parallel about $0.39 (the gold run $0.338), Apify $0.20 in one run. lane:web takes a median 186 s per search.
+- Screenshots of the GS-02 search show a LinkedIn card with dated KU Leuven and HOGENT claims and a web card whose quote is marked on its source page.
