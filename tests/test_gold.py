@@ -154,7 +154,8 @@ class RunCaseTest(unittest.TestCase):
         self.assertEqual(by_name["Anne Deconinck"].verdict, "no lane in slice")
         self.assertIn("authors_institution_mit_p1.json", by_name["Anne Deconinck"].lost_reason)
         missed = by_name["Nobody Atall"]
-        self.assertEqual((missed.verdict, missed.lost_step), ("missed", "lane:seeds, lane:openalex, lane:web"))
+        self.assertEqual((missed.verdict, missed.lost_step),
+                         ("missed", "lane:seeds, lane:openalex, lane:web, lane:linkedin"))
         self.assertIn("not found by any lane; lane:seeds query", missed.lost_reason)
         self.assertIn("lane:openalex query authors filter=last_known_institutions.ror", missed.lost_reason)
 

@@ -289,7 +289,8 @@ def top5_csv(results: list[CaseResult]) -> str:
 def main(argv: list[str] | None = None) -> int:
     """Run the named gold cases (all 28 when none) and write var/gold/<timestamp>/report.md and top5.csv.
 
-    Returns 0 when every search ended done, 1 when one did not, 2 for an unknown case id.
+    Returns 0 when every search ended done, 1 when one did not, 2 for an unknown case id. It also returns 2,
+    before any search, for FN_LINKEDIN=1 with other than one case, so one command cannot start many paid runs.
     """
     ids = sys.argv[1:] if argv is None else argv
     try:
@@ -298,6 +299,10 @@ def main(argv: list[str] | None = None) -> int:
         print(exc, file=sys.stderr)
         return 2
     settings = config.from_env()
+    if settings.linkedin_live and len(cases) != 1:
+        print(f"FN_LINKEDIN=1 spends Apify credit on every case; name exactly one case, not {len(cases)}",
+              file=sys.stderr)
+        return 2
     store = Store(settings.db_path)
     store.migrate()
     worker = Worker(store, settings, llm=from_settings(settings), http=net.Client(settings))

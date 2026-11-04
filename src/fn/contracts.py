@@ -29,7 +29,7 @@ SourceKind = Literal["page", "record", "seed_page", "import", "vendor_record", "
 StepStatus = Literal["running", "ok", "error", "skipped", "interrupted"]
 SearchStatus = Literal["queued", "running", "done", "failed", "interrupted"]
 SearchKind = Literal["search", "job"]
-LaneName = Literal["seeds", "openalex", "web"]
+LaneName = Literal["seeds", "openalex", "web", "linkedin"]
 ChipOrigin = Literal["parsed", "edited"]
 Depth = Literal["quick"]
 IdentifierScheme = Literal["seed", "openalex", "orcid", "profile_url", "mention"]
@@ -155,10 +155,12 @@ class Source(Model):
 
 
 def record_source(url: str, title: str, fields: list[tuple[str, object]], raw: dict, fetched_at: datetime,
-                  source_date: str | None = None) -> tuple[Source, dict[str, tuple[int, int]]]:
-    """A record Source with one `path: value` line per field that has a value, and each line's offsets by path.
+                  source_date: str | None = None, *,
+                  kind: Literal["record", "vendor_record"] = "record") -> tuple[Source, dict[str, tuple[int, int]]]:
+    """A record Source (kind vendor_record for a vendor's answer) with one `path: value` line per field that has a value.
 
-    The id holds the content hash, so a record whose text changed is stored as a new source.
+    Returns it with each line's offsets by path. The id holds the kind and the content hash, so a record
+    whose text changed is stored as a new source.
     """
     lines, spans, at = [], {}, 0
     for path, value in fields:
@@ -171,7 +173,7 @@ def record_source(url: str, title: str, fields: list[tuple[str, object]], raw: d
     text = "\n".join(lines)
     content_hash = hashlib.sha256(text.encode()).hexdigest()
     return Source(
-        id=hashlib.sha1(f"record\0{url}\0{content_hash}".encode()).hexdigest(), kind="record", url=url, title=title,
+        id=hashlib.sha1(f"{kind}\0{url}\0{content_hash}".encode()).hexdigest(), kind=kind, url=url, title=title,
         text=text, raw_json=json.dumps(raw, ensure_ascii=False, sort_keys=True), content_hash=content_hash,
         source_date=source_date, date_method="record_field" if source_date else None, fetched_at=fetched_at,
     ), spans
