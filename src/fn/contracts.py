@@ -39,7 +39,7 @@ CallKind = Literal["http", "llm"]
 LLMMode = Literal["live", "record", "replay", "prefer"]
 CacheMode = Literal["refresh", "prefer", "only"]
 GoldTie = Literal["flemish", "belgian", "none", "unverified"]
-PickVerdict = Literal["found", "missed", "no lane in slice"]
+PickVerdict = Literal["found", "event page", "missed", "no lane in slice"]
 GoldGroup = Literal["dev", "held-out", "other"]
 # Ids the alias file holds and fn-orgs fetches; org rows from the OpenAlex lane may also use openalex: ids.
 REGISTRY_ID = re.compile(r"ror:0[a-z0-9]{6}[0-9]{2}|wikidata:Q[0-9]+")
@@ -513,6 +513,7 @@ class GoldPick(Model):
 class GoldCase(Model):
     id: str
     question: str
+    source_url: str | None = None
     picks: list[GoldPick]
 
 
@@ -524,6 +525,7 @@ class PickResult(Model):
     rank: int | None = None
     gold_tie: GoldTie
     belgian: str = ""
+    lanes: str = ""
     lost_step: str = ""
     lost_reason: str = ""
 
@@ -545,5 +547,6 @@ class CaseResult(Model):
     chips: str
     search_id: str
     status: SearchStatus
+    cost_usd: float = 0.0
     picks: list[PickResult]
     top: list[TopCard]
