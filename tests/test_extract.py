@@ -330,14 +330,17 @@ class ExtractTest(unittest.TestCase):
 
 class NamesTest(unittest.TestCase):
     def test_clean_name_drops_titles_and_credentials(self):
-        """Leading titles and trailing credentials go, in any number and case of title.
+        """Leading titles and trailing credentials go, in any number and case, with or without a final period.
 
         The name itself stays as written, also when it starts with the letters of a title.
         """
         for given, cleaned in (("Prof. Dr. Jan Peeters, PhD", "Jan Peeters"),
                                ("prof. dr. Els  Janssens", "Els Janssens"), ("Prof.Dr. Jan Peeters", "Jan Peeters"),
                                ("Mr Wim Doe, Ph.D.", "Wim Doe"), ("Ms. Anja Voorbeeld MBA, MD", "Anja Voorbeeld"),
+                               ("Jan Peeters, PhD.", "Jan Peeters"), ("Jan Peeters, phd", "Jan Peeters"),
+                               ("Ann Doe, mba.", "Ann Doe"), ("Ann Doe, ph.d", "Ann Doe"),
                                ("Drew Mdala", "Drew Mdala"), ("Dr. Doe", "Doe"),
+                               ("Ngozi Mba", "Ngozi Mba"), ("Rahman Md", "Rahman Md"),
                                ("Prof. dr. ir. Jan Peeters", "Jan Peeters"), ("Irene Smet", "Irene Smet")):
             with self.subTest(name=given):
                 self.assertEqual(clean_name(given), cleaned)

@@ -175,10 +175,9 @@ def judge(pick: GoldPick, near: Candidate | None, lost: tuple[str, str], belgian
           reasons: Sequence[tuple[str, str]] = (), event_url: str | None = None) -> PickResult:
     """Found when the pick ranks in the top 10 of its section; a pick no lane can reach is labelled so, not missed.
 
-    lost is (step, reason), used only for a pick that is not found. A pick reach.json calls unreachable
-    keeps the trace's step and reason, and reach.json's evidence follows. belgian describes the pick's Belgian claims.
-    reasons are the (kind, url) of the sources behind the pick's reason claims: a pick that would be found
-    but has them all on the case's event page, event_url, is labelled event page.
+    lost is (step, reason) for a pick not found; an unreachable pick keeps it and gets reach.json's evidence after.
+    belgian describes its Belgian claims. reasons are the (kind, url) of its reason claims' sources: a pick that
+    would be found but has them all on the case's event page, event_url, is labelled event page.
     """
     ranked = near is not None and near.rank <= TOP_N
     unreachable = near is None and pick.reachable is False
@@ -212,7 +211,7 @@ def search_failure(store: Store, search_id: str, error: str | None) -> tuple[str
 def run_case(worker: Worker, case: GoldCase) -> CaseResult:
     """Run the case's question as a normal search and judge each of its picks against the result list.
 
-    The result also holds the search's cost, the sum of its step costs.
+    The result also holds the search's vendor (http) and LLM call costs, summed from its step calls by kind.
     """
     store = worker.store
     search = worker.execute(worker.create_search(case.question).id)
@@ -239,6 +238,7 @@ def run_case(worker: Worker, case: GoldCase) -> CaseResult:
             lanes=lanes_text(c),
             quote=claim.quote if claim else "", belgian=belgian_text(store, c),
         ))
+    calls = [c for s in store.list_steps(search.id) for c in store.list_calls(s.id)]
     chips = search.chips
     shown = "; ".join([
         *(f"topic {c.text}" for c in chips.topics), *(f"institution {c.text}" for c in chips.institutions),
@@ -246,7 +246,8 @@ def run_case(worker: Worker, case: GoldCase) -> CaseResult:
     ]) if chips else ""
     return CaseResult(case_id=case.id, group=group_of(case.id), question=case.question, chips=shown or "none",
                       search_id=search.id, status=search.status,
-                      cost_usd=sum(s.cost_usd for s in store.list_steps(search.id)), picks=picks, top=top)
+                      http_cost_usd=sum(c.cost_usd or 0.0 for c in calls if c.kind == "http"),
+                      llm_cost_usd=sum(c.cost_usd or 0.0 for c in calls if c.kind == "llm"), picks=picks, top=top)
 
 
 def pick_line(r: PickResult) -> str:
@@ -309,7 +310,8 @@ def report(results: list[CaseResult], started: datetime, code_sha: str | None, d
     for r in results:
         parts += [
             f"### {r.case_id} ({r.group})",
-            f"{r.question}\n\nsearch `{r.search_id}` {r.status}, cost ${r.cost_usd:.4f}; chips: {r.chips}",
+            (f"{r.question}\n\nsearch `{r.search_id}` {r.status}, vendor calls ${r.http_cost_usd:.4f}; "
+             f"LLM ${r.llm_cost_usd:.4f} as the CLI reports it (subscription); chips: {r.chips}"),
             md_table(head, [[
                 p.name, p.verdict, p.section or "", p.rank or "", p.lanes, p.gold_tie, p.belgian, p.lost_step,
                 p.lost_reason,

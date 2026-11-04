@@ -572,5 +572,6 @@ class WebPeopleTest(unittest.TestCase):
             self.run_lane()
         self.assertEqual(sent, [])
 
+
 if __name__ == "__main__":
     unittest.main()

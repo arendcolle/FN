@@ -16,6 +16,7 @@ from fn.contracts import (
     LaneOut,
     Source,
     clean_name,
+    name_key,
     normalize,
     record_source,
 )
@@ -88,7 +89,7 @@ def search_query(chips: Chips) -> str:
 
 
 def locations(chips: Chips, area: GeoArea | None) -> list[str]:
-    """The LinkedIn locations for the place chip; area is geo.locate's answer for it, None when it names no city.
+    """The LinkedIn locations for the place chip; area is geo.area's answer for it, None when it names no city.
 
     No place or anywhere_us gives United States. A place abroad, or one geo.py cannot locate, sends its own text.
     """
@@ -186,18 +187,11 @@ def drafts(person_id: str, source: Source, spans: dict[str, tuple[int, int]], pr
     return found
 
 
-def place_area(ctx: StepContext, chips: Chips) -> GeoArea | None:
-    place = chips.place
-    if place is None or place.kind not in (None, "metro"):
-        return None
-    return geo.locate(place.text, geo.cities(ctx.http))
-
-
 def people(ctx: StepContext, profiles: list[dict], considered: list[Considered]) -> list[LaneHit]:
     """One hit per person in the profiles, in the actor's order, with every profile's source and claims stored.
 
-    A profile without a linkedinUrl is skipped. One URL twice is one person and one hit. Each profile, and each
-    school spelling that maps to no org id, is added to considered.
+    A profile without a linkedinUrl, or whose name has fewer than two words, is skipped. One URL twice is one
+    person and one hit. Each profile, and each school spelling that maps to no org id, is added to considered.
     """
     hits: dict[str, LaneHit] = {}
     unmapped: dict[str, None] = {}
@@ -207,6 +201,10 @@ def people(ctx: StepContext, profiles: list[dict], considered: list[Considered])
             if not profile.get("linkedinUrl"):
                 considered.append(Considered(person_key=f"result {rank}", name=who, stage="profile", kept=False,
                                              reason=f"result {rank}: no linkedinUrl; skipped"))
+                continue
+            if len(name_key(who).split()) < 2:
+                considered.append(Considered(person_key=canonical(profile["linkedinUrl"]), name=who, stage="profile",
+                                             kept=False, reason=f"name has fewer than two words: {who!r}"))
                 continue
             now, day = ctx.now(), str(dig(profile, "_meta.scrapedAt") or "")[:10] or None
             source, spans = profile_source(profile, now, day)
@@ -233,10 +231,9 @@ def people(ctx: StepContext, profiles: list[dict], considered: list[Considered])
 def run(ctx: StepContext, inp: LaneIn) -> LaneOut:
     """Search LinkedIn through Apify for the chips and make every profile the actor returns a hit.
 
-    With FN_LINKEDIN=1 the call is served from the cache when it holds this input, else it runs live. Without
-    it the lane only serves a recorded run, and notes that it is off when there is none. Without an Apify
-    token it returns a note. Raises RuntimeError without an HTTP client, and HttpError for a refused or
-    failed call.
+    With FN_LINKEDIN=1 a recorded input is served from the cache, else the call runs live; without it only a
+    recorded run is served, else the lane notes it is off. Without an Apify token it notes that. Raises
+    RuntimeError without an HTTP client, and HttpError for a refused or failed call.
     """
     chips = inp.chips
     used, left = query_terms(chips)
@@ -245,7 +242,7 @@ def run(ctx: StepContext, inp: LaneIn) -> LaneOut:
         return LaneOut(lane=name, query="", total_seen=0, considered=considered or [note(NO_QUERY)])
     if ctx.http is None:
         raise RuntimeError("the LinkedIn lane needs an HTTP client")
-    body = actor_input(chips, place_area(ctx, chips))
+    body = actor_input(chips, geo.area(ctx.http, chips.place))
     query = f"{body['searchQuery']}; locations {', '.join(body['locations'])}"
     live = ctx.settings.linkedin_live
     params = {"timeout": str(RUN_TIMEOUT_S), "maxTotalChargeUsd": str(MAX_CHARGE_USD)}
@@ -254,10 +251,11 @@ def run(ctx: StepContext, inp: LaneIn) -> LaneOut:
                                  cache="prefer" if live else "only")
     except CacheMiss:
         reason = "FN_HTTP=replay has no recorded LinkedIn run for this input" if live else OFF
-        return LaneOut(lane=name, query=query, total_seen=0, considered=[note(reason)])
+        return LaneOut(lane=name, query=query, total_seen=0, considered=[*considered, note(reason)])
     except MissingKey as exc:
         ctx.log.warning("LinkedIn lane skipped: %s", exc)
-        return LaneOut(lane=name, query=query, total_seen=0, considered=[note(f"LinkedIn lane skipped: {exc}")])
+        return LaneOut(lane=name, query=query, total_seen=0,
+                       considered=[*considered, note(f"LinkedIn lane skipped: {exc}")])
     profiles = profiles_of(response.content)
     if not has_profiles(response.content):
         considered.append(note("Apify returned no profiles; not cached"))

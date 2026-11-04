@@ -110,10 +110,9 @@ def people(ctx: StepContext, pages: list[tuple[int, Source]], considered: list[C
 def run(ctx: StepContext, inp: LaneIn) -> LaneOut:
     """Search Parallel for the chips, store each result page as a vendor_page source and read the people it names.
 
-    A page's text is the first of the Extract full content, the Extract excerpts and the Search excerpts that
-    has plain text once its markdown is stripped; a page with none is skipped. Every person a page names is a
-    hit, with the claims extract.drafts gives. Without a Parallel key it returns a note and calls nothing.
-    Raises RuntimeError without an HTTP client or an LLM, and HttpError for a refused or failed call.
+    A page's text is the first of Extract full content, Extract excerpts and Search excerpts with plain text left
+    after its markdown is stripped; a page with none is skipped. Every person a page names is a hit. Without a
+    Parallel key it returns a note. Raises RuntimeError without an HTTP client or LLM, HttpError for a failed call.
     """
     chips = inp.chips
     if not chips.topics and not chips.institutions:

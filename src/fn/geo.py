@@ -5,11 +5,13 @@ import zipfile
 from typing import NamedTuple
 from weakref import WeakKeyDictionary
 
-from fn.contracts import GeoArea, HttpClient, name_key
+from fn.contracts import GeoArea, HttpClient, Place, name_key
 
 CITIES_URL = "https://download.geonames.org/export/dump/cities15000.zip"
 CITIES_FILE = "cities15000.txt"
 METRO_RADIUS_KM = 100.0
+# The place kinds that name a metro area to locate; abroad and anywhere_us do not.
+METRO_KINDS = (None, "metro")
 MAX_WORDS = 4
 # Words that join or qualify places in a chip and must never be read as a city name.
 STOPWORDS = {"and", "en", "et", "und", "or", "of", "the", "de", "near", "in", "around", "area", "region", "regio",
@@ -72,6 +74,16 @@ def locate(place: str, names: dict[str, City]) -> GeoArea | None:
         return None
     best = max(matched, key=lambda c: c.population)
     return GeoArea(place=place, city=best.label, lat=best.lat, lon=best.lon, radius_km=METRO_RADIUS_KM)
+
+
+def area(http: HttpClient, place: Place | None) -> GeoArea | None:
+    """The metro area GeoNames locates for the place chip.
+
+    None for no place, a kind other than metro (the dump is not fetched then), or a place that names no city.
+    """
+    if place is None or place.kind not in METRO_KINDS:
+        return None
+    return locate(place.text, cities(http))
 
 
 def distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:

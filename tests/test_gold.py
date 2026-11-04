@@ -358,18 +358,20 @@ class RunCaseTest(unittest.TestCase):
         self.assertEqual({r["good_pick"] for r in rows}, {""})
         self.assertTrue(all(r["reason_quote"] for r in rows))
 
-    def test_the_report_names_the_lanes_behind_each_pick_and_the_cost_of_the_search(self):
-        """Lanes come from the candidate's lane_ranks; the search costs its parse step plus the OpenAlex calls."""
+    def test_the_report_names_the_lanes_behind_each_pick_and_the_vendor_and_llm_cost_of_the_search(self):
+        """Lanes come from the candidate's lane_ranks; vendor spend is the OpenAlex calls, LLM cost the parse call."""
         result = gold.run_case(self.worker(), self.case)
         by_name = {p.name: p for p in result.picks}
         self.assertEqual({n: p.lanes for n, p in by_name.items()}, {
             "Michel Goemans": "openalex #3", "Pierre Lermusiaux": "openalex #1", "Julien de Wit": "openalex #2",
             "Milena Janjevic": "openalex #4", "Anne Deconinck": ""})
-        self.assertAlmostEqual(result.cost_usd, 0.002 + 0.0002)
+        self.assertAlmostEqual(result.http_cost_usd, 0.0002)
+        self.assertAlmostEqual(result.llm_cost_usd, 0.002)
         text = gold.report([result], datetime(2026, 10, 30, tzinfo=UTC), "abc123", True, "replay", "live")
         self.assertIn("| Pick | Result | Section | Rank | Lanes |", text)
         self.assertRegex(text, r"\| Milena Janjevic \| found \| new \| \d+ \| openalex #4 \|")
-        self.assertIn(f"search `{result.search_id}` done, cost $0.0022;", text)
+        self.assertIn(f"search `{result.search_id}` done, vendor calls $0.0002; "
+                      "LLM $0.0020 as the CLI reports it (subscription);", text)
 
     def test_an_unreachable_pick_no_lane_found_keeps_the_trace_step_and_reason_and_reach_evidence_follows(self):
         """Anne Deconinck is in no recorded file: her row names every lane that missed her, then reach.json's evidence."""
@@ -453,10 +455,11 @@ class StubbedRunTest(unittest.TestCase):
         self.assertEqual(result.top, [])
         self.assertEqual(sorted({p.verdict for p in result.picks}), ["missed", "no lane in slice"])
 
-    def test_the_search_cost_is_the_sum_of_its_step_costs(self):
-        """Only the stub parse call is paid in this search, $0.002, and the case result holds that sum."""
+    def test_the_search_cost_is_split_into_vendor_and_llm_call_costs(self):
+        """Only the stub parse call is paid in this search, $0.002, and it counts as LLM cost, not vendor spend."""
         settings = make_settings(self)
         worker = Worker(make_db(self, settings), settings, llm=StubLLM(GS10_CHIPS), http=StubHttp())
         self.addCleanup(worker.shutdown)
         result = gold.run_case(worker, gold.load_cases(["GS-10"])[0])
-        self.assertAlmostEqual(result.cost_usd, 0.002)
+        self.assertAlmostEqual(result.llm_cost_usd, 0.002)
+        self.assertEqual(result.http_cost_usd, 0.0)

@@ -67,7 +67,8 @@ def group_key(key: str) -> str:
 
 
 TITLES = re.compile(r"^(?:(?:prof|dr|ir|mr|ms)(?:\.\s*|\s+))+", re.IGNORECASE)
-CREDENTIALS = re.compile(r"(?:[\s,]+(?:PhD|Ph\.D\.?|MBA|MD))+$")
+# PhD in any case, but MBA and MD only in one case, so surnames such as Mba stay.
+CREDENTIALS = re.compile(r"(?:[\s,]+(?:(?i:PhD|Ph\.D)|MBA|mba|MD|md)\.?)+$")
 
 
 def clean_name(name: str) -> str:
@@ -547,6 +548,7 @@ class CaseResult(Model):
     chips: str
     search_id: str
     status: SearchStatus
-    cost_usd: float = 0.0
+    http_cost_usd: float = 0.0
+    llm_cost_usd: float = 0.0
     picks: list[PickResult]
     top: list[TopCard]

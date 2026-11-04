@@ -450,6 +450,22 @@ class LinkedInLaneTest(unittest.TestCase):
         self.assertEqual(self.count("persons"), 2)
         self.assertNotIn("Apify returned no profiles; not cached", [c.reason for c in out.considered])
 
+    def test_a_profile_whose_cleaned_name_has_fewer_than_two_words_is_skipped_with_a_row(self):
+        """An empty name and a one-word name (Dr. Doe cleans to Doe) store nothing and get a considered row each."""
+        wim, anja = profiles()[:2]
+        nameless, doe = "https://www.linkedin.com/in/nameless-invented", "https://www.linkedin.com/in/doe-invented"
+        empty = {**wim, "firstName": "", "lastName": None, "linkedinUrl": nameless}
+        single = {**anja, "firstName": "Dr.", "lastName": "Doe", "linkedinUrl": doe}
+        self.answer = [empty, wim, single]
+        out = self.run_lane(chips(["6G"]))
+        self.assertEqual([(c.person_key, c.name, c.kept, c.reason) for c in out.considered
+                          if c.stage == "profile" and not c.kept], [
+            (nameless, "", False, "name has fewer than two words: ''"),
+            (doe, "Doe", False, "name has fewer than two words: 'Doe'")])
+        self.assertEqual([(h.rank, self.store.get_persons([h.person_id])[h.person_id].display_name) for h in out.hits],
+                         [(1, "Wim Doe")])
+        self.assertEqual((self.count("persons"), self.count("sources"), out.total_seen), (1, 1, 3))
+
     def test_one_profile_url_in_two_spellings_is_one_person_one_hit_and_one_set_of_claims(self):
         """linkedin.com/in/x/ and https://www.linkedin.com/in/x are the same canonical URL, so the same person."""
         answer = profiles()[:1]
@@ -480,7 +496,8 @@ class LinkedInLaneTest(unittest.TestCase):
     def test_a_query_over_300_characters_keeps_whole_chips_in_order_and_names_the_ones_left_out(self):
         """The actor refuses a searchQuery over 300 characters, so chips are kept while the ORed query fits.
 
-        The first chip that does not fit and the ones after it are named in a note. A first chip over 300 sends nothing.
+        The first chip that does not fit and the ones after it are named in a note, which stays beside the note
+        for a lane that is off or has no key. A first chip over 300 sends nothing.
         """
         two_words = "b" * 35 + " " + "b" * 34
         out = self.run_lane(chips(["a" * 72, two_words, "c" * 72, "d" * 72, "e"]))
@@ -496,6 +513,14 @@ class LinkedInLaneTest(unittest.TestCase):
         self.assertEqual(self.sent, [])
         self.assertEqual([c.reason for c in out.considered],
                          [f"query over 300 characters; chips left out: {'f' * 301}, g"])
+        long, left_out = chips(["a" * 200, "b" * 200]), f"query over 300 characters; chips left out: {'b' * 200}"
+        out = self.run_lane(long, self.off)
+        self.assertEqual(self.sent, [])
+        self.assertEqual([c.reason for c in out.considered], [left_out, linkedin.OFF])
+        with self.assertLogs("fn.step", "WARNING"):
+            out = self.run_lane(long, self.live.model_copy(update={"apify_token": None}))
+        self.assertEqual([c.reason for c in out.considered], [
+            left_out, "LinkedIn lane skipped: no key for api.apify.com; set APIFY_TOKEN or store it in the Keychain"])
 
     def test_a_refusal_from_apify_fails_the_step_with_its_message(self):
         """A 402 from the actor call is not a note: the step fails and the error carries the response body."""
