@@ -121,3 +121,36 @@ A fresh Opus review said "build after fixes". It applied the change to a scratch
 - Copying `data/org_aliases.csv` to the gold worktrees. `git ls-files data` lists it, so every checkout has it.
 - The card text "No Belgian organization found in no source" for a hit without claims. A LinkedIn profile without entries shows it today, so this change does not add it.
 - The map plotting non-Belgian authors' last known institutions, and the lane's own Belgian check next to `orgs.belgian_claims`. Both stay as they are; the lane's check now only picks reason claims and feeds a log count.
+
+## Result (2026-11-06)
+
+The suite passes with 264 tests. The new test failed on the old lane, which kept 1 of its 3 authors, and passes on the new one.
+
+Base at 31c0750 reproduces the 2026-11-04 run: 3 of 99 picks found, the same three GS-10 picks at #1, #9 and #10, and the dev measure at 3 of 4. Its fresh Haiku answers moved 8 missed picks by a few places.
+
+The new side at 36e3d7e ran on the same vendor and Haiku answers as base. Web hits and LLM cost are equal in all 28 cases.
+
+- Found: 3 of 99 on both sides, the same picks. The dev measure stays at 3 of 4.
+- OpenAlex hits: 10,892 to 23,211, the 12,319 the plan predicted. GS-10 keeps its 359. Candidates: 13,359 to 25,638.
+- Top 10: no case has a card without a Belgian claim, on either side. The best non-Belgian OpenAlex-only card in GS-02 ranks #80, at OpenAlex #3.
+- Spend: 98 OpenAlex institution batches missed the cache and ran live, for $0.0098. No Parallel, Apify or Haiku call ran.
+- The largest results page, GS-24 with 2,132 candidates, grew from 3.6 MB to 13.7 MB and renders in 1.0 s.
+
+Ten picks moved, none into or out of the top 10:
+
+| Case | Pick | Base | New | Why |
+| --- | --- | --- | --- | --- |
+| GS-10 | Goemans | found #1 (seeds #1) | found #2 (seeds #2) | seed rank, see below |
+| GS-10 | de Wit | found #10 (seeds #37) | found #9 (seeds #34) | seed rank |
+| GS-10 | Janjevic | found #9 (seeds #72) | found #10 (seeds #71) | seed rank; her score rose too, but de Wit's rose more |
+| GS-29 | Luc M. Martens | missed #118 (openalex #90) | missed #143 (openalex #121) | 31 non-Belgian authors now sit above him in the OpenAlex list |
+| GS-02 | Vetter | missed #134 | missed #102 | parts unchanged (web #6); Belgian OpenAlex authors above him lost points |
+| GS-15 | James Braun | missed #151 | missed #120 | the same, with seeds #37 to #38 |
+| GS-21 | Brandon Wen | missed #154 | missed #136 | the same (web #18) |
+| GS-21 | Julie Kegels | missed #445 | missed #408 | the same (web #80) |
+| GS-28 | Hans Bruyninckx | missed #148 | missed #105 | the same, with seeds #34 to #35 |
+| GS-28 | Kevin Reed | missed #68 | missed #41 | the same (web #4) |
+
+For Reed and Vetter this was checked candidate by candidate: the 30 and 35 candidates that fell below them are all Belgian OpenAlex authors whose OpenAlex rank grew.
+
+The GS-10 moves do not come from its own OpenAlex list, which is unchanged. They come from the seed lane. `store.match_claims` scores bm25 over the whole claims index and drops excluded source kinds afterwards, so every stored claim counts toward the term statistics. Both sides hold the same 11,840 seed and page claims. The new side stored 263,096 OpenAlex record claims against base's 139,379, and that alone swaps Goemans and another seed person at seed #1 and #2 for the MIT query.
