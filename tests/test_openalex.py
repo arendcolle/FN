@@ -140,8 +140,8 @@ class OpenAlexLaneTest(unittest.TestCase):
         ulb = self.claims(self.person(JANJEVIC))[("affiliation", "Université Libre de Bruxelles")]
         self.assertEqual((ulb.years, ulb.valid_from, ulb.valid_to), ([2013, 2014, 2016, 2017, 2018], "2013", "2018"))
 
-    def test_author_without_a_belgian_affiliation_is_dropped_with_that_reason(self):
-        """An author whose record has no BE affiliation is in considered as dropped, and no person is stored."""
+    def test_author_without_a_belgian_affiliation_is_kept_as_a_hit(self):
+        """An author whose record has no BE affiliation is a kept hit, stored as one person with every dated affiliation."""
         def handler(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/works":
                 author = {"id": f"https://openalex.org/{KLEIN}", "display_name": "Thierry E. Klein"}
@@ -152,10 +152,12 @@ class OpenAlexLaneTest(unittest.TestCase):
 
         out = self.search(Chips(topics=[Chip(text="6G", origin="edited")]), handler)
         row = self.considered(out, KLEIN)
-        self.assertEqual((row.name, row.stage, row.kept, row.reason),
-                         ("Thierry E. Klein", "record", False, "no Belgian affiliation in the OpenAlex record"))
-        self.assertEqual(out.hits, [])
-        self.assertEqual(self.store.conn.execute("SELECT COUNT(*) FROM persons").fetchone()[0], 0)
+        self.assertEqual((row.name, row.stage, row.kept), ("Thierry E. Klein", "rank", True))
+        self.assertIn("Belgian affiliations none", row.reason)
+        (hit,) = out.hits
+        self.assertEqual((hit.person_id, hit.claim_ids), (self.person(KLEIN), []))
+        self.assertEqual(len(self.claims(hit.person_id)), 5)
+        self.assertEqual(self.store.conn.execute("SELECT COUNT(*) FROM persons").fetchone()[0], 1)
 
     def test_affiliation_institutions_are_saved_as_orgs_without_replacing_fn_orgs_rows(self):
         """An institution without a ROR id is stored under its OpenAlex id and country; a ROR one keeps its fn-orgs row."""
@@ -221,6 +223,36 @@ class OpenAlexLaneTest(unittest.TestCase):
 
         out = self.search(Chips(topics=[Chip(text="wind", origin="edited")]), handler)
         self.assertEqual([(h.rank, h.name_key) for h in out.hits], [(1, "early author"), (2, "later author")])
+
+    def test_every_fetched_author_is_a_hit_and_the_ranker_puts_the_belgian_one_first(self):
+        """The lane keeps authors with no Belgian claim and ranks all three in the order seen.
+
+        The ranker puts the Belgian author seen second first, because only it has a belgian_years part.
+        """
+        mit_only = author("A1", "Mit Author", MIT, {MIT["display_name"]: [2020]})
+        leuven = author("A2", "Leuven Author", MIT, {"KU Leuven": [2020]})
+        yearless = {**author("A3", "Yearless Author", LEUVEN, {"KU Leuven": []}), "last_known_institutions": []}
+        records = [mit_only, leuven, yearless]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/works":
+                work = {"id": "https://openalex.org/W1", "display_name": "w", "publication_year": 2020,
+                        "authorships": [{"author": {"id": a["id"], "display_name": a["display_name"]}} for a in records]}
+                return httpx.Response(200, json={"meta": {"count": 1}, "results": [work]})
+            if request.url.path == "/authors":
+                return httpx.Response(200, json={"meta": {"count": 3}, "results": records})
+            return route(request)
+
+        out = self.search(Chips(topics=[Chip(text="wind", origin="edited")]), handler)
+        self.assertEqual([(h.rank, h.name_key) for h in out.hits],
+                         [(1, "mit author"), (2, "leuven author"), (3, "yearless author")])
+        self.assertEqual(out.hits[2].claim_ids, [])
+        self.assertIn("Belgian affiliations none; place unknown", self.considered(out, "A3").reason)
+        ids = {a: self.person(a) for a in ("A1", "A2", "A3")}
+        found = {c.person_id: c for c in self.store.list_candidates(self.found.id)}
+        self.assertEqual(found[ids["A2"]].rank, 1)
+        self.assertEqual({a: [p.feature for p in found[p].score_parts] for a, p in ids.items()},
+                         {"A1": ["openalex"], "A2": ["openalex", "belgian_years"], "A3": ["openalex"]})
 
     def test_place_only_chips_make_no_call(self):
         """Chips that are only a place produce no hits, no calls and say so in considered."""

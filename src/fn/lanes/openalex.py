@@ -1,4 +1,4 @@
-"""OpenAlex lane: authors of Belgian works per topic chip and of each institution chip, kept when they have a Belgian affiliation."""
+"""OpenAlex lane: authors of Belgian works per topic chip and of each institution chip, every fetched author a hit."""
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -208,22 +208,17 @@ def belgian(record: dict) -> list[dict]:
     return [a for a in record.get("affiliations") or [] if a["institution"].get("country_code") == "BE" and a.get("years")]
 
 
-def in_scope(record: dict) -> bool:
-    """The lane's scope: an author whose record has a Belgian affiliation with years. It filters and never ranks."""
-    return bool(belgian(record))
-
-
 def found_on(seen: Seen) -> int:
     """The works and institution lists the author was found on; the hit's score, which orders nothing."""
     return seen.works + sum(how.startswith("institution") for how in seen.found_by)
 
 
 def run(ctx: StepContext, inp: LaneIn) -> LaneOut:
-    """Find authors, keep those in the lane's scope, order them by place group, then the order seen, and store every one.
+    """Find authors, order every one with a record by place group, then the order seen, and store every one.
 
-    Every kept author is a hit, up to 800 per institution chip. Each gets a person, an affiliation claim per
-    affiliation and a location claim from the last known institution. Every author seen is in considered
-    with its verdict. Raises RuntimeError without an HTTP client.
+    Each of the first 2,000 authors seen that OpenAlex returns a record for is a hit, Belgian or not. Each gets a
+    person, an affiliation claim per affiliation with years and a location claim from the last known institution.
+    Every author seen is in considered with its verdict. Raises RuntimeError without an HTTP client.
     """
     if not inp.chips.topics and not inp.chips.institutions:
         return LaneOut(lane=name, query="", total_seen=0, considered=[note(NO_QUERY)])
@@ -234,7 +229,7 @@ def run(ctx: StepContext, inp: LaneIn) -> LaneOut:
     area = place_area(ctx, inp.chips, considered)
     ids = list(seen)
     records = fetch(ctx, "authors", "ids.openalex", ids[:MAX_AUTHORS], AUTHOR_SELECT)
-    kept = [a for a in ids if a in records and in_scope(records[a])]
+    kept = [a for a in ids if a in records]
     last_known = {a: (records[a].get("last_known_institutions") or [None])[0] for a in kept}
     inst_ids = list(dict.fromkeys(short(i["id"]) for i in last_known.values() if i))
     institutions = fetch(ctx, "institutions", "openalex", inst_ids, INSTITUTION_SELECT)
@@ -263,14 +258,15 @@ def run(ctx: StepContext, inp: LaneIn) -> LaneOut:
         record = records.get(author)
         if author not in rank_of:
             reason = (f"not fetched: beyond the first {MAX_AUTHORS} authors seen" if found.order >= MAX_AUTHORS
-                      else "no author record returned" if record is None else "no Belgian affiliation in the OpenAlex record")
+                      else "no author record returned")
             considered.append(Considered(person_key=author, name=found.name, stage="record", kept=False, reason=reason))
             continue
-        affs = ", ".join(f"{a['institution']['display_name']} {min(a['years'])}-{max(a['years'])}" for a in belgian(record))
+        affs = ", ".join(f"{a['institution']['display_name']} {min(a['years'])}-{max(a['years'])}" for a in belgian(record)) or "none"
         considered.append(Considered(
             person_key=author, name=found.name, stage="rank", kept=True,
             reason=f"rank {rank_of[author]}, seen #{found.order + 1}; found by {'; '.join(found.found_by)}; "
                    f"Belgian affiliations {affs}; {where[author][1]}",
         ))
-    ctx.log.info("openalex lane: %d authors seen, %d with a Belgian affiliation, %d hits", len(seen), len(kept), len(hits))
+    with_be = sum(bool(belgian(records[a])) for a in kept)
+    ctx.log.info("openalex lane: %d authors seen, %d hits, %d with a Belgian affiliation", len(seen), len(hits), with_be)
     return LaneOut(lane=name, query="; ".join(queries), total_seen=len(seen), hits=hits, considered=considered)
