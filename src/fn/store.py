@@ -406,6 +406,14 @@ class Store:
             for r in rows
         ]
 
+    def count_candidates(self, search_ids: list[str]) -> dict[str, int]:
+        """The number of candidates of each search that has any, by search id."""
+        rows = self.conn.execute(
+            "SELECT search_id, count(*) FROM candidates WHERE search_id IN (SELECT value FROM json_each(?)) "
+            "GROUP BY search_id", (json.dumps(search_ids),),
+        )
+        return {r[0]: r[1] for r in rows}
+
     def list_flags(self, search_id: str) -> list[MatchFlag]:
         rows = self.conn.execute(
             "SELECT person_id, other_person_id, reason, shared_fact FROM match_flags WHERE search_id = ?", (search_id,)

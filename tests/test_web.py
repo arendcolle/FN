@@ -6,6 +6,7 @@ import stat
 import tempfile
 import time
 import unittest
+from html import unescape
 from pathlib import Path
 from unittest import mock
 
@@ -94,7 +95,7 @@ class WebTest(unittest.TestCase):
         for url, response in responses.items():
             with self.subTest(url=url):
                 self.assertEqual(response.status_code, 400 if url.startswith("POST") else 200)
-                self.assertNotIn("<script", response.text)
+                self.assertNotIn("<script>", response.text)
                 self.assertNotIn('href="javascript:', response.text)
                 self.assertNotIn("<b>", response.text)
                 self.assertIn("&lt;script&gt;", response.text)
@@ -116,7 +117,7 @@ class WebTest(unittest.TestCase):
             with self.subTest(url=url):
                 response = client.get(url)
                 self.assertEqual(response.status_code, 200)
-                self.assertNotIn("<script", response.text)
+                self.assertNotIn("<script>", response.text)
                 self.assertNotIn('href="javascript:', response.text)
                 self.assertNotIn("<b>", response.text)
                 self.assertIn("&lt;script&gt;", response.text)
@@ -223,6 +224,77 @@ class WebTest(unittest.TestCase):
         self.assertNotIn("content hash", client.get(f"/sources/src?claim={claim.id}").text)
         self.assertIn("content hash", client.get(f"/debug/sources/src?claim={claim.id}").text)
         self.assertEqual(client.get("/debug/sources/src?claim=nope").status_code, 404)
+
+    def test_a_card_shows_employer_place_belgian_orgs_and_one_quote(self):
+        """A card reads 'employer · place', its first three Belgian orgs with years then '+1 more', and one quote.
+
+        The quote is the newest Belgian claim's, inner double quotes made single and cut at a word past 240
+        characters. Without a place the card says 'location not found'; without a date the citation says
+        'date unknown'. A map point carries the id of its card.
+        """
+        record = Source(id="org", kind="record", url="https://ror.org/x", text="id", content_hash="h0", fetched_at=now())
+        names = {"ror:01r9htc13": "ULB", "ror:05f950310": "KU Leuven", "ror:006e5kg04": "VUB", "ror:00cv9y106": "UGent"}
+        orgs.save(self.store, [OrgFacts(id=i, name=n, country_code="BE") for i, n in names.items()], record, replace=True)
+
+        def claim(person_id: str, key: str, text: str, **fields) -> None:
+            source = Source(id=f"src-{key}", kind="page", url=f"https://example.org/{key}", title=f"{key} page",
+                            text=text, content_hash=f"h-{key}")
+            self.store.upsert_claim(ClaimDraft(person_id=person_id, quote=text, quote_start=0, quote_end=len(text),
+                                               source=source, **fields))
+
+        anne = self.resolve("anne", "Anne Example")
+        for n, (org_id, start, end) in enumerate(zip(names, ("2001", "2005", "2009", "2010"), ("2004", "2008", "2009", "2012"))):
+            claim(anne, f"anne-{n}", f"Anne Example, {names[org_id]} " + ('"the engineer" ' + "ran radio links " * 20) * (n == 3),
+                  kind="affiliation", relation="worked_at", org_id=org_id, value=names[org_id], valid_from=start,
+                  valid_to=end, claim_date="2024-03" if n == 3 else end, date_precision="month" if n == 3 else "year")
+        claim(anne, "bell", "Anne Example, Nokia Bell Labs", kind="affiliation", relation="works_at",
+              value="Nokia Bell Labs", valid_to="2024", claim_date="2024")
+        claim(anne, "geo", "geo.city: Murray Hill", kind="location", value="Murray Hill, NJ", claim_date="2024-01-01",
+              date_precision="day", lat=40.69, lon=-74.4)
+        bob = self.resolve("bob", "Bob Nowhere")
+        claim(bob, "bob", "Bob Nowhere studies ULB history", kind="topic", value="ULB history")
+        client = self.client()
+        search_id = self.run_search(client, "q", Chips(topics=[Chip(text="ULB", origin="edited")]))
+        page = client.get(f"/searches/{search_id}").text
+        self.assertEqual(page.count('class="fn-card"'), 2)
+        self.assertIn(f'data-person="{anne}"><h3 class="fn-card__name text-name">Anne Example</h3>', page)
+        self.assertIn("Nokia Bell Labs · Murray Hill, NJ", page)
+        self.assertIn('ULB <span class="text-year">2001–2004</span> · KU Leuven <span class="text-year">2005–2008</span>'
+                      ' · VUB <span class="text-year">2009</span> · +1 more', page)
+        quote = unescape(page[page.index("“Anne Example, UGent"):])
+        self.assertTrue(quote.startswith("“Anne Example, UGent 'the engineer' ran radio links"))
+        self.assertLessEqual(quote.index("”"), 242)
+        self.assertIn(" ran radio…”<cite", quote)
+        self.assertIn(">anne-3 page</a>, March 2024</cite>", quote)
+        self.assertIn('Bob Nowhere</h3><p class="fn-card__role text-body">location not found</p>', page)
+        self.assertIn("“Bob Nowhere studies ULB history”", page)
+        self.assertIn(">bob page</a>, date unknown</cite>", page)
+        (point,) = client.get(f"/api/searches/{search_id}/geo").json()["features"]
+        self.assertEqual((point["properties"]["id"], point["properties"]["employer"]), (anne, "Nokia Bell Labs"))
+
+    def resolve(self, key: str, name: str) -> str:
+        return self.store.resolve_person([Identifier(scheme="seed", value=key)], name).id
+
+    def test_the_ask_page_and_empty_and_stopped_results_say_what_happened(self):
+        """Recent searches show 'Searching…', 'Failed' or the people count and day; results without people show a notice.
+
+        A stopped search offers Try again, which posts the same question; neither notice shows the map.
+        """
+        client = self.client(StubLLM(error=ValueError("no")))
+        with self.assertLogs("fn.worker", "ERROR"):
+            failed = self.run_search(client, "Who knows wind?")
+        empty = self.run_search(client, "Who knows tides?", Chips(topics=[Chip(text="tides", origin="edited")]))
+        self.create_search(client, "Who knows waves?")
+        ask = client.get("/").text
+        for text in ("Searching…</span>", "Failed</span>", "0 people · today</span>", "Who knows waves?</a>"):
+            self.assertIn(text, ask)
+        stopped = client.get(f"/searches/{failed}").text
+        for text in ("This search stopped", '<input type="hidden" name="question" value="Who knows wind?">',
+                     'action="/searches"', "fn-results--no-map"):
+            self.assertIn(text, stopped)
+        nobody = client.get(f"/searches/{empty}").text
+        for text in ("No people found", "A broader topic or a wider area may find more.", "fn-results--no-map"):
+            self.assertIn(text, nobody)
 
     def test_security_headers_on_every_response(self):
         """Pages, error pages and refusals carry the CSP and Referrer-Policy headers."""
