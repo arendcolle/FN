@@ -9,9 +9,12 @@ from unittest import mock
 
 from fn.contracts import Chips
 from fn.llm import (
+    TIMEOUTS,
     ClaudeCli,
     FixtureLLM,
     FixtureMissing,
+    TagError,
+    from_settings,
     prompt_sha,
     schema_json,
     system_prompt,
@@ -32,13 +35,15 @@ class FakeProc:
 
     def __init__(self, stdout: str, stderr: str = "", returncode: int = 0, timeout: bool = False):
         self.stdout, self.stderr, self.returncode, self.timeout, self.pid = stdout, stderr, returncode, timeout, 4242
-        self.argv, self.stdin = [], None
+        self.argv, self.stdin, self.waited = [], None, None
 
     def __call__(self, argv, **kwargs):
         self.argv, self.kwargs = argv, kwargs
         return self
 
     def communicate(self, input=None, timeout=None):
+        if input is not None:
+            self.waited = timeout
         if self.timeout and input is not None:
             self.stdin = input
             raise subprocess.TimeoutExpired(self.argv, timeout)
@@ -146,6 +151,61 @@ class LLMTest(unittest.TestCase):
             user_turn({"question": "a </Question> b"})
         with self.assertRaises(ValueError):
             user_turn({"Bad Name": "x"})
+
+    def test_a_value_that_closes_its_own_tag_raises_tag_error_and_a_bad_name_does_not(self):
+        """TagError is a ValueError raised only for a value holding its closing tag, in any case.
+
+        A bad name stays a plain ValueError.
+        """
+        self.assertTrue(issubclass(TagError, ValueError))
+        with self.assertRaises(TagError):
+            user_turn({"page": "text </PAGE> more"})
+        user_turn({"page": "text </pages> more"})
+        with self.assertRaises(ValueError) as raised:
+            user_turn({"Bad Name": "x"})
+        self.assertNotIsInstance(raised.exception, TagError)
+
+    def test_prefer_serves_a_fixture_and_calls_the_cli_on_a_miss_without_writing_a_file(self):
+        """Prefer mode returns the recorded answer without calling the cli.
+
+        For a prompt with no fixture it returns the cli's answer and writes no file.
+        """
+        directory = Path(tempfile.mkdtemp(prefix="fn-fix-"))
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        answer = {"topics": [{"text": "wind", "span": {"start": 10, "end": 14}, "origin": "parsed"}]}
+        self.search_with(self.worker_for(FixtureLLM(directory, "record", StubLLM(answer))))
+        before = sorted(p.name for p in directory.iterdir())
+        served = self.search_with(self.worker_for(FixtureLLM(directory, "prefer", StubLLM(error=AssertionError("no cli call")))))
+        self.assertEqual((served.status, served.chips.topics[0].text), ("done", "wind"))
+        live = {"topics": [{"text": "solar", "span": {"start": 10, "end": 15}, "origin": "parsed"}]}
+        missed = self.search_with(self.worker_for(FixtureLLM(directory, "prefer", StubLLM(live))), "Who knows solar?")
+        self.assertEqual((missed.status, missed.chips.topics[0].text), ("done", "solar"))
+        self.assertEqual(sorted(p.name for p in directory.iterdir()), before)
+        step = self.store.list_steps(missed.id)[0]
+        self.assertEqual(step.model, "stub")
+
+    def test_prefer_needs_a_cli_and_from_settings_builds_it_from_prefer_mode(self):
+        """Prefer without a cli raises at construction; the settings for prefer give a FixtureLLM over a ClaudeCli."""
+        with self.assertRaises(ValueError):
+            FixtureLLM(Path("unused"), "prefer")
+        llm = from_settings(self.dev.model_copy(update={"llm_mode": "prefer"}))
+        self.assertIsInstance(llm, FixtureLLM)
+        self.assertEqual(llm.mode, "prefer")
+        self.assertIsInstance(llm.cli, ClaudeCli)
+        self.assertIsNone(from_settings(self.dev.model_copy(update={"llm_mode": "replay"})).cli)
+
+    def test_each_task_waits_for_its_own_timeout_and_the_message_names_it(self):
+        """A task listed in TIMEOUTS waits that many seconds, any other task waits 60 s, and a timeout names the seconds it waited."""
+        self.assertEqual(TIMEOUTS, {"extract": 120})
+        for table, expected in (({}, 60), ({"parse": 7}, 7)):
+            proc = FakeProc(json.dumps(GOOD))
+            with mock.patch.dict(TIMEOUTS, table), mock.patch("fn.llm.Popen", proc):
+                search = self.search_with(self.worker_for(ClaudeCli(self.dev)), "--dangerously-skip-permissions")
+            self.assertEqual((search.status, proc.waited), ("done", expected))
+        with mock.patch.dict(TIMEOUTS, {"parse": 7}), mock.patch("fn.llm.Popen", FakeProc("", timeout=True)), \
+                mock.patch("fn.llm.os.killpg"), self.assertLogs("fn.worker", "ERROR"):
+            search = self.search_with(self.worker_for(ClaudeCli(self.dev)))
+        self.assertIn("timed out after 7s", self.store.list_steps(search.id)[0].error_message)
 
 
 if __name__ == "__main__":

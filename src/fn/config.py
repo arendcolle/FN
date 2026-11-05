@@ -23,6 +23,9 @@ class Settings(BaseModel):
     llm_mode: LLMMode = "live"
     http_mode: Literal["live", "replay"] = "live"
     openalex_api_key: SecretStr | None = None
+    parallel_api_key: SecretStr | None = None
+    apify_token: SecretStr | None = None
+    linkedin_live: bool = False
 
     @property
     def db_path(self) -> Path:
@@ -49,9 +52,12 @@ def keychain(name: str) -> str | None:
 
 
 def from_env() -> Settings:
-    """Settings from FN_* env vars; the OpenAlex key from OPENALEX_API_KEY, else the Keychain."""
+    """Settings from FN_* env vars; each key from the env var of its field name in capitals, else the Keychain."""
     env = os.environ
-    key = env.get("OPENALEX_API_KEY") or keychain("OPENALEX_API_KEY")
+
+    def secret(name: str) -> str | None:
+        return env.get(name) or keychain(name)
+
     fields = {
         "var_dir": env.get("FN_VAR"),
         "host": env.get("FN_HOST"),
@@ -59,6 +65,9 @@ def from_env() -> Settings:
         "env": env.get("FN_ENV"),
         "llm_mode": env.get("FN_LLM"),
         "http_mode": env.get("FN_HTTP"),
-        "openalex_api_key": key,
+        "openalex_api_key": secret("OPENALEX_API_KEY"),
+        "parallel_api_key": secret("PARALLEL_API_KEY"),
+        "apify_token": secret("APIFY_TOKEN"),
+        "linkedin_live": env.get("FN_LINKEDIN") == "1",
     }
     return Settings(**{k: v for k, v in fields.items() if v is not None})

@@ -1,0 +1,427 @@
+[
+ {
+  "id": "ACoAAinventedwim-doe-invented",
+  "publicIdentifier": "wim-doe-invented",
+  "linkedinUrl": "https://www.linkedin.com/in/wim-doe-invented",
+  "firstName": "Wim",
+  "lastName": "Doe",
+  "headline": "Chief Technology Officer at Acme Networks",
+  "openToWork": false,
+  "premium": false,
+  "connectionsCount": 500,
+  "about": "An invented profile for the tests.",
+  "location": {
+   "linkedinText": "New York, New York, United States",
+   "countryCode": "US",
+   "parsed": {
+    "text": "New York, New York, United States",
+    "countryCode": "US",
+    "regionCode": null,
+    "country": "United States",
+    "countryFull": "United States"
+   }
+  },
+  "currentPosition": [
+   {
+    "position": "Chief Technology Officer",
+    "location": "New York City Metropolitan Area",
+    "employmentType": null,
+    "workplaceType": null,
+    "companyName": "Acme Networks",
+    "companyUniversalName": null,
+    "companyLinkedinUrl": null,
+    "companyId": null,
+    "duration": null,
+    "description": null,
+    "skills": null,
+    "experienceGroupId": null,
+    "startDate": {
+     "text": "Jan 2015",
+     "year": 2015,
+     "month": "Jan"
+    },
+    "endDate": {
+     "text": "Present"
+    },
+    "geoId": null
+   }
+  ],
+  "profileTopEducation": [
+   {
+    "schoolName": "KU Leuven",
+    "description": null,
+    "insights": null,
+    "skills": null,
+    "schoolLinkedinUrl": null,
+    "schoolId": null,
+    "degree": "PhD",
+    "fieldOfStudy": "Electrical Engineering",
+    "period": "1990 - 1994",
+    "startDate": {
+     "text": "1990",
+     "year": 1990
+    },
+    "endDate": {
+     "text": "1994",
+     "year": 1994
+    }
+   }
+  ],
+  "experience": [
+   {
+    "position": "Chief Technology Officer",
+    "location": "New York City Metropolitan Area",
+    "employmentType": null,
+    "workplaceType": null,
+    "companyName": "Acme Networks",
+    "companyUniversalName": null,
+    "companyLinkedinUrl": null,
+    "companyId": null,
+    "duration": null,
+    "description": null,
+    "skills": null,
+    "experienceGroupId": null,
+    "startDate": {
+     "text": "Jan 2015",
+     "year": 2015,
+     "month": "Jan"
+    },
+    "endDate": {
+     "text": "Present"
+    },
+    "geoId": null
+   },
+   {
+    "position": "Research Scientist",
+    "location": "Murray Hill, New Jersey",
+    "employmentType": null,
+    "workplaceType": null,
+    "companyName": "Example Labs",
+    "companyUniversalName": null,
+    "companyLinkedinUrl": null,
+    "companyId": null,
+    "duration": null,
+    "description": null,
+    "skills": null,
+    "experienceGroupId": null,
+    "startDate": {
+     "text": "Sep 2005",
+     "year": 2005,
+     "month": "Sep"
+    },
+    "endDate": {
+     "text": "Dec 2014",
+     "year": 2014,
+     "month": "Dec"
+    },
+    "geoId": null
+   }
+  ],
+  "education": [
+   {
+    "schoolName": "KU Leuven",
+    "description": null,
+    "insights": null,
+    "skills": null,
+    "schoolLinkedinUrl": null,
+    "schoolId": null,
+    "degree": "PhD",
+    "fieldOfStudy": "Electrical Engineering",
+    "period": "1990 - 1994",
+    "startDate": {
+     "text": "1990",
+     "year": 1990
+    },
+    "endDate": {
+     "text": "1994",
+     "year": 1994
+    }
+   },
+   {
+    "schoolName": "Ghent University",
+    "description": null,
+    "insights": null,
+    "skills": null,
+    "schoolLinkedinUrl": null,
+    "schoolId": null,
+    "degree": "Master",
+    "fieldOfStudy": "Engineering",
+    "period": null,
+    "startDate": null,
+    "endDate": null
+   },
+   {
+    "schoolName": "Fantasie Instituut voor Kunsten",
+    "description": null,
+    "insights": null,
+    "skills": null,
+    "schoolLinkedinUrl": null,
+    "schoolId": null,
+    "degree": "Certificate",
+    "fieldOfStudy": null,
+    "period": "1985 - 1986",
+    "startDate": {
+     "text": "1985",
+     "year": 1985
+    },
+    "endDate": {
+     "text": "1986",
+     "year": 1986
+    }
+   }
+  ],
+  "_meta": {
+   "pagination": {
+    "totalElements": 41,
+    "totalPages": 2,
+    "pageNumber": 1,
+    "previousElements": 0,
+    "pageSize": 25
+   },
+   "scrapedAt": "2026-11-02T22:27:04.307Z"
+  }
+ },
+ {
+  "id": "ACoAAinventedanja-voorbeeld-invented",
+  "publicIdentifier": "anja-voorbeeld-invented",
+  "linkedinUrl": "https://www.linkedin.com/in/anja-voorbeeld-invented",
+  "firstName": "Anja",
+  "lastName": "Voorbeeld",
+  "headline": "Principal Engineer at Example Labs",
+  "openToWork": false,
+  "premium": false,
+  "connectionsCount": 500,
+  "about": "An invented profile for the tests.",
+  "location": {
+   "linkedinText": "United States",
+   "countryCode": "US",
+   "parsed": {
+    "text": "United States",
+    "countryCode": "US",
+    "regionCode": null,
+    "country": "United States",
+    "countryFull": "United States"
+   }
+  },
+  "currentPosition": [
+   {
+    "position": "Principal Engineer",
+    "location": "New York, United States",
+    "employmentType": null,
+    "workplaceType": null,
+    "companyName": "Example Labs",
+    "companyUniversalName": null,
+    "companyLinkedinUrl": null,
+    "companyId": null,
+    "duration": null,
+    "description": null,
+    "skills": null,
+    "experienceGroupId": null,
+    "startDate": {
+     "text": "Oct 2012",
+     "year": 2012,
+     "month": "Oct"
+    },
+    "endDate": {
+     "text": "Present"
+    },
+    "geoId": null
+   }
+  ],
+  "profileTopEducation": [
+   {
+    "schoolName": "Vrije Universiteit Brussel",
+    "description": null,
+    "insights": null,
+    "skills": null,
+    "schoolLinkedinUrl": null,
+    "schoolId": null,
+    "degree": "MSc",
+    "fieldOfStudy": "Computer Science",
+    "period": "2001 - 2005",
+    "startDate": {
+     "text": "2001",
+     "year": 2001
+    },
+    "endDate": {
+     "text": "2005",
+     "year": 2005
+    }
+   }
+  ],
+  "experience": [
+   {
+    "position": "Researcher",
+    "location": "Leuven, Flemish Region, Belgium",
+    "employmentType": null,
+    "workplaceType": null,
+    "companyName": "imec",
+    "companyUniversalName": null,
+    "companyLinkedinUrl": null,
+    "companyId": null,
+    "duration": null,
+    "description": null,
+    "skills": null,
+    "experienceGroupId": null,
+    "startDate": {
+     "text": "Sep 2006",
+     "year": 2006,
+     "month": "Sep"
+    },
+    "endDate": {
+     "text": "Aug 2012",
+     "year": 2012,
+     "month": "Aug"
+    },
+    "geoId": null
+   },
+   {
+    "position": "Principal Engineer",
+    "location": "New York, United States",
+    "employmentType": null,
+    "workplaceType": null,
+    "companyName": "Example Labs",
+    "companyUniversalName": null,
+    "companyLinkedinUrl": null,
+    "companyId": null,
+    "duration": null,
+    "description": null,
+    "skills": null,
+    "experienceGroupId": null,
+    "startDate": {
+     "text": "Oct 2012",
+     "year": 2012,
+     "month": "Oct"
+    },
+    "endDate": {
+     "text": "Present"
+    },
+    "geoId": null
+   }
+  ],
+  "education": [
+   {
+    "schoolName": "Vrije Universiteit Brussel",
+    "description": null,
+    "insights": null,
+    "skills": null,
+    "schoolLinkedinUrl": null,
+    "schoolId": null,
+    "degree": "MSc",
+    "fieldOfStudy": "Computer Science",
+    "period": "2001 - 2005",
+    "startDate": {
+     "text": "2001",
+     "year": 2001
+    },
+    "endDate": {
+     "text": "2005",
+     "year": 2005
+    }
+   },
+   {
+    "schoolName": "Vlerick Leuven-Gent Management School",
+    "description": null,
+    "insights": null,
+    "skills": null,
+    "schoolLinkedinUrl": null,
+    "schoolId": null,
+    "degree": "MBA",
+    "fieldOfStudy": "General Management",
+    "period": null,
+    "startDate": null,
+    "endDate": {
+     "text": "2008",
+     "year": 2008
+    }
+   }
+  ],
+  "_meta": {
+   "pagination": {
+    "totalElements": 41,
+    "totalPages": 2,
+    "pageNumber": 1,
+    "previousElements": 0,
+    "pageSize": 25
+   },
+   "scrapedAt": "2026-11-02T22:27:04.307Z"
+  }
+ },
+ {
+  "id": "ACoAAinventedkarel-proef-invented",
+  "publicIdentifier": "karel-proef-invented",
+  "linkedinUrl": "https://www.linkedin.com/in/karel-proef-invented/",
+  "firstName": "Karel",
+  "lastName": "Proef",
+  "headline": null,
+  "openToWork": false,
+  "premium": false,
+  "connectionsCount": 500,
+  "about": "An invented profile for the tests.",
+  "location": {
+   "linkedinText": "Newark, New Jersey, United States",
+   "countryCode": "US",
+   "parsed": {
+    "text": "Newark, New Jersey, United States",
+    "countryCode": "US",
+    "regionCode": null,
+    "country": "United States",
+    "countryFull": "United States"
+   }
+  },
+  "currentPosition": [],
+  "profileTopEducation": [
+   {
+    "schoolName": "University College Ghent",
+    "description": null,
+    "insights": null,
+    "skills": null,
+    "schoolLinkedinUrl": null,
+    "schoolId": null,
+    "degree": "Bachelor",
+    "fieldOfStudy": "Chemistry",
+    "period": "1998 - 2001",
+    "startDate": {
+     "text": "1998",
+     "year": 1998
+    },
+    "endDate": {
+     "text": "2001",
+     "year": 2001
+    }
+   }
+  ],
+  "experience": [],
+  "education": [
+   {
+    "schoolName": "University College Ghent",
+    "description": null,
+    "insights": null,
+    "skills": null,
+    "schoolLinkedinUrl": null,
+    "schoolId": null,
+    "degree": "Bachelor",
+    "fieldOfStudy": "Chemistry",
+    "period": "1998 - 2001",
+    "startDate": {
+     "text": "1998",
+     "year": 1998
+    },
+    "endDate": {
+     "text": "2001",
+     "year": 2001
+    }
+   }
+  ],
+  "_meta": {
+   "pagination": {
+    "totalElements": 41,
+    "totalPages": 2,
+    "pageNumber": 1,
+    "previousElements": 0,
+    "pageSize": 25
+   },
+   "scrapedAt": "2026-11-02T22:27:04.307Z"
+  }
+ }
+]

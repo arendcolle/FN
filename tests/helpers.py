@@ -1,6 +1,7 @@
 """Shared test setup: a migrated temp database, test settings, a stub LLM, a stub HTTP client and recorded org facts."""
 import atexit
 import io
+import json
 import shutil
 import tempfile
 import unittest
@@ -13,7 +14,7 @@ from pydantic import BaseModel, SecretStr
 
 from fn import geo, net, orgjob, seedload
 from fn.config import Settings
-from fn.contracts import LLMResult, Search
+from fn.contracts import CacheMode, LLMResult, Search
 from fn.steps import current_recorder
 from fn.store import Store
 
@@ -104,10 +105,23 @@ def cities_zip() -> bytes:
 
 
 class StubHttp:
-    """Answers the GeoNames dump with the test extract and every other GET with an empty OpenAlex list; records each."""
+    """Answers the GeoNames dump with the test extract, every other GET with an empty OpenAlex list and every POST
+    with an empty result list; records each.
+
+    A POST with cache="only" raises CacheMiss, as a client with an empty cache does.
+    """
 
     def get(self, url: str, params: dict[str, str] | None = None) -> httpx.Response:
         current_recorder().record("http", f"GET {url} {params or {}}", 1, status=200)
         if url == geo.CITIES_URL:
             return httpx.Response(200, content=cities_zip())
         return httpx.Response(200, json={"meta": {"count": 0}, "results": []})
+
+    def post(self, url: str, body: dict, params: dict[str, str] | None = None, *, timeout_s: float | None = None,
+             cost=None, keep=None, cache: CacheMode = "refresh") -> httpx.Response:
+        shown = f"POST {url} {params or {}} {json.dumps(body, sort_keys=True)}"
+        if cache == "only":
+            current_recorder().record("http", shown, 0, error="not in the response cache")
+            raise net.CacheMiss(f"replay: no cached response for {shown}")
+        current_recorder().record("http", shown, 1, status=200)
+        return httpx.Response(200, json={"results": []})

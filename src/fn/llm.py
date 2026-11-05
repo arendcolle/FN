@@ -19,6 +19,7 @@ from fn.steps import current_recorder
 PROMPTS = Path(__file__).parent / "prompts"
 CLI_ENV = ("PATH", "HOME", "USER", "LANG", "TMPDIR")
 TIMEOUT_S = 60
+TIMEOUTS = {"extract": 120}
 MODEL = "haiku"
 DATA_NAME = re.compile(r"[a-z][a-z_]*")
 
@@ -41,18 +42,22 @@ class FixtureMissing(LookupError):
     """Replay mode found no fixture for the call."""
 
 
+class TagError(ValueError):
+    """A data value holds its own closing tag, so it could end its block early."""
+
+
 def system_prompt(task: str) -> str:
     return (PROMPTS / f"{task}.md").read_text()
 
 
 def user_turn(data: dict[str, str]) -> str:
-    """One tagged block per data value; raises ValueError for a bad name or a value that closes its own tag."""
+    """One tagged block per data value; raises ValueError for a bad name and TagError for a value that closes its own tag."""
     blocks = []
     for name, value in data.items():
         if not DATA_NAME.fullmatch(name):
             raise ValueError(f"data name must be lowercase letters and underscores: {name!r}")
         if f"</{name}>" in value.lower():
-            raise ValueError(f"value of {name!r} contains its own closing tag")
+            raise TagError(f"value of {name!r} contains its own closing tag")
         blocks.append(f"<{name}>\n{value}\n</{name}>")
     return "\n\n".join(blocks)
 
@@ -90,6 +95,7 @@ class ClaudeCli:
         system, user, schema_text = system_prompt(task), user_turn(data), schema_json(schema)
         sha = prompt_sha(system, user, schema_text, self.model)
         recorder, started = current_recorder(), time.monotonic()
+        timeout_s = TIMEOUTS.get(task, TIMEOUT_S)
 
         def fail(message: str, returncode: int | None, stderr: str) -> LLMCallError:
             ms = round((time.monotonic() - started) * 1000)
@@ -107,12 +113,12 @@ class ClaudeCli:
         except OSError as exc:
             raise fail("claude could not start", None, str(exc)) from exc
         try:
-            stdout, stderr = proc.communicate(user, timeout=TIMEOUT_S)
+            stdout, stderr = proc.communicate(user, timeout=timeout_s)
         except TimeoutExpired:
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(proc.pid, signal.SIGKILL)
             _, stderr = proc.communicate()
-            raise fail(f"claude timed out after {TIMEOUT_S}s", None, stderr or "") from None
+            raise fail(f"claude timed out after {timeout_s}s", None, stderr or "") from None
         try:
             payload = json.loads(stdout)
         except ValueError:
@@ -140,11 +146,12 @@ class FixtureLLM:
     """Replays recorded answers by prompt hash; in record mode it calls `cli` and writes the fixture.
 
     A fixture is tests/fixtures/llm/<task>-<sha16>.json. A missing fixture in replay mode raises.
+    Prefer mode serves a fixture when one exists, else calls `cli`, and never writes a fixture.
     """
 
-    def __init__(self, directory: Path, mode: Literal["record", "replay"], cli: StructuredLLM | None = None):
-        if mode == "record" and cli is None:
-            raise ValueError("record mode needs a cli to record from")
+    def __init__(self, directory: Path, mode: Literal["record", "replay", "prefer"], cli: StructuredLLM | None = None):
+        if mode in ("record", "prefer") and cli is None:
+            raise ValueError(f"{mode} mode needs a cli to call")
         self.directory, self.mode, self.cli = directory, mode, cli
         self.model = getattr(cli, "model", MODEL)
 
@@ -160,6 +167,8 @@ class FixtureLLM:
             path.write_text(json.dumps(fixture, indent=2, ensure_ascii=False) + "\n")
             return result
         if not path.exists():
+            if self.mode == "prefer":
+                return self.cli.structured(task, data, schema)
             raise FixtureMissing(f"no LLM fixture {key}; prompt starts: {user[:200]!r}")
         result = LLMResult[schema].model_validate(json.loads(path.read_text())["result"])
         current_recorder().record(
@@ -170,8 +179,8 @@ class FixtureLLM:
 
 
 def from_settings(settings: Settings) -> StructuredLLM:
-    """The LLM for settings.llm_mode: the CLI when live, the fixture directory when recording or replaying."""
+    """The LLM for settings.llm_mode: the CLI when live, the fixture directory when recording, replaying or preferring."""
     if settings.llm_mode == "live":
         return ClaudeCli(settings)
-    cli = ClaudeCli(settings) if settings.llm_mode == "record" else None
+    cli = ClaudeCli(settings) if settings.llm_mode in ("record", "prefer") else None
     return FixtureLLM(settings.root / "tests" / "fixtures" / "llm", settings.llm_mode, cli)

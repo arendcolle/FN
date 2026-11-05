@@ -3,6 +3,7 @@ import hashlib
 import json
 import re
 import unicodedata
+from collections.abc import Callable
 from datetime import datetime
 from typing import Literal, Protocol
 
@@ -21,23 +22,24 @@ Relation = Literal[
 ]
 DateMethod = Literal[
     "page_date", "sitemap", "wayback_first_seen", "document_heading",
-    "record_field", "read_date", "sheet_date", "staff_edit",
+    "record_field", "read_date", "sheet_date", "staff_edit", "stated_in_quote",
 ]
 DatePrecision = Literal["year", "month", "day"]
-SourceKind = Literal["page", "record", "seed_page", "import", "vendor_record"]
+SourceKind = Literal["page", "record", "seed_page", "import", "vendor_record", "vendor_page"]
 StepStatus = Literal["running", "ok", "error", "skipped", "interrupted"]
 SearchStatus = Literal["queued", "running", "done", "failed", "interrupted"]
 SearchKind = Literal["search", "job"]
-LaneName = Literal["seeds", "openalex"]
+LaneName = Literal["seeds", "openalex", "web", "linkedin"]
 ChipOrigin = Literal["parsed", "edited"]
 Depth = Literal["quick"]
-IdentifierScheme = Literal["seed", "openalex", "orcid", "profile_url"]
+IdentifierScheme = Literal["seed", "openalex", "orcid", "profile_url", "mention"]
 Ask = Literal["talk", "mentor", "host", "join", "other"]
 PlaceKind = Literal["metro", "anywhere_us", "abroad"]
 CallKind = Literal["http", "llm"]
-LLMMode = Literal["live", "record", "replay"]
+LLMMode = Literal["live", "record", "replay", "prefer"]
+CacheMode = Literal["refresh", "prefer", "only"]
 GoldTie = Literal["flemish", "belgian", "none", "unverified"]
-PickVerdict = Literal["found", "missed", "no lane in slice"]
+PickVerdict = Literal["found", "event page", "missed", "no lane in slice"]
 GoldGroup = Literal["dev", "held-out", "other"]
 # Ids the alias file holds and fn-orgs fetches; org rows from the OpenAlex lane may also use openalex: ids.
 REGISTRY_ID = re.compile(r"ror:0[a-z0-9]{6}[0-9]{2}|wikidata:Q[0-9]+")
@@ -64,8 +66,22 @@ def group_key(key: str) -> str:
     return " ".join([tokens[0], *(t for t in tokens[1:-1] if len(t) > 1), tokens[-1]]) if len(tokens) > 2 else key
 
 
+TITLES = re.compile(r"^(?:(?:prof|dr|ir|mr|ms)(?:\.\s*|\s+))+", re.IGNORECASE)
+# PhD in any case, but MBA and MD only in one case, so surnames such as Mba stay.
+CREDENTIALS = re.compile(r"(?:[\s,]+(?:(?i:PhD|Ph\.D)|MBA|mba|MD|md)\.?)+$")
+
+
+def clean_name(name: str) -> str:
+    """The name on one line, without leading titles (Prof., Dr., Mr., Ms.) and trailing credentials (PhD, MBA, MD)."""
+    return CREDENTIALS.sub("", TITLES.sub("", " ".join(normalize(name).split()))).strip(" ,")
+
+
 class HttpClient(Protocol):
     def get(self, url: str, params: dict[str, str] | None = None) -> httpx.Response: ...
+
+    def post(self, url: str, body: dict, params: dict[str, str] | None = None, *, timeout_s: float | None = None,
+             cost: Callable[[bytes], float | None] | None = None, keep: Callable[[bytes], bool] | None = None,
+             cache: CacheMode = "refresh") -> httpx.Response: ...
 
 
 class Model(BaseModel):
@@ -140,10 +156,12 @@ class Source(Model):
 
 
 def record_source(url: str, title: str, fields: list[tuple[str, object]], raw: dict, fetched_at: datetime,
-                  source_date: str | None = None) -> tuple[Source, dict[str, tuple[int, int]]]:
-    """A record Source with one `path: value` line per field that has a value, and each line's offsets by path.
+                  source_date: str | None = None, *,
+                  kind: Literal["record", "vendor_record"] = "record") -> tuple[Source, dict[str, tuple[int, int]]]:
+    """A record Source (kind vendor_record for a vendor's answer) with one `path: value` line per field that has a value.
 
-    The id holds the content hash, so a record whose text changed is stored as a new source.
+    Returns it with each line's offsets by path. The id holds the kind and the content hash, so a record
+    whose text changed is stored as a new source.
     """
     lines, spans, at = [], {}, 0
     for path, value in fields:
@@ -156,10 +174,44 @@ def record_source(url: str, title: str, fields: list[tuple[str, object]], raw: d
     text = "\n".join(lines)
     content_hash = hashlib.sha256(text.encode()).hexdigest()
     return Source(
-        id=hashlib.sha1(f"record\0{url}\0{content_hash}".encode()).hexdigest(), kind="record", url=url, title=title,
+        id=hashlib.sha1(f"{kind}\0{url}\0{content_hash}".encode()).hexdigest(), kind=kind, url=url, title=title,
         text=text, raw_json=json.dumps(raw, ensure_ascii=False, sort_keys=True), content_hash=content_hash,
         source_date=source_date, date_method="record_field" if source_date else None, fetched_at=fetched_at,
     ), spans
+
+
+# One pass over vendor markdown: escapes, link and image text (one bracket level inside), then **, *, __, _ on a line.
+MARKDOWN = re.compile(
+    r"\\([!-/:-@\[-`{-~])"
+    r"|!?\[((?:[^\[\]]|\[[^\]]*\])*)\]\((?:[^()]|\([^()]*\))*\)"
+    r"|(\*\*|\*)(?=\S)(.+?)(?<=\S)\3(?!\*)"
+    r"|(?<!\w)(__|_)(?=\S)(.+?)(?<=\S)\5(?!\w)"
+)
+
+
+def _plain(match: re.Match) -> str:
+    escaped, anchor, _, starred, _, underscored = match.groups()
+    if escaped is not None:
+        return escaped
+    return MARKDOWN.sub(_plain, next(g for g in (anchor, starred, underscored) if g is not None))
+
+
+def page_source(url: str, title: str | None, markdown: str, raw: dict, fetched_at: datetime,
+                source_date: str | None) -> Source:
+    """A vendor_page Source whose text is the vendor's markdown as plain text, so a quote matches what the reader sees.
+
+    Links keep their anchor text; emphasis marks, heading markers and backslash escapes go. The id holds the
+    content hash, so a page whose text changed is stored as a new source.
+    """
+    text = normalize(MARKDOWN.sub(_plain, re.sub(r"^#{1,6}[ \t]+", "", markdown, flags=re.MULTILINE)))
+    content_hash = hashlib.sha256(text.encode()).hexdigest()
+    return Source(
+        id=hashlib.sha1(f"vendor_page\0{url}\0{content_hash}".encode()).hexdigest(), kind="vendor_page", url=url,
+        title=" ".join(title.split()) or None if title else None, text=text,
+        raw_json=json.dumps(raw, ensure_ascii=False, sort_keys=True),
+        content_hash=content_hash, source_date=source_date, date_method="record_field" if source_date else None,
+        fetched_at=fetched_at,
+    )
 
 
 class OrgFacts(Model):
@@ -245,6 +297,34 @@ class ClaimDraft(Model):
 class Identifier(Model):
     scheme: IdentifierScheme
     value: str
+
+
+# The extract task's answer: every person one part of a page names, with quotes the model copied from it.
+class PageRelation(Model):
+    relation: Relation
+    org: str
+    quote: str
+    year_from: int | None = None
+    year_to: int | None = None
+
+
+class PageMention(Model):
+    name: str
+    quote: str
+    role: str | None = None
+    relations: list[PageRelation] = []
+
+
+class PagePeople(Model):
+    people: list[PageMention]
+
+
+# A mention whose quotes were found in the page text: the cleaned name, its offsets and each kept relation's.
+class Located(Model):
+    name: str
+    role: str | None = None
+    span: Span
+    relations: list[tuple[PageRelation, Span]] = []
 
 
 class LaneHit(Model):
@@ -434,6 +514,7 @@ class GoldPick(Model):
 class GoldCase(Model):
     id: str
     question: str
+    source_url: str | None = None
     picks: list[GoldPick]
 
 
@@ -445,6 +526,7 @@ class PickResult(Model):
     rank: int | None = None
     gold_tie: GoldTie
     belgian: str = ""
+    lanes: str = ""
     lost_step: str = ""
     lost_reason: str = ""
 
@@ -466,5 +548,7 @@ class CaseResult(Model):
     chips: str
     search_id: str
     status: SearchStatus
+    http_cost_usd: float = 0.0
+    llm_cost_usd: float = 0.0
     picks: list[PickResult]
     top: list[TopCard]

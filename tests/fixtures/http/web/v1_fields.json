@@ -1,0 +1,40 @@
+{
+  "V1SearchRequest": [
+    "objective",
+    "search_queries",
+    "mode",
+    "max_chars_total",
+    "session_id",
+    "client_model",
+    "advanced_settings"
+  ],
+  "AdvancedSearchSettings": [
+    "source_policy",
+    "fetch_policy",
+    "excerpt_settings",
+    "location",
+    "max_results"
+  ],
+  "V1ExtractRequest": [
+    "urls",
+    "objective",
+    "search_queries",
+    "max_chars_total",
+    "session_id",
+    "client_model",
+    "advanced_settings"
+  ],
+  "AdvancedExtractSettings": [
+    "fetch_policy",
+    "excerpt_settings",
+    "full_content"
+  ],
+  "FullContentSettings": [
+    "max_chars_per_result"
+  ],
+  "FetchPolicy": [
+    "max_age_seconds",
+    "timeout_seconds",
+    "disable_cache_fallback"
+  ]
+}

@@ -3,6 +3,7 @@ data/seeds/*.jsonl
 data/seeds/raw/
 data/gold/
 tests/fixtures/http/openalex/
+tests/fixtures/llm/extract-*.json
 var/
 *.sqlite3*
 __pycache__/

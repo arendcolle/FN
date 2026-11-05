@@ -68,6 +68,22 @@ class FtsQueryTest(unittest.TestCase):
                 self.assertEqual((out.query, out.hits), ("", []))
                 self.assertEqual([c.reason for c in out.considered], [seeds.NO_QUERY])
 
+    def test_claims_from_lane_and_vendor_sources_are_no_seed_hit_and_page_claims_are(self):
+        """The seed lane matches claims from seed and page sources only.
+
+        Claims from record, vendor_record and vendor_page sources never become seed hits.
+        """
+        text = "Leads 6G networks research"
+        for kind in ("record", "vendor_record", "vendor_page", "page"):
+            source = Source(id=f"src-{kind}", kind=kind, url=f"https://example.org/{kind}", text=text,
+                            content_hash=hashlib.sha256(text.encode()).hexdigest())
+            person = self.store.resolve_person([Identifier(scheme="seed", value=kind)], kind)
+            self.store.upsert_claim(ClaimDraft(person_id=person.id, kind="topic", value=text, quote=text, quote_start=0,
+                                               quote_end=len(text), source=source))
+            self.people[person.id] = kind
+        out = self.lane(topic("6G"))
+        self.assertCountEqual([self.people[h.person_id] for h in out.hits], ["6g", "page"])
+
     def test_query_quotes_tokens_and_adds_institution_aliases_as_phrases(self):
         chips = Chips(topics=[Chip(text='say "hi" OR', origin="edited")], institutions=[Chip(text="MIT", origin="edited")])
         self.assertEqual(seeds.fts_query(chips, lambda text: orgs.names(orgs.org_id(text))),

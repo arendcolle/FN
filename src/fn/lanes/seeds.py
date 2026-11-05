@@ -2,12 +2,21 @@
 from collections.abc import Callable
 
 from fn import orgs
-from fn.contracts import Chips, Considered, LaneHit, LaneIn, LaneName, LaneOut
+from fn.contracts import (
+    Chips,
+    Considered,
+    LaneHit,
+    LaneIn,
+    LaneName,
+    LaneOut,
+    SourceKind,
+)
 from fn.steps import StepContext
 
 name: LaneName = "seeds"
 MAX_HITS = 100
 NO_QUERY = "no topic or institution chip"
+EXCLUDED: tuple[SourceKind, ...] = ("record", "vendor_record", "vendor_page")
 
 
 def phrase(text: str) -> str | None:
@@ -31,8 +40,8 @@ def run(ctx: StepContext, inp: LaneIn) -> LaneOut:
         return LaneOut(lane=name, query="", total_seen=0,
                        considered=[Considered(person_key="-", name="", stage="query", kept=False, reason=NO_QUERY)])
     hits, considered = [], []
-    # OpenAlex records are ranked by their own lane; matching them here would make seed ranks depend on past searches.
-    for rank, (person, claim, score) in enumerate(ctx.store.match_claims(query, exclude="record"), 1):
+    # OpenAlex and vendor sources belong to other lanes; matching them would make seed ranks depend on past searches.
+    for rank, (person, claim, score) in enumerate(ctx.store.match_claims(query, exclude=EXCLUDED), 1):
         kept = rank <= MAX_HITS
         if kept:
             hits.append(LaneHit(person_id=person.id, name_key=person.name_key, lane=name, rank=rank, score=-score,
