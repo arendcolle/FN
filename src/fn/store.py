@@ -302,8 +302,8 @@ class Store:
         )
         return {r["id"]: Org.model_validate(dict(r)) for r in rows}
 
-    def match_claims(self, query: str, exclude: SourceKind) -> list[tuple[Person, Claim, float]]:
-        """Every person with a claim matching the FTS5 query, from a source not of kind exclude, best first.
+    def match_claims(self, query: str, exclude: tuple[SourceKind, ...]) -> list[tuple[Person, Claim, float]]:
+        """Every person with a claim matching the FTS5 query, from a source of no kind in exclude, best first.
 
         Each comes with its best claim and that claim's bm25, which is lower for a better match;
         equal scores are ordered by person id.
@@ -313,9 +313,9 @@ class Store:
             f"SELECT {', '.join(f'p.{c} AS p_{c}' for c in PERSON_COLUMNS)}, "
             f"{', '.join(f'c.{c}' for c in CLAIM_COLUMNS)}, MIN(m.score) AS best "
             "FROM m JOIN claims c ON c.rowid = m.rowid JOIN persons p ON p.id = c.person_id "
-            "JOIN sources s ON s.id = c.source_id WHERE s.kind != ? "
+            "JOIN sources s ON s.id = c.source_id WHERE s.kind NOT IN (SELECT value FROM json_each(?)) "
             "GROUP BY c.person_id ORDER BY best, c.person_id",
-            (query, exclude),
+            (query, json.dumps(exclude)),
         )
         found = []
         for row in rows:

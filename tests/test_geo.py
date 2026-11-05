@@ -3,6 +3,7 @@ import unittest
 import httpx
 
 from fn import geo
+from fn.contracts import Place
 from tests.helpers import FIXTURES, cities_zip
 
 CITIES = geo.index((FIXTURES / "geo" / "cities15000-extract.txt").read_text(encoding="utf-8"))
@@ -32,6 +33,31 @@ class GeoTest(unittest.TestCase):
         http = Http()
         self.assertEqual(geo.cities(http), CITIES)
         geo.cities(http)
+        self.assertEqual(calls, [geo.CITIES_URL])
+
+    def test_area_locates_only_a_metro_place_and_fetches_the_dump_only_then(self):
+        """A metro or unkinded place chip gives its metro area; no place, abroad, anywhere_us or unknown city is None.
+
+        The cities dump is fetched once, and only for a metro or unkinded place.
+        """
+        calls = []
+
+        class Http:
+            def get(self, url: str, params: dict[str, str] | None = None) -> httpx.Response:
+                calls.append(url)
+                return httpx.Response(200, content=cities_zip())
+
+        def place(text: str, kind: str | None) -> Place:
+            return Place(text=text, origin="parsed", kind=kind)
+
+        http = Http()
+        self.assertIsNone(geo.area(http, None))
+        self.assertIsNone(geo.area(http, place("Leuven region", "abroad")))
+        self.assertIsNone(geo.area(http, place("anywhere in the US", "anywhere_us")))
+        self.assertEqual(calls, [])
+        self.assertEqual(geo.area(http, place("Menlo Park area", None)), geo.locate("Menlo Park area", CITIES))
+        self.assertEqual(geo.area(http, place("New York", "metro")).city, "New York City, US")
+        self.assertIsNone(geo.area(http, place("Gotham", "metro")))
         self.assertEqual(calls, [geo.CITIES_URL])
 
 

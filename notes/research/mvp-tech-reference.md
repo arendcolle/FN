@@ -51,6 +51,13 @@ The completeness critic named five gaps that nobody has researched yet: KBO Publ
 
 FN does not store or compute a tie type. A person's ties are affiliation claims with source, quote and date, the ranker scores those claims directly, and an institution's region is an organization fact from ROR. Any badge or filter is computed from the claims when it is shown. This replaces the "tie typer" and the tie label wherever this file mentions them; `notes/mvp0/architecture.md` has the details.
 
+### Quotes from vendor text, and LinkedIn through Apify (2026-11-04)
+
+The owner made two decisions for the web and LinkedIn lanes. `notes/mvp0/web-lanes-plan.md` holds the plan and `notes/mvp0/architecture.md` (version 3.1) describes the lanes as built.
+
+- **Quotes come from vendor text.** The web lane stores each Parallel result page as its Extract full content, else its Extract excerpts, else its Search excerpts, and every quote points into that text. The Source kind is `vendor_page`. This reverses the statement that FN fetches every page itself, in the TL;DR, the first two bullets after "These changes follow from the rules" under "Decisions since the first version" and Design step 5, and, under Not doing, "A vendor snippet is stored only for a page FN cannot fetch". FN fetches no page itself in this slice. A claim from a page is dated only by a year its quote states, and the page's own `publish_date` stays on the Source.
+- **FN calls LinkedIn through Apify.** The LinkedIn lane runs the Apify profile search with the topic, nine Belgian schools and the metro, and stores each profile as a vendor record with dated education and job claims. This reverses "FN itself never logs in to or scrapes LinkedIn" under Not doing, for this lane. FN still never logs in to LinkedIn. The lane spends Apify credit only with `FN_LINKEDIN=1` and otherwise serves a recorded run.
+
 ### Seed lists scraped (2026-10-30)
 
 Each list has a script in `scripts/seeds/`, a JSONL file in `data/seeds/` and a raw copy plus text layer in the gitignored `data/seeds/raw/`. `scripts/seeds/check.py` checks every file against an independent hand count, the gold picks by full name, the row schema and the quote-in-raw-text rule, and it passes.
@@ -511,8 +518,8 @@ Terms do not gate the personal prototype (see Decisions). The clauses that would
 
 We leave out anything that fails a knockout, duplicates a pick, or serves a need the MVP doc does not state.
 
-- **LinkedIn data outside the benchmark arms.** Exa people (B-people) and Apify (arm E) run in the benchmark; Clado, Pearch, Lessie, Sixtyfour, People Data Labs, Coresignal, Bright Data and Apollo were re-rated and dropped as duplicates of those two arms or for lack of a topic search. FN itself never logs in to or scrapes LinkedIn.
-- **Claims from vendor answers.** Basis reasoning and generated answers never become claims. A vendor snippet is stored only for a page FN cannot fetch.
+- **LinkedIn data outside the benchmark arms.** Exa people (B-people) and Apify (arm E) run in the benchmark; Clado, Pearch, Lessie, Sixtyfour, People Data Labs, Coresignal, Bright Data and Apollo were re-rated and dropped as duplicates of those two arms or for lack of a topic search. FN itself never logs in to LinkedIn. The LinkedIn lane reads profiles through the Apify actor, by the decision "Quotes from vendor text, and LinkedIn through Apify (2026-11-04)" under Decisions.
+- **Claims from vendor answers.** Basis reasoning and generated answers never become claims. Vendor page text is stored and quoted, and it is Parallel Extract's full content, else its excerpts, else the Search excerpts. This replaces the old rule that a vendor snippet is stored only for a page FN cannot fetch; see the decision "Quotes from vendor text, and LinkedIn through Apify (2026-11-04)" under Decisions.
 - **Organizations as records**, which are out of the MVP. Companies appear only as temporary planner targets.
 - **Institutions invented by the model.** Institutions resolve against ROR or stay as quoted text, which fixes the POC's "A Major Flemish University" rows.
 - **Contact details**, which are out of the MVP. The email field in the europarl record is ignored.

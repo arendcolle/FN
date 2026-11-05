@@ -180,10 +180,10 @@ def place_area(ctx: StepContext, chips: Chips, considered: list[Considered]) -> 
     place = chips.place
     if place is None:
         return None
-    if place.kind not in (None, "metro"):
+    if place.kind not in geo.METRO_KINDS:
         considered.append(note(f"place {place.text!r} is {place.kind}; distance does not rank", True, "place"))
         return None
-    area = geo.locate(place.text, geo.cities(ctx.http))
+    area = geo.area(ctx.http, place)
     considered.append(note(
         f"place {place.text!r} is {area.city} ({area.lat:.2f}, {area.lon:.2f}), radius {area.radius_km:g} km" if area
         else f"place {place.text!r} names no city in GeoNames cities15000; distance does not rank", True, "place"))

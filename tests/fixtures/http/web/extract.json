@@ -1,0 +1,29 @@
+{
+  "extract_id": "extract_00000000000000000000000000000001",
+  "results": [
+    {
+      "url": "https://events.example.org/belgium-6g-roundtable",
+      "title": "Belgium 6G roundtable",
+      "publish_date": "2026-05-12",
+      "excerpts": ["Speakers include [Wim Doe](https://events.example.org/speakers/wim-doe), professor of wireless networks at KU Leuven."],
+      "full_content": "# Belgium 6G roundtable\n\nSpeakers include [Wim Doe](https://events.example.org/speakers/wim-doe), **professor** of wireless networks at KU Leuven.\n\nModerator: Anja Voorbeeld, PhD, imec."
+    },
+    {
+      "url": "https://example.edu/faculty/telecom",
+      "title": "Telecom faculty",
+      "publish_date": null,
+      "excerpts": ["Anja Voorbeeld leads the telecom group.", "She studied at Ghent University."],
+      "full_content": null
+    }
+  ],
+  "errors": [
+    {
+      "url": "https://news.example.org/flemish-researchers",
+      "error_type": "fetch_failed",
+      "http_status_code": 403,
+      "content": null
+    }
+  ],
+  "session_id": "session_00000000000000000000000000000001",
+  "usage": [{"name": "sku_extract_invented", "count": 3}]
+}
