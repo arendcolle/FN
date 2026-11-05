@@ -89,14 +89,29 @@ def table(headers: list[object], rows: Iterable[list[object]]) -> Safe:
     )
 
 
-def page(title: str, *body: object, refresh: int | None = None, extra_head: object = None) -> str:
-    """A full document with the site nav; refresh reloads every that many seconds, extra_head adds head children."""
+def page(title: str, *body: object, refresh: int | None = None, extra_head: object = None, debug: bool = False,
+         current: str | None = None, body_class: str | None = None) -> str:
+    """A full document with the FN header, or the debug nav when debug; refresh reloads every that many seconds.
+
+    extra_head adds head children before the site styles, current names the header link of this page ("search")
+    and body_class goes on body. Only debug pages link to other debug pages.
+    """
     head = h.head(
         h.meta(charset="utf-8"),
+        h.meta(name="viewport", content="width=device-width, initial-scale=1"),
         h.title(title),
         h.meta(http_equiv="refresh", content=str(refresh)) if refresh else None,
-        h.link(rel="stylesheet", href="/static/fn.css"),
         extra_head,
+        h.link(rel="stylesheet", href="/static/tokens.css"),
+        h.link(rel="stylesheet", href="/static/fn.css"),
     )
-    nav = h.p(h.a("Searches", href="/"), " ", h.a("Request errors", href="/debug/errors"))
-    return "<!doctype html>" + tag("html", head, h.body(nav, body), lang="en")
+    if debug:
+        top = h.p(h.a("Debug", href="/debug"), " ", h.a("Request errors", href="/debug/errors"))
+    else:
+        top = h.header(
+            h.a("FN", href="/", class_="fn-logo text-logo"),
+            h.nav(h.a("Search", href="/", aria_current="page" if current == "search" else None),
+                  class_="fn-nav text-body", aria_label="Main"),
+            class_="fn-header",
+        )
+    return "<!doctype html>" + tag("html", head, h.body(top, body, class_="fn-debug" if debug else body_class), lang="en")
