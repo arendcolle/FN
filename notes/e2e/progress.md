@@ -1,0 +1,46 @@
+# Progress on the seven staff flows
+
+One line per finished step, newest last. The plan is in [plan.md](plan.md) and the design in [design.md](design.md).
+
+## Log
+
+- 2026-11-12 Baseline: `uv run python -m unittest` runs 267 tests and passes on `main` at `e1250ca`, once the gitignored local data (`data/seeds`, `data/gold`, `tests/fixtures/http/openalex`) is present. Without it 47 tests fail.
+- 2026-11-12 Research notes written by nine reader agents: [research/](research/).
+- 2026-11-12 Design draft 1 written: [design.md](design.md). Decisions D5 to D10 sent to review panels.
+- 2026-11-12 Started two slices that do not depend on the panels: the city lookup fix ([tasks/geo.md](tasks/geo.md)) and the Fayat seed list ([tasks/fayat.md](tasks/fayat.md)).
+- 2026-11-12 Six panels settled D5 to D10 (records in [panel-records.md](panel-records.md)). Design version 2 and the plan written.
+- 2026-11-12 T3 merged: Fayat scholars as a sixth seed list (PR #5). 95 people from the public laureate page; names stay local.
+- 2026-11-12 T1 merged: `web/app.py` split by job, 23 pages byte-identical before and after (PR #6).
+- 2026-11-12 T2 merged: place lookup reads states, countries and metro names (PR #7). The LinkedIn location claim was left out.
+- 2026-11-12 Plan reviewed by a fresh Opus reviewer in three rounds and approved. T4, the network core, started.
+
+## Review ledger
+
+Findings from plan and diff reviews, with the outcome of each.
+
+| Id | Where | Severity | Outcome |
+| --- | --- | --- | --- |
+| geo R1 | `geo.py` free-text scan read an alternate city name as the city before a state name | should | fixed |
+| geo R2 | A code that is both a state and a country (CA) matched only as a state | should | fixed |
+| geo R3 | A metro alias inside a longer text wins over a comma qualifier | nit | declined, follows the task's rule 1 |
+| geo R4 | "Netherlands" was missing from the country aliases | nit | fixed |
+| fayat R1 | Scholars loaded as `hosted_by` their university | nit | fixed: new seed relation `student` loads as `studied_at` |
+| fayat R2 | Two alias lines for spellings the page does not use | nit | kept, they are correct ids |
+| websplit R1 | Dead `MAX_CHIPS` left in `app.py` | nit | fixed |
+| websplit R2 | Blank-line drift after the move | nit | fixed |
+| websplit R3 | `app.py` re-exported four debug functions for two tests | nit | fixed: the tests import from `fn.web.debug` |
+| plan R1 | Same-name extras and `claims_of` would show a merged record twice | should | fixed in the plan and the T4 task |
+| plan R2 | No reader for a person's identifiers | should | fixed: `store.identifiers_of` |
+| plan R3 | Nobody wrote the import and export events | should | fixed: `network.record_import`, `record_export` |
+| plan R4 | "New" was undefined for a person never opened, and merged-in facts were not new | should | fixed: `add` sets `seen_at`; `merged_at` counts as first seen |
+| plan R5 | T10 needed the exporter from T9 | should | fixed: T10 needs T9 |
+| plan R6 | No way to read a multipart upload without a new dependency | should | fixed: standard-library parser with a 5 MB cap |
+| plan R7 | `test_sections_number_apart` encodes the old section rule | should | fixed: named as an intended change |
+| plan R8 | No task hid skipped candidates | should | fixed: T10 owns `list_candidates(include_skipped=False)` |
+| plan R9 | "Second row updates the first" contradicted the identifier rule | should | fixed: identical rows are skipped, same-name rows stay two people |
+| plan R10 | A typed email was no identifier | should | fixed: `set_contact` attaches it and refuses a taken address |
+| plan R11 | `save_candidates` did not write the new fields | should | fixed |
+| plan R12 to R14, R16 to R18 | Missing inputs, route order, `fn:` link, task needs, file map | nit | fixed |
+| plan R15 | Filter fields beyond one text box | nit | partly: the place token is cut, the two link tokens stay |
+| plan R19 | `first_seen_at` came from the store's clock, the other times from the caller's | should | fixed: `upsert_claim(draft, at)` |
+| plan R20 | `resolve.run` read canonical ids for hits only | should | fixed: also for same-name records |
