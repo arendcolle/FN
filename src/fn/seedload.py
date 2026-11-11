@@ -26,9 +26,11 @@ LISTS: dict[str, tuple[Relation, str]] = {
     "kvab": ("member_of", "KVAB"),
     "climate": ("member_of", "Belgian Climate Centre"),
     "consuls": ("consul_for", "Belgium"),
+    "fayat": ("fellow_of", "Flemish Government"),
 }
 RELATIONS: dict[str, Relation] = {
     "home": "affiliated_with", "host": "hosted_by", "employer": "works_at", "member_of": "member_of",
+    "student": "studied_at",
 }
 DATE_METHODS: dict[str, DateMethod | None] = {
     "none": None,
