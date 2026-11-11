@@ -11,7 +11,7 @@ import httpx
 ROOT = Path(__file__).resolve().parents[2]
 SEEDS = ROOT / "data" / "seeds"
 USER_AGENT = "FN-prototype/0.1 (personal research)"
-RELATIONS = {"home", "host", "employer", "member_of"}
+RELATIONS = {"home", "host", "employer", "member_of", "student"}
 REQUIRED = {
     "list": str, "row_key": str, "name": str, "name_on_page": str, "year": (int, type(None)),
     "role": (str, type(None)), "institutions": list, "field": (str, type(None)),

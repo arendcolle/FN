@@ -10,14 +10,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import common
 
-# Counts come from independent hand counts of each source on 2026-10-29, not from the scrapers.
-EXPECTED = {"consuls": 34, "baef": 3577, "kvab": 545, "francqui": 331, "climate": 453}
+# Counts come from independent hand counts of each source on 2026-10-29 (fayat on 2026-11-12), not from the scrapers.
+EXPECTED = {"consuls": 34, "baef": 3577, "kvab": 545, "francqui": 331, "climate": 453, "fayat": 95}
 GOLD = {
     "consuls": ["Anne Deconinck"],
     "baef": ["Michel Goemans", "Pierre Lermusiaux", "Julien de Wit", "Milena Janjevic"],
     "kvab": ["Pattie Maes", "Valerie Trouet", "Jeroen Dewulf", "Wim Sweldens", "Lieven Danneels"],
     "francqui": ["Michel Goemans"],
     "climate": ["Valerie Trouet", "Hans Bruyninckx"],
+    "fayat": [],
 }
 
 
