@@ -8,7 +8,7 @@ import httpx
 from fn import net, resolve
 from fn.contracts import Chip, Chips, LaneOut, Place
 from fn.lanes import openalex
-from fn.web.app import cards, lane_matches, trace_rows
+from fn.web.debug import cards, lane_matches, trace_rows
 from fn.worker import Worker
 from tests.helpers import (
     FIXTURES,

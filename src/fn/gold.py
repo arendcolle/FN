@@ -25,7 +25,7 @@ from fn.contracts import (
 )
 from fn.llm import from_settings
 from fn.store import Store
-from fn.web.app import titles, trace_rows
+from fn.web.debug import titles, trace_rows
 from fn.worker import Worker
 
 GOLD_SET = ROOT / "data" / "gold" / "gold-set.json"
