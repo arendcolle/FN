@@ -3,6 +3,7 @@ import unittest
 from collections.abc import Callable
 from datetime import UTC, datetime
 
+import httpx
 from pydantic import BaseModel
 
 from fn import extract, llm, rank
@@ -18,7 +19,7 @@ from fn.contracts import (
 )
 from fn.steps import StepContext
 from fn.worker import new_id, now
-from tests.helpers import make_db, make_settings
+from tests.helpers import cities_zip, make_db, make_settings
 
 URL = "https://events.example.org/belgium-6g-roundtable"
 READ = datetime(2026, 11, 3, tzinfo=UTC)
@@ -258,6 +259,32 @@ class ExtractTest(unittest.TestCase):
         self.assertEqual([(c.valid_from, c.valid_to, c.claim_date, c.date_method) for c in claims],
                          [(None, None, None, None), ("1990", None, "1990", "stated_in_quote")])
         self.assertEqual([rank.units(c) for c in claims], [frozenset({rank.UNDATED}), frozenset({"1990"})])
+
+    def test_a_lives_in_claim_gets_the_coordinates_geo_finds_and_a_born_in_claim_none(self):
+        """Only lives_in is placed on the map; a place geo cannot resolve stays without coordinates and is logged."""
+        class Http:
+            def get(self, url: str, params: dict[str, str] | None = None) -> httpx.Response:
+                return httpx.Response(200, content=cities_zip())
+
+        text = "Wim Doe was born in Boston and lives in Cambridge, Massachusetts. Jan Peeters lives in Nowhereville."
+        source = self.source(text)
+        found, _ = self.mentions([
+            mention("Wim Doe", "Wim Doe was born in Boston and lives in Cambridge, Massachusetts", None,
+                    relation("born_in", "Boston", "was born in Boston"),
+                    relation("lives_in", "Cambridge, Massachusetts", "lives in Cambridge, Massachusetts")),
+            mention("Jan Peeters", "Jan Peeters lives in Nowhereville", None,
+                    relation("lives_in", "Nowhereville", "lives in Nowhereville"))], source)
+        ctx = StepContext(search_id="s", store=self.store, llm=self.llm, http=Http(), now=now, new_id=new_id,
+                          log=logging.getLogger("fn.step"), settings=self.settings)
+        with self.assertLogs("fn.step", "INFO") as logs:
+            places = [(d.relation, d.lat is not None) for f in found for d in extract.drafts("p", source, f, ctx)
+                      if d.kind == "location"]
+        self.assertEqual(places, [("born_in", False), ("lives_in", True), ("lives_in", False)])
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("Nowhereville", logs.output[0])
+        (cambridge,) = [d for d in extract.drafts("p", source, found[0], ctx) if d.relation == "lives_in"]
+        self.assertAlmostEqual(cambridge.lat, 42.38, places=1)
+        self.assertAlmostEqual(cambridge.lon, -71.11, places=1)
 
     def test_a_role_falls_back_to_the_page_title_then_the_host(self):
         """Every mention gives a role claim, even without a role.

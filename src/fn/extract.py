@@ -4,7 +4,7 @@ from urllib.parse import urlsplit
 
 from pydantic import ValidationError
 
-from fn import orgs
+from fn import geo, orgs
 from fn.contracts import (
     ClaimDraft,
     Considered,
@@ -153,12 +153,12 @@ def stated(year: int | None, quote: str) -> str | None:
     return str(year)
 
 
-def drafts(person_id: str, source: Source, located: Located) -> list[ClaimDraft]:
+def drafts(person_id: str, source: Source, located: Located, ctx: StepContext | None = None) -> list[ClaimDraft]:
     """A role claim quoting the mention, then one claim per kept relation quoting its own passage.
 
-    The role is the mention's, else the page title, else the URL's host. born_in and lives_in give a location
-    claim without coordinates, any other relation an affiliation claim at the alias file's org id. A claim is
-    dated only by the years its quote states.
+    The role is the mention's, else the page title, else the URL's host. born_in gives a location claim without
+    coordinates, lives_in one with the coordinates geo finds for the place when ctx is given, any other relation
+    an affiliation claim at the alias file's org id. A claim is dated only by the years its quote states.
     """
     def quoted(span: Span) -> dict:
         return {"person_id": person_id, "quote": source.text[span.start:span.end], "quote_start": span.start,
@@ -173,7 +173,10 @@ def drafts(person_id: str, source: Source, located: Located) -> list[ClaimDraft]
             base |= {"valid_from": start, "valid_to": end, "claim_date": max(y for y in (start, end) if y),
                      "date_precision": "year", "date_method": "stated_in_quote"}
         if rel.relation in PLACES:
-            found.append(ClaimDraft(kind="location", relation=rel.relation, value=normalize(rel.org), **base))
+            where = geo.coordinates(ctx.http, normalize(rel.org), ctx.log) if ctx and rel.relation == "lives_in" else None
+            lat, lon = where or (None, None)
+            found.append(ClaimDraft(kind="location", relation=rel.relation, value=normalize(rel.org), lat=lat, lon=lon,
+                                    **base))
         else:
             found.append(ClaimDraft(kind="affiliation", relation=rel.relation, org_id=orgs.org_id(rel.org),
                                     value=normalize(rel.org), **base))

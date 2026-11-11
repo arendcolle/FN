@@ -1,0 +1,626 @@
+kind,alias,target
+metro,bay area,"San Francisco, CA, US"
+metro,silicon valley,"San Jose, CA, US"
+metro,research triangle,"Raleigh, NC, US"
+metro,twin cities,"Minneapolis, MN, US"
+state,alabama,AL
+state,al,AL
+state,alaska,AK
+state,ak,AK
+state,arizona,AZ
+state,az,AZ
+state,arkansas,AR
+state,ar,AR
+state,california,CA
+state,ca,CA
+state,colorado,CO
+state,co,CO
+state,connecticut,CT
+state,ct,CT
+state,delaware,DE
+state,de,DE
+state,district of columbia,DC
+state,dc,DC
+state,florida,FL
+state,fl,FL
+state,georgia,GA
+state,ga,GA
+state,hawaii,HI
+state,hi,HI
+state,idaho,ID
+state,id,ID
+state,illinois,IL
+state,il,IL
+state,indiana,IN
+state,in,IN
+state,iowa,IA
+state,ia,IA
+state,kansas,KS
+state,ks,KS
+state,kentucky,KY
+state,ky,KY
+state,louisiana,LA
+state,la,LA
+state,maine,ME
+state,me,ME
+state,maryland,MD
+state,md,MD
+state,massachusetts,MA
+state,ma,MA
+state,michigan,MI
+state,mi,MI
+state,minnesota,MN
+state,mn,MN
+state,mississippi,MS
+state,ms,MS
+state,missouri,MO
+state,mo,MO
+state,montana,MT
+state,mt,MT
+state,nebraska,NE
+state,ne,NE
+state,nevada,NV
+state,nv,NV
+state,new hampshire,NH
+state,nh,NH
+state,new jersey,NJ
+state,nj,NJ
+state,new mexico,NM
+state,nm,NM
+state,new york,NY
+state,ny,NY
+state,north carolina,NC
+state,nc,NC
+state,north dakota,ND
+state,nd,ND
+state,ohio,OH
+state,oh,OH
+state,oklahoma,OK
+state,ok,OK
+state,oregon,OR
+state,or,OR
+state,pennsylvania,PA
+state,pa,PA
+state,rhode island,RI
+state,ri,RI
+state,south carolina,SC
+state,sc,SC
+state,south dakota,SD
+state,sd,SD
+state,tennessee,TN
+state,tn,TN
+state,texas,TX
+state,tx,TX
+state,utah,UT
+state,ut,UT
+state,vermont,VT
+state,vt,VT
+state,virginia,VA
+state,va,VA
+state,washington,WA
+state,wa,WA
+state,west virginia,WV
+state,wv,WV
+state,wisconsin,WI
+state,wi,WI
+state,wyoming,WY
+state,wy,WY
+country,andorra,AD
+country,ad,AD
+country,united arab emirates,AE
+country,ae,AE
+country,afghanistan,AF
+country,af,AF
+country,antigua and barbuda,AG
+country,ag,AG
+country,anguilla,AI
+country,ai,AI
+country,albania,AL
+country,al,AL
+country,armenia,AM
+country,am,AM
+country,angola,AO
+country,ao,AO
+country,antarctica,AQ
+country,aq,AQ
+country,argentina,AR
+country,ar,AR
+country,american samoa,AS
+country,as,AS
+country,austria,AT
+country,at,AT
+country,australia,AU
+country,au,AU
+country,aruba,AW
+country,aw,AW
+country,aland islands,AX
+country,ax,AX
+country,azerbaijan,AZ
+country,az,AZ
+country,bosnia and herzegovina,BA
+country,ba,BA
+country,barbados,BB
+country,bb,BB
+country,bangladesh,BD
+country,bd,BD
+country,belgium,BE
+country,be,BE
+country,burkina faso,BF
+country,bf,BF
+country,bulgaria,BG
+country,bg,BG
+country,bahrain,BH
+country,bh,BH
+country,burundi,BI
+country,bi,BI
+country,benin,BJ
+country,bj,BJ
+country,saint barthelemy,BL
+country,bl,BL
+country,bermuda,BM
+country,bm,BM
+country,brunei,BN
+country,bn,BN
+country,bolivia,BO
+country,bo,BO
+country,"bonaire, saint eustatius and saba ",BQ
+country,bq,BQ
+country,brazil,BR
+country,br,BR
+country,bahamas,BS
+country,bs,BS
+country,bhutan,BT
+country,bt,BT
+country,bouvet island,BV
+country,bv,BV
+country,botswana,BW
+country,bw,BW
+country,belarus,BY
+country,by,BY
+country,belize,BZ
+country,bz,BZ
+country,canada,CA
+country,ca,CA
+country,cocos islands,CC
+country,cc,CC
+country,democratic republic of the congo,CD
+country,cd,CD
+country,central african republic,CF
+country,cf,CF
+country,republic of the congo,CG
+country,cg,CG
+country,switzerland,CH
+country,ch,CH
+country,ivory coast,CI
+country,ci,CI
+country,cook islands,CK
+country,ck,CK
+country,chile,CL
+country,cl,CL
+country,cameroon,CM
+country,cm,CM
+country,china,CN
+country,cn,CN
+country,colombia,CO
+country,co,CO
+country,costa rica,CR
+country,cr,CR
+country,cuba,CU
+country,cu,CU
+country,cabo verde,CV
+country,cv,CV
+country,curacao,CW
+country,cw,CW
+country,christmas island,CX
+country,cx,CX
+country,cyprus,CY
+country,cy,CY
+country,czechia,CZ
+country,cz,CZ
+country,germany,DE
+country,de,DE
+country,djibouti,DJ
+country,dj,DJ
+country,denmark,DK
+country,dk,DK
+country,dominica,DM
+country,dm,DM
+country,dominican republic,DO
+country,do,DO
+country,algeria,DZ
+country,dz,DZ
+country,ecuador,EC
+country,ec,EC
+country,estonia,EE
+country,ee,EE
+country,egypt,EG
+country,eg,EG
+country,western sahara,EH
+country,eh,EH
+country,eritrea,ER
+country,er,ER
+country,spain,ES
+country,es,ES
+country,ethiopia,ET
+country,et,ET
+country,finland,FI
+country,fi,FI
+country,fiji,FJ
+country,fj,FJ
+country,falkland islands,FK
+country,fk,FK
+country,micronesia,FM
+country,fm,FM
+country,faroe islands,FO
+country,fo,FO
+country,france,FR
+country,fr,FR
+country,gabon,GA
+country,ga,GA
+country,united kingdom,GB
+country,gb,GB
+country,grenada,GD
+country,gd,GD
+country,georgia,GE
+country,ge,GE
+country,french guiana,GF
+country,gf,GF
+country,guernsey,GG
+country,gg,GG
+country,ghana,GH
+country,gh,GH
+country,gibraltar,GI
+country,gi,GI
+country,greenland,GL
+country,gl,GL
+country,gambia,GM
+country,gm,GM
+country,guinea,GN
+country,gn,GN
+country,guadeloupe,GP
+country,gp,GP
+country,equatorial guinea,GQ
+country,gq,GQ
+country,greece,GR
+country,gr,GR
+country,south georgia and the south sandwich islands,GS
+country,gs,GS
+country,guatemala,GT
+country,gt,GT
+country,guam,GU
+country,gu,GU
+country,guinea-bissau,GW
+country,gw,GW
+country,guyana,GY
+country,gy,GY
+country,hong kong,HK
+country,hk,HK
+country,heard island and mcdonald islands,HM
+country,hm,HM
+country,honduras,HN
+country,hn,HN
+country,croatia,HR
+country,hr,HR
+country,haiti,HT
+country,ht,HT
+country,hungary,HU
+country,hu,HU
+country,indonesia,ID
+country,id,ID
+country,ireland,IE
+country,ie,IE
+country,israel,IL
+country,il,IL
+country,isle of man,IM
+country,im,IM
+country,india,IN
+country,in,IN
+country,british indian ocean territory,IO
+country,io,IO
+country,iraq,IQ
+country,iq,IQ
+country,iran,IR
+country,ir,IR
+country,iceland,IS
+country,is,IS
+country,italy,IT
+country,it,IT
+country,jersey,JE
+country,je,JE
+country,jamaica,JM
+country,jm,JM
+country,jordan,JO
+country,jo,JO
+country,japan,JP
+country,jp,JP
+country,kenya,KE
+country,ke,KE
+country,kyrgyzstan,KG
+country,kg,KG
+country,cambodia,KH
+country,kh,KH
+country,kiribati,KI
+country,ki,KI
+country,comoros,KM
+country,km,KM
+country,saint kitts and nevis,KN
+country,kn,KN
+country,north korea,KP
+country,kp,KP
+country,south korea,KR
+country,kr,KR
+country,kosovo,XK
+country,xk,XK
+country,kuwait,KW
+country,kw,KW
+country,cayman islands,KY
+country,ky,KY
+country,kazakhstan,KZ
+country,kz,KZ
+country,laos,LA
+country,la,LA
+country,lebanon,LB
+country,lb,LB
+country,saint lucia,LC
+country,lc,LC
+country,liechtenstein,LI
+country,li,LI
+country,sri lanka,LK
+country,lk,LK
+country,liberia,LR
+country,lr,LR
+country,lesotho,LS
+country,ls,LS
+country,lithuania,LT
+country,lt,LT
+country,luxembourg,LU
+country,lu,LU
+country,latvia,LV
+country,lv,LV
+country,libya,LY
+country,ly,LY
+country,morocco,MA
+country,ma,MA
+country,monaco,MC
+country,mc,MC
+country,moldova,MD
+country,md,MD
+country,montenegro,ME
+country,me,ME
+country,saint martin,MF
+country,mf,MF
+country,madagascar,MG
+country,mg,MG
+country,marshall islands,MH
+country,mh,MH
+country,north macedonia,MK
+country,mk,MK
+country,mali,ML
+country,ml,ML
+country,myanmar,MM
+country,mm,MM
+country,mongolia,MN
+country,mn,MN
+country,macao,MO
+country,mo,MO
+country,northern mariana islands,MP
+country,mp,MP
+country,martinique,MQ
+country,mq,MQ
+country,mauritania,MR
+country,mr,MR
+country,montserrat,MS
+country,ms,MS
+country,malta,MT
+country,mt,MT
+country,mauritius,MU
+country,mu,MU
+country,maldives,MV
+country,mv,MV
+country,malawi,MW
+country,mw,MW
+country,mexico,MX
+country,mx,MX
+country,malaysia,MY
+country,my,MY
+country,mozambique,MZ
+country,mz,MZ
+country,namibia,NA
+country,na,NA
+country,new caledonia,NC
+country,nc,NC
+country,niger,NE
+country,ne,NE
+country,norfolk island,NF
+country,nf,NF
+country,nigeria,NG
+country,ng,NG
+country,nicaragua,NI
+country,ni,NI
+country,the netherlands,NL
+country,netherlands,NL
+country,nl,NL
+country,norway,NO
+country,no,NO
+country,nepal,NP
+country,np,NP
+country,nauru,NR
+country,nr,NR
+country,niue,NU
+country,nu,NU
+country,new zealand,NZ
+country,nz,NZ
+country,oman,OM
+country,om,OM
+country,panama,PA
+country,pa,PA
+country,peru,PE
+country,pe,PE
+country,french polynesia,PF
+country,pf,PF
+country,papua new guinea,PG
+country,pg,PG
+country,philippines,PH
+country,ph,PH
+country,pakistan,PK
+country,pk,PK
+country,poland,PL
+country,pl,PL
+country,saint pierre and miquelon,PM
+country,pm,PM
+country,pitcairn,PN
+country,pn,PN
+country,puerto rico,PR
+country,pr,PR
+country,palestinian territory,PS
+country,ps,PS
+country,portugal,PT
+country,pt,PT
+country,palau,PW
+country,pw,PW
+country,paraguay,PY
+country,py,PY
+country,qatar,QA
+country,qa,QA
+country,reunion,RE
+country,re,RE
+country,romania,RO
+country,ro,RO
+country,serbia,RS
+country,rs,RS
+country,russia,RU
+country,ru,RU
+country,rwanda,RW
+country,rw,RW
+country,saudi arabia,SA
+country,sa,SA
+country,solomon islands,SB
+country,sb,SB
+country,seychelles,SC
+country,sc,SC
+country,sudan,SD
+country,sd,SD
+country,south sudan,SS
+country,ss,SS
+country,sweden,SE
+country,se,SE
+country,singapore,SG
+country,sg,SG
+country,saint helena,SH
+country,sh,SH
+country,slovenia,SI
+country,si,SI
+country,svalbard and jan mayen,SJ
+country,sj,SJ
+country,slovakia,SK
+country,sk,SK
+country,sierra leone,SL
+country,sl,SL
+country,san marino,SM
+country,sm,SM
+country,senegal,SN
+country,sn,SN
+country,somalia,SO
+country,so,SO
+country,suriname,SR
+country,sr,SR
+country,sao tome and principe,ST
+country,st,ST
+country,el salvador,SV
+country,sv,SV
+country,sint maarten,SX
+country,sx,SX
+country,syria,SY
+country,sy,SY
+country,eswatini,SZ
+country,sz,SZ
+country,turks and caicos islands,TC
+country,tc,TC
+country,chad,TD
+country,td,TD
+country,french southern territories,TF
+country,tf,TF
+country,togo,TG
+country,tg,TG
+country,thailand,TH
+country,th,TH
+country,tajikistan,TJ
+country,tj,TJ
+country,tokelau,TK
+country,tk,TK
+country,timor leste,TL
+country,tl,TL
+country,turkmenistan,TM
+country,tm,TM
+country,tunisia,TN
+country,tn,TN
+country,tonga,TO
+country,to,TO
+country,turkey,TR
+country,tr,TR
+country,trinidad and tobago,TT
+country,tt,TT
+country,tuvalu,TV
+country,tv,TV
+country,taiwan,TW
+country,tw,TW
+country,tanzania,TZ
+country,tz,TZ
+country,ukraine,UA
+country,ua,UA
+country,uganda,UG
+country,ug,UG
+country,united states minor outlying islands,UM
+country,um,UM
+country,united states,US
+country,us,US
+country,uruguay,UY
+country,uy,UY
+country,uzbekistan,UZ
+country,uz,UZ
+country,vatican,VA
+country,va,VA
+country,saint vincent and the grenadines,VC
+country,vc,VC
+country,venezuela,VE
+country,ve,VE
+country,british virgin islands,VG
+country,vg,VG
+country,u.s. virgin islands,VI
+country,vi,VI
+country,vietnam,VN
+country,vn,VN
+country,vanuatu,VU
+country,vu,VU
+country,wallis and futuna,WF
+country,wf,WF
+country,samoa,WS
+country,ws,WS
+country,yemen,YE
+country,ye,YE
+country,mayotte,YT
+country,yt,YT
+country,south africa,ZA
+country,za,ZA
+country,zambia,ZM
+country,zm,ZM
+country,zimbabwe,ZW
+country,zw,ZW
+country,serbia and montenegro,CS
+country,cs,CS
+country,netherlands antilles,AN
+country,an,AN
+country,usa,US
+country,u s,US
+country,u s a,US
+country,united states of america,US
+country,america,US
+country,uk,GB
+country,u k,GB
+country,great britain,GB
+country,england,GB
+country,scotland,GB
+country,wales,GB
+country,northern ireland,GB
+country,holland,NL
+country,czech republic,CZ
