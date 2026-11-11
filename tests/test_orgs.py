@@ -14,7 +14,7 @@ import httpx
 from fn import db, orgs, seedload
 from fn.contracts import REGISTRY_ID, Chip, Chips, ClaimDraft, OrgFacts, Search, Source, record_source
 from fn.store import Store
-from fn.web.app import debug_search_page
+from fn.web.debug import debug_search_page
 from tests.helpers import (
     FIXTURES,
     make_db,
