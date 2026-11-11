@@ -97,7 +97,7 @@ def people(ctx: StepContext, pages: list[tuple[int, Source]], considered: list[C
             for located in found:
                 ident = extract.identifier(source.url, located.name)
                 person = ctx.store.resolve_person([ident], located.name)
-                claims = [ctx.store.upsert_claim(d) for d in extract.drafts(person.id, source, located)]
+                claims = [ctx.store.upsert_claim(d) for d in extract.drafts(person.id, source, located, ctx)]
                 hit = hits.get(person.id) or LaneHit(person_id=person.id, name_key=person.name_key, lane=name,
                                                      rank=len(hits) + 1, score=1 / rank, matched_on=page)
                 ids = list(dict.fromkeys([*hit.claim_ids, *(c.id for c in claims)]))
