@@ -124,11 +124,11 @@ def what_of(claim: Claim, org: Org | None) -> str:
 
 
 def label_of(source: Source) -> str:
-    """The source as a citation names it: the record kind, the import file and row, else the page title or host."""
+    """The source as a citation names it: the record kind, the import file and row (its title), else the page title or host."""
     if source.kind in RECORD_LABELS:
         return RECORD_LABELS[source.kind]
     if source.kind == "import":
-        return f"Import {source.title}, row {source.url.rpartition('#row-')[2]}"
+        return f"Import {source.title}"
     return source.title or urlsplit(source.url).hostname or source.url
 
 

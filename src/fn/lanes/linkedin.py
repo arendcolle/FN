@@ -1,7 +1,6 @@
 """LinkedIn lane: one Apify profile search per search, each profile a vendor_record source with dated claims."""
 import json
 from datetime import datetime
-from urllib.parse import urlsplit
 
 from fn import geo, orgs
 from fn.contracts import (
@@ -20,6 +19,7 @@ from fn.contracts import (
     normalize,
     record_source,
 )
+from fn.contracts import profile_url as canonical
 from fn.net import CacheMiss, MissingKey
 from fn.steps import StepContext
 
@@ -55,18 +55,6 @@ JOB = ("companyName", "position", "location", "startDate.text", "endDate.text")
 
 def note(reason: str, kept: bool = False, stage: str = "query") -> Considered:
     return Considered(person_key="-", name="", stage=stage, kept=kept, reason=reason)
-
-
-def canonical(url: str) -> str:
-    """The profile URL on https and www.linkedin.com, without query, fragment or trailing slash.
-
-    Any linkedin.com host, such as be.linkedin.com, becomes www.linkedin.com.
-    """
-    parts = urlsplit(url.strip() if "//" in url else f"//{url.strip()}")
-    host = parts.netloc.lower()
-    if host == "linkedin.com" or host.endswith(".linkedin.com"):
-        host = "www.linkedin.com"
-    return f"https://{host}{parts.path.rstrip('/')}"
 
 
 def query_terms(chips: Chips) -> tuple[list[str], list[str]]:

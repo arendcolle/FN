@@ -20,6 +20,8 @@ from fn.contracts import (
     Event,
     Identifier,
     IdentifierScheme,
+    ImportRecord,
+    ImportStatus,
     ListStatus,
     MatchFlag,
     Org,
@@ -658,3 +660,31 @@ class Store:
     def remove_identifier(self, person_id: str, identifier: Identifier) -> None:
         self.conn.execute("DELETE FROM person_identifiers WHERE person_id = ? AND scheme = ? AND value = ?",
                           (person_id, identifier.scheme, identifier.value))
+
+    # Imports: one row per uploaded file, its text and the summary of its row outcomes.
+    def add_import(self, record: ImportRecord) -> None:
+        self.conn.execute(
+            "INSERT INTO imports (id, filename, uploaded_at, status, text, summary_json, confirmed_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (record.id, record.filename, _iso(record.uploaded_at), record.status, record.text,
+             json.dumps(record.summary), _iso(record.confirmed_at)),
+        )
+
+    def get_import(self, import_id: str) -> ImportRecord | None:
+        row = self.conn.execute(
+            "SELECT id, filename, uploaded_at, status, text, summary_json, confirmed_at FROM imports WHERE id = ?",
+            (import_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        data = dict(row)
+        return ImportRecord.model_validate(data | {"summary": json.loads(data.pop("summary_json"))})
+
+    def set_import(self, import_id: str, status: ImportStatus, summary: dict | None = None,
+                   confirmed_at: datetime | None = None) -> None:
+        """Set the import's status, and its summary and confirm time when given."""
+        self.conn.execute(
+            "UPDATE imports SET status = ?, summary_json = COALESCE(?, summary_json), "
+            "confirmed_at = COALESCE(?, confirmed_at) WHERE id = ?",
+            (status, json.dumps(summary) if summary is not None else None, _iso(confirmed_at), import_id),
+        )

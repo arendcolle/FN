@@ -6,6 +6,7 @@ import unicodedata
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any, Literal, Protocol
+from urllib.parse import urlsplit
 
 import httpx
 from pydantic import (
@@ -169,11 +170,12 @@ class Source(Model):
 
 def record_source(url: str, title: str, fields: list[tuple[str, object]], raw: dict, fetched_at: datetime,
                   source_date: str | None = None, *,
-                  kind: Literal["record", "vendor_record", "staff"] = "record") -> tuple[Source, dict[str, tuple[int, int]]]:
-    """A record Source (kind vendor_record for a vendor's answer) with one `path: value` line per field that has a value.
+                  kind: Literal["record", "vendor_record", "staff", "import"] = "record",
+                  ) -> tuple[Source, dict[str, tuple[int, int]]]:
+    """A record Source (vendor_record for a vendor's answer, import for a CSV row) with a `path: value` line per value.
 
     Returns it with each line's offsets by path. The id holds the kind and the content hash, so a record
-    whose text changed is stored as a new source.
+    whose text changed is stored as a new source. An import row's date method is sheet_date.
     """
     lines, spans, at = [], {}, 0
     for path, value in fields:
@@ -188,7 +190,8 @@ def record_source(url: str, title: str, fields: list[tuple[str, object]], raw: d
     return Source(
         id=hashlib.sha1(f"{kind}\0{url}\0{content_hash}".encode()).hexdigest(), kind=kind, url=url, title=title,
         text=text, raw_json=json.dumps(raw, ensure_ascii=False, sort_keys=True), content_hash=content_hash,
-        source_date=source_date, date_method="record_field" if source_date else None, fetched_at=fetched_at,
+        source_date=source_date, fetched_at=fetched_at,
+        date_method=("sheet_date" if kind == "import" else "record_field") if source_date else None,
     ), spans
 
 
@@ -686,3 +689,60 @@ class CaseResult(Model):
     picks: list[PickResult]
     top: list[TopCard]
     failed_lanes: list[str] = []
+
+
+# The CSV import: the columns it reads, the profile URL form it shares with the LinkedIn lane, its rows and steps.
+IMPORT_COLUMNS = ("name", "email", "phone", "organization", "role", "city", "state", "country", "linkedin_url", "orcid")
+ImportStatus = Literal["preview", "confirmed", "discarded"]
+ImportOutcome = Literal["new", "update", "name_match", "skipped"]
+
+
+def profile_url(url: str) -> str:
+    """The profile URL on https and www.linkedin.com, without query, fragment or trailing slash.
+
+    Any linkedin.com host, such as be.linkedin.com, becomes www.linkedin.com.
+    """
+    parts = urlsplit(url.strip() if "//" in url else f"//{url.strip()}")
+    host = parts.netloc.lower()
+    if host == "linkedin.com" or host.endswith(".linkedin.com"):
+        host = "www.linkedin.com"
+    return f"https://{host}{parts.path.rstrip('/')}"
+
+
+class ImportRecord(Model):
+    id: str
+    filename: str
+    uploaded_at: datetime
+    status: ImportStatus
+    text: str
+    summary: dict[str, Any] = {}
+    confirmed_at: datetime | None = None
+
+
+class ImportRow(Model):
+    n: int
+    name: str
+    outcome: ImportOutcome
+    # The network person a name or an identifier matched; after confirm, the person the row became part of.
+    person_id: str | None = None
+    message: str = ""
+    cells: dict[str, str] = {}
+
+
+class ImportPreview(Model):
+    import_id: str
+    filename: str
+    status: ImportStatus
+    rows: list[ImportRow]
+    ignored_columns: list[str] = []
+    counts: dict[str, int]
+
+
+# The import's two steps; the output holds counts only, so no contact value reaches the step payloads.
+class ImportStepIn(Model):
+    import_id: str
+    merge_rows: list[int] = []
+
+
+class ImportStepOut(Model):
+    counts: dict[str, int]

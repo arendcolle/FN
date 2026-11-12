@@ -71,7 +71,7 @@ class ClaimViewTest(unittest.TestCase):
         for kind, label in labels.items():
             with self.subTest(kind=kind):
                 self.assertEqual(present.claim_view(claim(), source(kind), None).label, label)
-        imported = Source(id="i", kind="import", url="fn:import/x#row-14", title="contacts.csv", text="a", content_hash="h")
+        imported = Source(id="i", kind="import", url="fn:import/x#row-14", title="contacts.csv, row 14", text="a", content_hash="h")
         self.assertEqual(present.claim_view(claim(), imported, None).label, "Import contacts.csv, row 14")
         self.assertEqual(present.claim_view(claim(), source(title=None), None).label, "example.org")
 
