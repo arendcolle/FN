@@ -11,7 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from fn import geo, gold, score
+from fn import geo, gold, score, search
 from fn.contracts import (
     Candidate,
     Chips,
@@ -27,6 +27,8 @@ from fn.contracts import (
     Source,
     StepRun,
 )
+from fn.steps import StepContext
+from fn.worker import new_id, now
 from tests.helpers import cities_zip, make_db, make_settings
 
 CREATED = datetime(2026, 11, 12, 9, 0, tzinfo=UTC)
@@ -150,8 +152,10 @@ class ScoreTest(unittest.TestCase):
         code, result = self.run_score()
         row = result["searches"]["aaaaaaaa"]
         self.assertEqual(code, 0)
-        self.assertEqual(row["gold_picks"], [{"id": "GS-90#1", "position": 10}, {"id": "GS-90#2", "position": 20},
-                                             {"id": "GS-90#3", "position": 21}, {"id": "GS-90#4", "position": None}])
+        self.assertEqual(row["gold_picks"], [{"id": "GS-90#1", "position": 10, "by_construction": False},
+                                             {"id": "GS-90#2", "position": 20, "by_construction": False},
+                                             {"id": "GS-90#3", "position": 21, "by_construction": False},
+                                             {"id": "GS-90#4", "position": None, "by_construction": False}])
         expected = {
             "kept": 22, "gold_case": "GS-90", "gold_at_10": 1, "gold_at_20": 2, "gold_at_50": 3, "gold_found": 3,
             "doubles_top20": 2, "doubles_top50": 3,
@@ -227,6 +231,83 @@ class ScoreTest(unittest.TestCase):
         self.assertEqual(self.run_score("rescore", "a")[1]["searches"]["eeeeeeee"]["kept"], 0)
         self.assertEqual(self.run_score("rerank", "b")[1]["searches"]["eeeeeeee"]["kept"], 1)
 
+    def lane_search(self, key: str) -> str:
+        """A search on the gold question with three kept gold picks, saved by refinish from one stored seeds lane output."""
+        people = [add_person(self.store, name) for name in ("Hana Quill", "Ivo Reyes", "Lena Sorrel")]
+        search_id = make_search(self.store, key, QUESTION, Chips())
+        hits = [LaneHit(person_id=p, name_key=NAMES[n].casefold(), lane="seeds", rank=r, score=1 / r, matched_on="m")
+                for r, (p, n) in enumerate(zip(people, (10, 20, 21), strict=True), 1)]
+        run = StepRun(id=f"lane-{key}", search_id=search_id, seq=1, step="lane:seeds", status="ok", started_at=CREATED, input_model="LaneIn")
+        self.store.start_step(run, "{}")
+        self.store.finish_step(run.model_copy(update={"ended_at": CREATED}),
+                               LaneOut(lane="seeds", query="q", total_seen=3, hits=hits).model_dump_json())
+        ctx = StepContext(search_id=search_id, store=self.store, llm=None, http=None, now=now, new_id=new_id,
+                          log=mock.Mock(), settings=self.settings)
+        search.refinish(ctx, self.store.get_search(search_id))
+        shutil.rmtree(self.snap)
+        score.snapshot(self.settings, self.snap, [])
+        return search_id[:8]
+
+    def test_rescore_and_rerank_give_the_same_gold_counts_on_a_search_with_lane_outputs(self):
+        """The three gold picks are at 1, 2 and 3 whether the stored candidates are read or rebuilt from the lane output."""
+        key = self.lane_search("gggggggg")
+        rows = [self.run_score(mode, mode)[1]["searches"][key] for mode in ("rescore", "rerank")]
+        wanted = {"gold_at_10": 3, "gold_at_20": 3, "gold_at_50": 3, "gold_found": 3, "gold_free_found": 3, "gold_by_construction": 0}
+        for row in rows:
+            self.assertEqual({k: row[k] for k in wanted}, wanted)
+
+    def test_rerank_marks_a_search_without_lane_outputs_degraded(self):
+        """Search A has candidates and no lane step; refinish raises and the search is left out of the aggregate."""
+        _, result = self.run_score("rerank", "rerank", "--allow-degraded")
+        self.assertIn("aaaaaaaa", result["meta"]["degraded"])
+
+    def test_diff_prints_who_entered_and_left_the_first_20_and_a_name_only_with_names(self):
+        """A person who left A's list and one who entered B's show with ranks, lanes and parts; names come from --names only."""
+        _, one = self.run_score(name="one")
+        two = json.loads(json.dumps(one))
+        top = two["searches"]["aaaaaaaa"]["top20"]
+        gone, came = top.pop(0), {"id": "0123456789ab", "rank": 20, "lanes": ["web"], "parts": ["web"]}
+        top.append(came)
+        paths = []
+        for name, data in (("one", one), ("two", two)):
+            paths.append(self.work / f"{name}.json")
+            paths[-1].write_text(json.dumps(data))
+        plain, named = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(plain):
+            self.assertEqual(score.main(["diff", *map(str, paths)]), 0)
+        with contextlib.redirect_stdout(named):
+            score.main(["diff", *map(str, paths), "--names", str(self.snap)])
+        self.assertIn("search aaaaaaaa: 1 entered, 1 left", plain.getvalue())
+        self.assertIn(f"entered {came['id']}: rank A -, B 20, lanes web, parts web", plain.getvalue())
+        self.assertIn(f"left {gone['id']}: rank A 1, B -, lanes openalex", plain.getvalue())
+        self.assertNotIn("Ana Vell", plain.getvalue())
+        self.assertIn(f"left {gone['id']} Ana Vell: rank A 1", named.getvalue())
+
+    def test_diff_of_files_with_different_searches_prints_only_the_common_ones(self):
+        """A search only one file holds is not listed, and no common search says so."""
+        one, two = self.work / "one.json", self.work / "two.json"
+        row = {"top20": [{"id": "aaaaaaaaaaaa", "rank": 1, "lanes": ["seeds"], "parts": []}]}
+        one.write_text(json.dumps({"meta": {"degraded": []}, "searches": {"s1": row}}))
+        two.write_text(json.dumps({"meta": {"degraded": []}, "searches": {"s2": row}}))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            score.main(["diff", str(one), str(two)])
+        self.assertEqual(out.getvalue().strip(), "no search with a top20 list in both files")
+
+    def test_pair_metrics_are_left_out_without_a_pair_file_and_counted_with_one(self):
+        """With a pair file the aggregate sums pairs_wrong and pairs_split; a malformed line stops the run and names the line."""
+        self.assertNotIn("pairs_wrong", self.run_score()[1]["aggregate"])
+        ids = {n: self.store.resolve_person([Identifier(scheme="seed", value=f"{NAMES[n]}-x")], NAMES[n]).id for n in (1, 2)}
+        pairs = self.work / "pairs.jsonl"
+        pairs.write_text(json.dumps({"a": ids[1], "b": ids[2], "label": "same", "note": "n"}) + "\n")
+        with mock.patch.object(score, "PAIRS", pairs):
+            self.assertEqual(self.run_score()[1]["aggregate"]["pairs_split"], 0)
+            pairs.write_text("\n" + json.dumps({"a": "x", "b": "y", "label": "same"}) + "\n{oops\n")
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertEqual(score.main(["run", str(self.snap), "--mode", "rescore", "--out", str(self.work / "bad")]), 2)
+        self.assertIn(f"{pairs}:3:", err.getvalue())
+
     def test_a_snapshot_copies_the_database_cache_and_every_fixture_folder_and_refuses_a_full_folder(self):
         """The snapshot holds the three parts, takes fixtures from each folder, and will not fill a folder with files in it."""
         extra, other = self.work / "extra", self.settings.var_dir / "llm"
@@ -252,6 +333,113 @@ class ScoreTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn(str(path), err.getvalue())
         self.assertFalse((self.work / "out").exists())
+
+
+def seed_person(store, name: str, url: str, kind: str = "seed_page", value: str = "Engineer") -> str:
+    """A person with one role claim, with the given value, from a source of the given kind at url."""
+    person = store.resolve_person([Identifier(scheme="seed", value=f"{name}-{uuid.uuid4()}")], name)
+    source = Source(id=f"{person.id}:s", kind=kind, url=url, text=f"{name} works on wind", content_hash=person.id)
+    store.upsert_claim(ClaimDraft(person_id=person.id, kind="role", value=value, quote=name, quote_start=0,
+                                  quote_end=len(name), source=source))
+    return person.id
+
+
+class ConstructionTest(unittest.TestCase):
+    def setUp(self):
+        self.store = make_db(self)
+
+    def named(self, case_source: str | None, pick_sources: list[str], url: str, kind: str = "seed_page") -> bool:
+        person = seed_person(self.store, "Pat Lee", url, kind)
+        case = GoldCase(id="GS-91", question="q", source_url=case_source, picks=[])
+        pick = GoldPick(case_id="GS-91", name="Pat Lee", gold_tie="belgian", sources=pick_sources)
+        return score.by_construction(self.store, case, pick, candidate("s", person, 1, {"seeds": 1}))
+
+    def test_a_seed_page_from_the_site_of_the_case_source_or_a_pick_source_makes_a_pick_by_construction(self):
+        """Same site as the case source or as a source of the pick counts; another site, or a non-seed source, does not."""
+        self.assertTrue(self.named("https://example.org/program.pdf", [], "https://example.org/people"))
+        self.assertTrue(self.named(None, ["https://example.net/wiki/Pat_Lee"], "https://example.net/list"))
+        self.assertFalse(self.named("https://example.org/program.pdf", [], "https://other.org/people"))
+        self.assertFalse(self.named("https://example.org/program.pdf", [], "https://example.org/people", "page"))
+        self.assertFalse(self.named(None, [], "https://example.org/people"))
+
+    def test_a_wayback_url_counts_as_the_url_it_wraps_and_www_is_dropped(self):
+        """With and without the id_ mark, and with a www. host on either side, the site is the wrapped host."""
+        for wrapped in ("https://web.archive.org/web/20200101000000/https://www.example.org/a",
+                        "http://web.archive.org/web/20200101000000id_/http://example.org/a"):
+            with self.subTest(wrapped=wrapped):
+                self.assertEqual(score.site(wrapped), "example.org")
+                self.assertTrue(self.named(wrapped, [], "https://www.example.org/people"))
+                self.assertTrue(self.named("https://example.org/x", [], wrapped))
+
+    def test_a_search_marks_the_pick_and_counts_free_picks_apart(self):
+        """gold_picks carry by_construction, and the free counts leave the pick out while the old counts keep it."""
+        person = seed_person(self.store, "Pat Lee", "https://www.example.org/people")
+        other = seed_person(self.store, "Sam Roe", "https://other.org/people")
+        kept = [candidate("s", person, 1, {"seeds": 1}), candidate("s", other, 2, {"seeds": 2})]
+        case = GoldCase(id="GS-91", question="q", source_url="https://example.org/program",
+                        picks=[GoldPick(case_id="GS-91", name=n, gold_tie="belgian") for n in ("Pat Lee", "Sam Roe")])
+        row = score.gold_metrics(self.store, case, kept)
+        self.assertEqual([p["by_construction"] for p in row["gold_picks"]], [True, False])
+        self.assertEqual((row["gold_at_10"], row["gold_free_at_10"], row["gold_found"], row["gold_free_found"],
+                          row["gold_by_construction"]), (2, 1, 2, 1, 1))
+
+
+class PairsTest(unittest.TestCase):
+    def setUp(self):
+        self.store = make_db(self)
+        self.ids = {n: self.store.resolve_person([Identifier(scheme="seed", value=n)], n).id
+                    for n in ("Ana Vell", "Ana Veldt", "Bram Cole", "Cora Dane")}
+
+    def metrics(self, cards: list[list[str]], pairs: list[tuple[str, str, str]]) -> dict:
+        kept = [Candidate(search_id="s", person_id=c[0], person_ids=c, section="new", rank=n, score=1 / n,
+                          lane_ranks={"seeds": n}, hit_person_ids=c) for n, c in enumerate(cards, 1)]
+        found = [{"a": a if a in self.ids.values() else self.ids.get(a, a), "b": self.ids.get(b, b), "label": label}
+                 for a, b, label in pairs]
+        return score.pair_metrics(self.store, kept, found)
+
+    def test_a_different_pair_on_one_card_is_wrong_and_a_same_pair_on_two_cards_is_split(self):
+        """Wrong counts different pairs sharing a card; split counts same pairs on two cards; unclear and unknown ids count nowhere."""
+        v, d, b, c = (self.ids[n] for n in ("Ana Vell", "Ana Veldt", "Bram Cole", "Cora Dane"))
+        pairs = [("Ana Vell", "Ana Veldt", "different"), ("Bram Cole", "Cora Dane", "same"),
+                 ("Ana Vell", "Bram Cole", "unclear"), ("Ana Vell", "no-such-id", "different"), ("Ana Vell", "Cora Dane", "same")]
+        self.assertEqual(self.metrics([[v, d], [b], [c]], pairs), {"pairs_wrong": 1, "pairs_split": 2})
+        self.assertEqual(self.metrics([[v], [d, b, c]], pairs), {"pairs_wrong": 0, "pairs_split": 1})
+
+    def test_a_same_pair_with_one_card_past_the_first_50_is_not_split(self):
+        """Both cards must sit within the first 50; a pair whose second card is the 51st is not counted."""
+        cards = [[self.ids["Ana Vell"]]] + [[f"filler-{n}"] for n in range(49)] + [[self.ids["Bram Cole"]]]
+        self.assertEqual(self.metrics(cards, [("Ana Vell", "Bram Cole", "same")])["pairs_split"], 0)
+        self.assertEqual(self.metrics(cards[:49] + cards[-1:], [("Ana Vell", "Bram Cole", "same")])["pairs_split"], 1)
+
+    def test_load_pairs_reads_an_empty_file_as_no_pairs_and_names_the_bad_line(self):
+        """An absent file is None, an empty one is an empty list, and a line with no label or no JSON raises with its number."""
+        path = Path(tempfile.mkdtemp(prefix="fn-pairs-")) / "pairs.jsonl"
+        self.addCleanup(shutil.rmtree, path.parent, ignore_errors=True)
+        self.assertIsNone(score.load_pairs(path))
+        path.write_text("")
+        self.assertEqual(score.load_pairs(path), [])
+        path.write_text('{"a": "x", "b": "y", "label": "same", "note": ""}\n{"a": "x", "b": "y", "label": "maybe"}\n')
+        with self.assertRaisesRegex(ValueError, r"pairs.jsonl:2:"):
+            score.load_pairs(path)
+
+
+class SeedNoiseTest(unittest.TestCase):
+    def test_a_seed_only_card_without_a_topic_word_is_noise_unless_the_question_names_an_institution(self):
+        """The card with a wind claim and the one found by two lanes are not noise; an institution chip makes the count 0."""
+        store = make_db(self)
+        quiet = seed_person(store, "Quiet Person", "https://example.org/q", value="Dentist")
+        windy = seed_person(store, "Windy Person", "https://example.org/w", value="Wind turbine engineer")
+        both = seed_person(store, "Both Lanes", "https://example.org/b", value="Dentist")
+        kept = [candidate("a", quiet, 1, {"seeds": 1}), candidate("a", windy, 2, {"seeds": 2}),
+                candidate("a", both, 3, {"seeds": 3, "web": 1})]
+        for chips, noise in ((Chips(topics=[{"text": "wind power", "origin": "parsed"}]), 1),
+                             (Chips(topics=[{"text": "wind power", "origin": "parsed"}],
+                                    institutions=[{"text": "MIT", "origin": "parsed"}]), 0)):
+            with self.subTest(institutions=len(chips.institutions)):
+                search_id = make_search(store, f"n{noise}{len(chips.institutions)}00000", "Who knows wind power?", chips)
+                store.save_candidates(search_id, [k.model_copy(update={"search_id": search_id}) for k in kept], [])
+                found = store.get_search(search_id)
+                self.assertEqual(score.score_search(store, found, found, None, None)["seed_noise_top20"], noise)
 
 
 class FreshTest(unittest.TestCase):
@@ -295,20 +483,20 @@ class CompareTest(unittest.TestCase):
         return code, out.getvalue()
 
     def test_each_gate_fails_on_its_own_move_and_an_ungated_metric_does_not(self):
-        """Doubles up, gold at 20 or found down, or complete down by over 0.02 exit 1; a fall in fresh exits 0."""
-        base = {"doubles_top20": 1, "gold_at_20": 3, "gold_found": 5, "complete": 0.5, "fresh": 0.9}
-        for name, value in (("doubles_top20", 2), ("gold_at_20", 2), ("gold_found", 4), ("complete", 0.4799)):
+        """Doubles or wrong pairs up, free gold at 20 or found down, or complete down by over 0.02 exit 1; fresh and gold_at_20 exit 0."""
+        base = {"doubles_top20": 1, "gold_free_at_20": 3, "gold_free_found": 5, "pairs_wrong": 0, "gold_at_20": 3, "complete": 0.5, "fresh": 0.9}
+        for name, value in (("doubles_top20", 2), ("gold_free_at_20", 2), ("gold_free_found", 4), ("pairs_wrong", 1), ("complete", 0.4799)):
             with self.subTest(name=name):
                 self.assertEqual(self.compare(base, base | {name: value})[0], 1)
-        for name, value in (("fresh", 0.1), ("complete", 0.48), ("doubles_top20", 0), ("gold_at_20", 4)):
+        for name, value in (("fresh", 0.1), ("gold_at_20", 1), ("complete", 0.48), ("doubles_top20", 0), ("gold_free_at_20", 4)):
             with self.subTest(name=name):
                 self.assertEqual(self.compare(base, base | {name: value})[0], 0)
 
     def test_a_gated_metric_missing_in_b_fails_the_gate_and_names_the_metric(self):
         """A gated metric present in A and absent in B exits 1 and prints its name; an ungated one does not."""
-        code, text = self.compare({"gold_at_20": 3, "fresh": 0.9}, {})
+        code, text = self.compare({"gold_free_at_20": 3, "fresh": 0.9}, {})
         self.assertEqual(code, 1)
-        self.assertIn("gold_at_20 is missing", text)
+        self.assertIn("gold_free_at_20 is missing", text)
         self.assertNotIn("fresh is missing", text)
 
     def test_compare_prints_the_changed_metrics_with_the_delta_and_the_picks_that_moved(self):
