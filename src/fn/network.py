@@ -207,12 +207,12 @@ def _checked(kind: str, value: str) -> str:
     if kind not in CONTACT_KINDS:
         raise ValueError(f"A contact is an email or a phone number, not {kind}.")
     value = normalize(value)
-    if not value:
-        raise ValueError("Type an email address." if kind == "email" else "Type a phone number.")
     if len(value) > MAX_CONTACT:
         raise ValueError(f"That is too long: at most {MAX_CONTACT} characters.")
-    if kind == "email" and "@" not in value:
-        raise ValueError("An email address needs an @.")
+    if kind == "email" and "@" not in value.strip("@"):
+        raise ValueError("Enter an email address like name@example.org.")
+    if kind == "phone" and sum(c.isdigit() for c in value) < 7:
+        raise ValueError("Enter a phone number with at least 7 digits.")
     return value
 
 
@@ -344,6 +344,17 @@ def _later(newest_first: list[Event], event: Event) -> bool:
     return any(e.at > event.at for e in newest_first)
 
 
+def refusal(store: Store, event: Event) -> str | None:
+    """Why FN will not undo the event, as one sentence for staff, or None when it can."""
+    if event.kind == "undo":
+        return "An undo cannot itself be undone."
+    if event.kind not in UNDO:
+        return "An import or an export cannot be undone."
+    if any(_later(store.events_of(p), event) for p in _persons(event)):
+        return LATER
+    return None
+
+
 def undo(store: Store, event_id: str, *, now: datetime) -> Event:
     """Reverse the event as its detail recorded it and write an undo event.
 
@@ -353,13 +364,8 @@ def undo(store: Store, event_id: str, *, now: datetime) -> Event:
         event = store.get_event(event_id)
         if event is None:
             raise UndoRefused("That decision no longer exists.")
-        if event.kind == "undo":
-            raise UndoRefused("An undo cannot itself be undone.")
-        if event.kind not in UNDO:
-            raise UndoRefused("An import or an export cannot be undone.")
-        for p in _persons(event):
-            if _later(store.events_of(p), event):
-                raise UndoRefused(LATER)
+        if why := refusal(store, event):
+            raise UndoRefused(why)
         UNDO[event.kind](store, event, now)
         return _event(store, "undo", now, {}, person_id=event.person_id, other_person_id=event.other_person_id,
                       search_id=event.search_id, undoes=event.id)

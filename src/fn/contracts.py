@@ -482,6 +482,43 @@ class NetworkView(Model):
     shown: int
 
 
+class ContactView(Model):
+    kind: Literal["email", "phone"]
+    value: str | None = None
+    claim: ClaimView | None = None
+
+
+class FactGroup(Model):
+    title: str
+    facts: list[ClaimView]
+
+
+class RecordView(Model):
+    record_id: str
+    label: str
+    href: str
+    facts: int
+
+
+# The person's latest decision while it can still be undone; claim_id names the fact or contact it concerns.
+class LastView(Model):
+    event_id: str
+    kind: EventKind
+    words: str
+    claim_id: str | None = None
+    separated: bool = False
+
+
+class ProfileView(Model):
+    person: PersonView
+    contact: list[ContactView]
+    facts: list[FactGroup]
+    found_as: list[RecordView]
+    possible: list[PersonView]
+    name_match: PersonView | None = None
+    last: LastView | None = None
+
+
 class StepRun(Model):
     id: str
     search_id: str

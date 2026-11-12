@@ -1,4 +1,4 @@
-"""Escape-by-default HTML builders: only a Safe is written as is, and URLs are http, https or relative."""
+"""Escape-by-default HTML builders: only a Safe is written as is, and URLs are http, https, mailto, tel or relative."""
 import re
 from collections.abc import Iterable
 from functools import partial
@@ -21,12 +21,12 @@ def esc(value: object) -> Safe:
 
 
 def safe_url(url: str) -> str:
-    """The url when it is http, https or relative to this site, else '#'; //host and /\\host count as another site."""
+    """The url when it is http, https, mailto, tel or relative, else '#'; //host and /\\host count as another site."""
     stripped = re.sub(r"[\t\n\r]", "", url).strip()
     if stripped[:2].replace("\\", "/") == "//":
         return "#"
     try:
-        return url if urlsplit(stripped).scheme in ("", "http", "https") else "#"
+        return url if urlsplit(stripped).scheme in ("", "http", "https", "mailto", "tel") else "#"
     except ValueError:
         return "#"
 

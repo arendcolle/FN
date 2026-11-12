@@ -1,30 +1,43 @@
-"""The staff router: Home, All searches, the results page, the Network page with their map data and the source page."""
+"""The staff router: Home, All searches, the results page, the Network page with their map data, the Person page
+with its decisions, and the source page."""
+import re
+from urllib.parse import parse_qs, urlencode, urlsplit
+
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
-from fn.contracts import Claim, NetworkFilter, Search, Source
-from fn.present import geo, network_view, results, sources_read
-from fn.store import Store
+from fn import network
+from fn.contracts import Claim, NetworkFilter, Search, Source, normalize
+from fn.present import geo, label_of, network_view, profile, results, sources_read
+from fn.store import Store, fold
 from fn.web.html import Safe, h, page
 from fn.web.parts import (
     NETWORK_STEP,
+    contact_block,
     empty_network,
+    fact_groups,
     filter_bar,
+    found_as_block,
     is_filtered,
     network_href,
     network_row,
     nobody_matches,
     notice,
     person_card,
+    possible_block,
+    profile_banner,
+    profile_head,
     recent_list,
     search_box,
     show_more,
 )
-from fn.web.requests import form_of, store_of, worker_of
+from fn.web.requests import first, form_of, store_of, worker_of
 from fn.worker import now
 
 MAX_QUESTION = 1000
 SECTIONS = {"network": "In your network", "new": "New"}
+ORIGINS = ("card", "row", "popup", "import")
+CONTACT_KINDS = ("email", "phone")
 
 router = APIRouter()
 
@@ -96,7 +109,8 @@ def network_page(store: Store, flt: NetworkFilter, limit: int, view: str) -> tup
 def person_cards(store: Store, search: Search) -> tuple[list[Safe], bool]:
     """One card per candidate under its section heading, and whether any of them has a place on the map."""
     found = results(store, search, now().astimezone().date())
-    sections = [[h.h2(title, " ", h.span(f"{len(group):,}"), class_="fn-section text-label"), [person_card(v) for v in group]]
+    sections = [[h.h2(title, " ", h.span(f"{len(group):,}"), class_="fn-section text-label"),
+                 [person_card(v, search.id) for v in group]]
                 for section, title in SECTIONS.items() if (group := getattr(found, section))]
     return sections, any(v.lat is not None for v in found.network + found.new)
 
@@ -135,13 +149,14 @@ def geo_features(store: Store, search: Search) -> dict:
 
 
 def source_page(source: Source, claim: Claim | None) -> str:
-    text = source.text
+    """The source's text with the claim's quote marked; an import or staff source shows its label and no link."""
+    text, own = source.text, source.kind in ("import", "staff")
     body = [text[:claim.quote_start], h.mark(claim.quote, id="quote"), text[claim.quote_end:]] if claim else text
     return page(
         "Source",
         h.div(
-            h.h1(source.title or source.url, class_="fn-source__title text-title"),
-            h.p(h.a(source.url, href=source.url), class_="fn-source__url text-small"),
+            h.h1(label_of(source) if own else source.title or source.url, class_="fn-source__title text-title"),
+            None if own else h.p(h.a(source.url, href=source.url), class_="fn-source__url text-small"),
             h.pre(body, class_="fn-source__text text-body"),
             class_="fn-source",
         ),
@@ -239,3 +254,164 @@ def get_source(request: Request, source_id: str, claim: str) -> tuple[Source, Cl
 async def show_source(request: Request, source_id: str, claim: str = "") -> HTMLResponse:
     return HTMLResponse(source_page(*get_source(request, source_id, claim)))
 
+
+def local_path(value: str) -> str | None:
+    """The value when it is a path on this site, else None; //host, /\\host and control characters are refused."""
+    if not value.startswith("/") or value[1:2] in ("/", "\\") or re.search(r"[\x00-\x1f\\]", value):
+        return None
+    parts = urlsplit(value)
+    return value if not parts.scheme and not parts.netloc else None
+
+
+def person_here(person_id: str, params: dict[str, str]) -> str:
+    """The Person page's path with the query that keeps its state: the search it came from and every fact shown."""
+    query = urlencode({k: v for k, v in (("search", params.get("search")), ("all", params.get("all"))) if v})
+    return f"/people/{person_id}?{query}" if query else f"/people/{person_id}"
+
+
+def person_page(store: Store, person_id: str, params: dict[str, str], error: str | None = None,
+                typed: str | None = None, edit: str | None = None) -> str:
+    """The Person page of a canonical id; a network person's New marks are then cleared for the next visit.
+
+    params is the page's query; error and typed re-open the edit field of kind edit with a refused value.
+    """
+    view = profile(store, person_id, now().astimezone().date())
+    here = person_here(person_id, params)
+    search = store.get_search(params["search"]) if params.get("search") else None
+    edit = edit or (params.get("edit") if params.get("edit") in CONTACT_KINDS else None)
+    member = view.person.status == "in_list"
+    text = page(
+        view.person.name,
+        profile_banner(view, params.get("undo") == "refused", here),
+        h.main(h.div(profile_head(view, search, here),
+                     contact_block(view, here, edit, error, typed) if member else None,
+                     fact_groups(view, here, params.get("all") == "1"), found_as_block(view, here),
+                     possible_block(view, here), class_="fn-column"), class_="fn-page"),
+        current="network",
+    )
+    if member:
+        network.mark_seen(store, person_id, now=now())
+    return text
+
+
+def canonical_of(store: Store, person_id: str) -> str:
+    """The canonical id of the person; 404 for an unknown id."""
+    found = store.canonical_ids([person_id]).get(person_id)
+    if found is None:
+        raise HTTPException(404, "No such person")
+    return found
+
+
+def back_to(form: dict[str, list[str]], fallback: str, query: str = "") -> RedirectResponse:
+    """A 303 to the form's next path when it is on this site, else to fallback, with query added."""
+    target = local_path(form.get("next", [""])[0]) or fallback
+    return RedirectResponse(f"{target}{'&' if '?' in target else '?'}{query}" if query else target, 303)
+
+
+@router.get("/people/{person_id}")
+async def person(request: Request, person_id: str) -> Response:
+    store = store_of(request)
+    canonical = canonical_of(store, person_id)
+    if canonical != person_id:
+        query = request.url.query
+        return RedirectResponse(f"/people/{canonical}?{query}" if query else f"/people/{canonical}", 303)
+    origin = request.query_params.get("from")
+    request.state.facts = {"from": origin} if origin in ORIGINS else {}
+    return HTMLResponse(person_page(store, person_id, dict(request.query_params)))
+
+
+@router.post("/people/{person_id}/add")
+async def add_person(request: Request, person_id: str) -> Response:
+    store, form = store_of(request), await form_of(request)
+    canonical = canonical_of(store, person_id)
+    apart = first(form, "not_same")
+    network.add(store, [canonical], via="profile", now=now(),
+                not_same_as=[apart] if apart and store.canonical_ids([apart]) else [])
+    return back_to(form, f"/people/{canonical}")
+
+
+@router.post("/people/{person_id}/skip")
+async def skip_person(request: Request, person_id: str) -> Response:
+    store, form = store_of(request), await form_of(request)
+    canonical = canonical_of(store, person_id)
+    if store.get_persons([canonical])[canonical].list_status == "candidate":
+        network.skip(store, [canonical], now=now())
+    return back_to(form, f"/people/{canonical}")
+
+
+@router.post("/people/{person_id}/remove")
+async def remove_person(request: Request, person_id: str) -> Response:
+    store, form = store_of(request), await form_of(request)
+    canonical = canonical_of(store, person_id)
+    if store.get_persons([canonical])[canonical].list_status == "in_list":
+        network.remove(store, canonical, now=now())
+    return back_to(form, f"/people/{canonical}")
+
+
+@router.post("/people/{person_id}/contact")
+async def edit_contact(request: Request, person_id: str) -> Response:
+    """Save a typed email or phone number; a refused value re-opens the field with its sentence, status 400."""
+    store, form = store_of(request), await form_of(request)
+    canonical = canonical_of(store, person_id)
+    kind, value = first(form, "kind"), form.get("value", [""])[0]
+    if kind not in CONTACT_KINDS:
+        raise HTTPException(400, "A contact is an email or a phone number.")
+    held = {fold(c.value) for c in store.claims_of([canonical]) if c.kind == kind}
+    if fold(normalize(value)) not in held:
+        try:
+            network.set_contact(store, canonical, kind, value, now=now(), replaces=first(form, "replaces") or None)
+        except ValueError as refused:
+            next_path = local_path(form.get("next", [""])[0]) or ""
+            params = {k: v[0] for k, v in parse_qs(urlsplit(next_path).query).items()}
+            return HTMLResponse(person_page(store, canonical, params, str(refused), value, kind), 400)
+    return back_to(form, f"/people/{canonical}")
+
+
+@router.post("/people/{person_id}/merge")
+async def merge_person(request: Request, person_id: str) -> Response:
+    """The other person joins this one; a second press finds them one person already and changes nothing."""
+    store, form = store_of(request), await form_of(request)
+    canonical, other = canonical_of(store, person_id), first(form, "other")
+    theirs = store.canonical_ids([other]).get(other)
+    if theirs in network.possible_matches(store, canonical):
+        network.merge(store, [theirs], canonical, now=now())
+    return back_to(form, f"/people/{canonical}")
+
+
+@router.post("/people/{person_id}/not-same")
+async def not_same_person(request: Request, person_id: str) -> Response:
+    """Separate a record of this person, or mark a possible match as someone else; once only."""
+    store, form = store_of(request), await form_of(request)
+    canonical, other = canonical_of(store, person_id), first(form, "other")
+    theirs = store.canonical_ids([other]).get(other)
+    if other != canonical and (theirs == canonical or theirs in network.possible_matches(store, canonical)):
+        network.not_same(store, canonical, other, now=now())
+    return back_to(form, f"/people/{canonical}")
+
+
+@router.post("/claims/{claim_id}/reject")
+async def reject(request: Request, claim_id: str) -> Response:
+    store, form = store_of(request), await form_of(request)
+    claim = store.get_claim(claim_id)
+    if claim is None:
+        raise HTTPException(404, "No such fact")
+    if claim.rejected_at is None:
+        network.reject_claim(store, claim_id, now=now())
+    return back_to(form, f"/people/{canonical_of(store, claim.person_id)}")
+
+
+@router.post("/events/{event_id}/undo")
+async def undo(request: Request, event_id: str) -> Response:
+    """Undo the decision; a refused undo goes back with the code of its Banner, a second press changes nothing."""
+    store, form = store_of(request), await form_of(request)
+    event = store.get_event(event_id)
+    if event is None:
+        raise HTTPException(404, "No such decision")
+    fallback = f"/people/{canonical_of(store, event.person_id)}" if event.person_id else "/"
+    if event.person_id and any(e.undoes == event.id for e in store.events_of(event.person_id)):
+        return back_to(form, fallback)
+    try:
+        network.undo(store, event_id, now=now())
+    except network.UndoRefused:
+        return back_to(form, fallback, "undo=refused")
+    return back_to(form, fallback)

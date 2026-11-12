@@ -74,17 +74,22 @@ def fold(value: str) -> str:
     return value.strip().casefold()
 
 
+def fact_key(person_id: str, claim: Claim) -> tuple[str, str, str]:
+    """What makes two claims of a person the same fact: the kind and the organization, else the folded value."""
+    return (person_id, claim.kind, claim.org_id or fold(claim.value))
+
+
 def hidden_keys(claims: list[tuple[Claim, SourceKind]]) -> set[tuple[str, str, str]]:
-    """The (person, kind, folded value) keys a rejected claim hides among one set of a person's claims.
+    """The fact keys a rejected claim hides among one set of a person's claims.
 
     A key comes back to view when a staff claim of that value was first seen after its latest rejection.
     """
     rejected: dict[tuple[str, str, str], datetime] = {}
     for c, _ in claims:
         if c.rejected_at:
-            key = (c.person_id, c.kind, fold(c.value))
+            key = fact_key(c.person_id, c)
             rejected[key] = max(rejected.get(key, c.rejected_at), c.rejected_at)
-    retyped = {(c.person_id, c.kind, fold(c.value)): c.first_seen_at for c, kind in claims
+    retyped = {fact_key(c.person_id, c): c.first_seen_at for c, kind in claims
                if kind == "staff" and not c.rejected_at and c.first_seen_at}
     return {key for key, at in rejected.items() if not (key in retyped and retyped[key] > at)}
 
@@ -419,7 +424,7 @@ class Store:
             data = dict(row)
             person = Person.model_validate({c: data.pop(f"p_{c}") for c in PERSON_COLUMNS})
             best, claim = data.pop("best"), _claim(data)
-            key = (person.merged_into or person.id, claim.kind, fold(claim.value))
+            key = fact_key(person.merged_into or person.id, claim)
             if person.id not in found and key not in hidden:
                 found[person.id] = (person, claim, best)
         return list(found.values())
@@ -492,7 +497,13 @@ class Store:
         if include_hidden:
             return [c for c, _ in claims]
         hidden = hidden_keys(claims)
-        return [c for c, _ in claims if not c.rejected_at and (c.person_id, c.kind, fold(c.value)) not in hidden]
+        return [c for c, _ in claims if not c.rejected_at and fact_key(c.person_id, c) not in hidden]
+
+    def claim_records(self, claim_ids: list[str]) -> dict[str, str]:
+        """The record each claim was stored under, which claims_of replaces with the canonical id."""
+        rows = self.conn.execute("SELECT id, person_id FROM claims WHERE id IN (SELECT value FROM json_each(?))",
+                                 (json.dumps(claim_ids),))
+        return {r[0]: r[1] for r in rows}
 
     def get_claim(self, claim_id: str) -> Claim | None:
         row = self.conn.execute(f"SELECT {', '.join(CLAIM_COLUMNS)} FROM claims WHERE id = ?", (claim_id,)).fetchone()

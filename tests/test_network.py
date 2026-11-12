@@ -238,6 +238,24 @@ class ClaimsTest(NetworkTest):
         self.assertEqual(len(self.store.claims_of([ann])), 3)
         self.assertEqual([p.id for p, _, _ in self.store.match_claims('"robotics"', exclude=())], [ann])
 
+    def test_removing_a_fact_hides_every_claim_of_that_organization(self):
+        """A rejected affiliation hides the same organization under another spelling too.
+
+        The profile shows them as one line, so removing the line must not leave the other spelling behind.
+        """
+        ann = self.person("Ann Example", ("seed", "ann"))
+        ids = []
+        for value in ("KU Leuven", "Katholieke Universiteit Leuven"):
+            source = Source(id=f"page-{value}", kind="page", url=f"https://example.org/{len(ids)}", text=value,
+                            content_hash=hashlib.sha256(value.encode()).hexdigest())
+            ids.append(self.store.upsert_claim(ClaimDraft(
+                person_id=ann, kind="affiliation", relation="studied_at", org_id="ror:05f950310", value=value,
+                quote=value, quote_start=0, quote_end=len(value), source=source), at=T0).id)
+        event = network.reject_claim(self.store, ids[0], now=at(1))
+        self.assertEqual(self.store.claims_of([ann]), [])
+        network.undo(self.store, event.id, now=at(2))
+        self.assertEqual(len(self.store.claims_of([ann])), 2)
+
     def test_contact_edits_replace_hide_and_undo(self):
         """set_contact writes a staff claim and the email identifier; replaces hides the old claim; undo swaps back.
 
