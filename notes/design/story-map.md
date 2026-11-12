@@ -1,8 +1,8 @@
-# What FN users need to do, and which steps are missing
+# What FN users need to do, and which steps are built
 
-2026-11-10 · second draft with the four decisions settled, measured against `main` at `e1250ca`
+2026-11-12 · third version: what is built after the work in [notes/e2e/](../e2e/plan.md), measured against `main`
 
-**TL;DR.** This map lists seven things staff want to do in FN, each as steps in order, and marks every step built, partial or missing. Searching and reopening a search work today. Importing, the network map, profiles, adding and merging, updates and export are missing, because nobody is in the network yet. All 25,845 people in the database are candidates. Four decisions, settled and listed at the end, shape those flows: the network starts empty, new facts are marked rather than queued, and the import reads a CSV with fixed column names. The first slice is import, then the network list, map and profile, because every other flow needs a network to work on.
+**TL;DR.** This map lists seven things staff want to do in FN, each as steps in order, and marks every step built, partial or missing. On 2026-11-10 searching and reopening a search worked: 5 of the 30 steps were built, 7 partial and 18 missing. Now 29 are built and one is partial: a search lists the right people, but their order still ignores the place of the question. The network starts empty and fills through import and Add. The four decisions at the end are the owner's, and the design that follows from them is in [the system design](../e2e/design.md).
 
 ## How to read the map
 
@@ -12,7 +12,7 @@ Each flow below is one goal a staff member has, written as the steps they take. 
 - partial: some of it works, and the "Today" column says what is missing
 - missing: nothing in FN does it yet
 
-A missing or partial step is a to-do. The [to-do list](../../TODO.md) points here instead of copying them.
+A missing or partial step is a to-do. The to-do list points here instead of copying them.
 
 ## Flow 1: Import a CSV file and see the people on the map
 
@@ -20,14 +20,12 @@ A staff member has a spreadsheet of people, saves it as CSV, and wants the peopl
 
 | # | Step | Today | Status |
 | --- | --- | --- | --- |
-| 1 | Upload a CSV file in the browser | No upload page. Seed lists load from JSONL files through the `fn-seed` command | missing |
-| 2 | Read on the upload page which column names FN expects, and rename the file's columns to match (D3) | Nothing | missing |
-| 3 | Check a preview: rows read, rows skipped and why, columns FN ignored, possible duplicates | Nothing | missing |
-| 4 | Confirm, and the people join the network | `persons.list_status` has the value `in_list`, but no code sets it | missing |
-| 5 | FN turns each person's city, state and country into coordinates | `geo.py` locates the place in a question, never a person's city. It keeps one city per name, the most populous, so it cannot tell Portland, Maine from Portland, Oregon. The map reads location claims only | missing |
-| 6 | Open the network map and see the imported people | A map exists only on a search's results page | missing |
-
-Excel on a Belgian locale saves CSV with semicolons, because the comma is the decimal separator there, so the reader has to accept both. The standard library's `csv.Sniffer` detects the delimiter.
+| 1 | Upload a CSV file in the browser | `/imports/new`, reached from Import on the Network page. Files up to 5 MB | built |
+| 2 | Read on the upload page which column names FN expects, and rename the file's columns to match (D3) | The upload page lists the ten columns. Headers match in any order and any case; commas and semicolons both work | built |
+| 3 | Check a preview: rows read, rows skipped and why, columns FN ignored, possible duplicates | `/imports/{id}` shows the counts in words, each skipped row with its reason, the ignored columns and a box per name match | built |
+| 4 | Confirm, and the people join the network | "Import 12 people" writes everything in one go; a second press changes nothing | built |
+| 5 | FN turns each person's city, state and country into coordinates | `geo.locate_city` reads the three columns. A city FN cannot find is named in the preview, and that person has no dot | built |
+| 6 | Open the network map and see the imported people | The Network page says "12 people imported from contacts.csv. Show them" and lists exactly those people beside the map | built |
 
 ## Flow 2: Run a search and see who FN found
 
@@ -36,13 +34,13 @@ A staff member types a question and wants people from the network first, then ne
 | # | Step | Today | Status |
 | --- | --- | --- | --- |
 | 1 | Type a question | The home page has the search box | built |
-| 2 | Wait, and see that FN is working | The page refreshes every 2 s and says the search is running. People appear only when every lane is done. Live, the web lane alone took 190 s on one gold case and LinkedIn 178 s | partial |
-| 3 | See the people already in the network | The results page has an "In your network" section, which stays empty because nobody is in the network | partial |
-| 4 | See new people, ranked, each with the reason | Cards show a reason and a quote. Stored searches return up to 2,132 people, and 17 of the 28 return more than 700. OpenAlex cards quote raw record lines | partial |
-| 5 | See the results on a map | List and map sit side by side | built |
+| 2 | Wait, and see that FN is working | People appear after each lane, without a page reload, under "Searching… 12 people so far". A lane that fails no longer stops the search; the page then says some sources could not be read | built |
+| 3 | See the people already in the network | "In your network" lists them first, with no buttons | built |
+| 4 | See new people, ranked, each with the reason | 50 people at a time. A fact from a database record reads "Affiliated with KU Leuven, 2008–2013"; only prose sources show a quote. The ranker cuts people only OpenAlex found who have no Belgian evidence, which takes the median search from 1,098 to 518 people. The order still ignores the place of the question | partial |
+| 5 | See the results on a map | List and map side by side; a dot opens a popup | built |
 | 6 | Change the question and search again | The question stays editable at the top of the results | built |
 
-Step 1 is marked built, but `geo.py` resolves some places in a question to the wrong city. It keeps the most populous city of each name and ignores the state and country. Two stored searches have the place "Bay Area", which resolves to Bay in the Philippines. The LinkedIn lane then searches the location "Bay", and the OpenAlex lane sorts every Bay Area author outside the radius.
+The order of the kept people is the open part. A test of three ways to use the question's place in the ranker found none that helps without losing a gold pick, because the only located places are the last institutions OpenAlex knows. The numbers are in [place-ranking.md](../e2e/research/place-ranking.md).
 
 ## Flow 3: Add or merge new people from a search
 
@@ -50,11 +48,11 @@ A staff member looks at the new people in a search and puts the right ones in th
 
 | # | Step | Today | Status |
 | --- | --- | --- | --- |
-| 1 | Press Add on a card | Designed in [the design decisions](decisions.md), not built | missing |
-| 2 | FN says whether this person is already in the network, by shared identifier or similar name | Within one result, FN puts records with the same name on one card and flags them. It never checks against the network | missing |
-| 3 | Choose to add as new, merge into the existing person, or keep them apart | Nothing | missing |
-| 4 | Skip a person so FN stops suggesting them | Designed, not built | missing |
-| 5 | Undo an Add or a Skip | Designed, not built | missing |
+| 1 | Press Add on a card | Add puts the person in the network and the card says "Added to your network" | built |
+| 2 | FN says whether this person is already in the network, by shared identifier or similar name | A shared identifier puts the person under "In your network". A same name shows "Same name as … in your network" on the card | built |
+| 3 | Choose to add as new, merge into the existing person, or keep them apart | "Same person" merges, "Add as new" adds and remembers they are different. Records Add leaves apart show as "1 possible match" and are decided on the profile | built |
+| 4 | Skip a person so FN stops suggesting them | Skip hides the person here and in later searches, behind "3 skipped people hidden · Show" | built |
+| 5 | Undo an Add or a Skip | Undo on the card, as long as it is the person's latest decision | built |
 
 ## Flow 4: A search finds new facts about someone in the network
 
@@ -62,10 +60,10 @@ A search finds a person staff already know, with something new about them, such 
 
 | # | Step | Today | Status |
 | --- | --- | --- | --- |
-| 1 | FN recognizes the person by an identifier it already holds, such as an OpenAlex id or a LinkedIn URL | The lane adds its claims to that person and tells nobody | partial |
-| 2 | FN finds someone with the same name and no shared identifier | FN keeps a separate record and shows both on one card, marked "same name in N records, not merged". A seed person that OpenAlex finds always gets a second record this way, because seed rows have no OpenAlex id | partial |
-| 3 | Staff see the new facts marked "new since you last looked" on the profile (D2) | Nothing | missing |
-| 4 | Staff remove a fact that is wrong | Nothing | missing |
+| 1 | FN recognizes the person by an identifier it already holds, such as an OpenAlex id or a LinkedIn URL | The lane adds its claims to that person, and they count as new | built |
+| 2 | FN finds someone with the same name and no shared identifier | The record stays apart and shows under "Possible matches" on the profile, with "Same person" and "Different person" | built |
+| 3 | Staff see the new facts marked "new since you last looked" on the profile (D2) | The Network row says "2 new facts", the count line links "3 with new facts", and the profile marks each fact "New" until it is opened | built |
+| 4 | Staff remove a fact that is wrong | Remove on the fact, with Undo. The fact stays removed when a lane finds it again | built |
 
 ## Flow 5: Browse the network on the map and open a profile
 
@@ -73,10 +71,10 @@ A staff member looks at an area on the map, clicks a few people and reads their 
 
 | # | Step | Today | Status |
 | --- | --- | --- | --- |
-| 1 | Open a map of the whole network | The map exists only per search | missing |
-| 2 | Zoom to an area and see who is there | Works on a search's map, and people at the same point share one dot with a count | partial |
-| 3 | Click a person and see a short summary | On narrow screens a popup shows name and role. On wide screens the click highlights the person's card in the list | partial |
-| 4 | Open the full profile with every claim, source and date | The Person page `/people/{id}` is designed, not built. Each source has a page at `/sources/{id}` | missing |
+| 1 | Open a map of the whole network | The Network page and the home page show the network as rows beside the map | built |
+| 2 | Zoom to an area and see who is there | People at one point share a dot with a count. The filter box narrows rows and dots by name, place or organization | built |
+| 3 | Click a person and see a short summary | A dot opens a popup with name, role, employer and place at every width; a click on a row opens the same popup | built |
+| 4 | Open the full profile with every claim, source and date | `/people/{id}`: contact details, every fact once with its newest source, what is new, the records the person was found as | built |
 
 ## Flow 6: Reopen an old search
 
@@ -84,9 +82,9 @@ A staff member goes back to a search from last week.
 
 | # | Step | Today | Status |
 | --- | --- | --- | --- |
-| 1 | Find the search on the home page | Recent searches show the question, the people count and the date | built |
-| 2 | Open it and see its results | FN renders the stored results | built |
-| 3 | See who was added or skipped since | Depends on flow 3 | missing |
+| 1 | Find the search on the home page | The three newest searches, and "All searches" for the rest | built |
+| 2 | Open it and see its results | FN renders the stored results, 50 at a time | built |
+| 3 | See who was added or skipped since | Cards show today's state: "Added to your network", or hidden when skipped | built |
 
 ## Flow 7: Export the network to CSV
 
@@ -94,20 +92,23 @@ A staff member wants everyone in the network in a spreadsheet.
 
 | # | Step | Today | Status |
 | --- | --- | --- | --- |
-| 1 | Choose what to export: the whole network, a filtered list or one search's results | Nothing | missing |
-| 2 | Download a CSV with one row per person: name, role, organization, place, Belgian ties and a source link | Nothing | missing |
+| 1 | Choose what to export: the whole network, a filtered list or one search's results | Export on the count line of the Network page, of a filtered list ("Export these 9") and of a search | built |
+| 2 | Download a CSV with one row per person: name, role, organization, place, Belgian ties and a source link | The import's columns first, then Belgian organizations, the date added and the profile address. The file imports again | built |
 
-## Flows this map may be missing
+## Flows the first map missed
 
-These came up while writing the map. Each could become a flow of its own:
+These came up while writing the first map. Five are covered now:
 
-- Browse the network as a list and filter it on a few fields, such as organization, place or seed list
-- Look up one person by name to see whether they are already in the network
-- Edit a person by hand to fix a wrong fact or add a note. The claim model already has a `staff_edit` date method
-- Remove someone from the network
-- Find and merge duplicates inside the network, for example right after an import
-- Import a newer version of the same file, which raises the question of whether rows update people or add them
-- Several staff using FN, with login and a record of who added whom. The design decisions name 5 to 20 staff, and login is out of scope for now
+- Browse the network as a list and filter it: the Network page, with one box for name, place and organization
+- Look up one person by name: the same filter box
+- Remove someone from the network: Remove on the profile, with Undo
+- Find and merge duplicates inside the network: "Possible matches" on the profile
+- Import a newer version of the same file: rows with a LinkedIn URL, ORCID or email update their person, and the other rows are name matches that one box merges
+
+Two are not built:
+
+- Edit a person by hand. Staff edit the email and phone and remove facts; they cannot type a new job or place
+- Several staff using FN, with login and a record of who added whom. Every decision is already stored as an event with an empty user
 
 ## Decisions
 
@@ -138,13 +139,9 @@ The `state` column exists because 307 of the 2,947 US city names in the GeoNames
 
 **D4. CSV or Excel first? CSV.** The standard library reads CSV. Excel needs openpyxl, a new dependency, and comes after the CSV flow works.
 
-## Suggested build order
+## What is left
 
-Each slice below gives staff a complete flow, and each later slice needs the one before it.
-
-1. Import CSV, then the network list, the network map and the Person page. These cover flows 1 and 5, and every other flow needs people in the network.
-2. Export CSV, flow 7. It is one page with the standard library.
-3. Add, Skip and merge from search results, and the "In your network" section in search, flows 3 and 2.
-4. New facts on network people, flow 4.
-
-The stricter ranker cut and the card claim format on the to-do list fit into slice 3, because staff add from the cards they see.
+- The order of results. The place of a question does not move people up or down yet.
+- Excel files, and a mapping step that guesses columns.
+- An undo for a whole import. People can be removed one by one.
+- A place for people FN finds on LinkedIn. That lane is off by default and writes no location.
