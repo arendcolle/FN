@@ -66,31 +66,34 @@ How the build handles the facts it met:
 ## Module layout
 
 ```text
-pyproject.toml              uv project; scripts fn-serve, fn-seed, fn-gold, fn-score, fn-orgs
+pyproject.toml              uv project; scripts fn-serve, fn-seed, fn-gold, fn-score, fn-orgs, fn-rerank, fn-enrich
 src/fn/
   contracts.py              every model, Literal and normalize(); record_source(), page_source(), profile_url(), clean_name(); IMPORT_COLUMNS; CONTRACTS_VERSION
   config.py                 Settings (frozen): paths, mode, host, port, llm mode, keys as SecretStr, the FN_LINKEDIN switch
   db.py                     connect() per thread (WAL, foreign keys, busy_timeout, secure_delete); migrate()
-  migrations/               001_init (the tables below), 002_orgs, 003_chip_refs, 004_score_parts, 005_claim_years, 006_network, 007_cut_reason
+  migrations/               001_init (the tables below), 002_orgs, 003_chip_refs, 004_score_parts, 005_claim_years, 006_network, 007_cut_reason, 008_org_places, 009_card_records, 010_candidate_group, 011_lookups
   store.py                  all SQL; resolve_person(); upserts; claims_of(); reads for pages, debug and stats
   net.py                    the one outbound HTTP client, GET and POST: timeouts, size cap, scheme check, keys per host, call recording, cache modes
   llm.py                    StructuredLLM protocol; ClaudeCli; FixtureLLM (record, replay and prefer); live mode records its answers in var/llm
   prompts/parse.md          system prompt for the parse task
   prompts/extract.md        system prompt for the extract task (the people one part of a page names)
-  steps.py                  StepContext, run_step(), CallRecorder, redact(), log capture
+  steps.py                  StepContext, run_step(), CallRecorder, redact(), log capture; fan_out() runs the calls of one step at the same time; as_of() is the date a search ranks as of
   worker.py                 one-thread executor, the search lifecycle, the startup sweep
-  search.py                 the Quick workflow: which steps run in which order, with a publish step after each lane but the last; finish() holds the steps after the lanes
+  search.py                 the Quick workflow: which steps run in which order, with a publish step after each lane but the last; finish() holds the steps after the lanes; refinish() runs them again on a stored search (fn-rerank)
   parse.py                  question -> Chips, span checks
   extract.py                page text -> the people it names, quotes located in the text, claim drafts
   lanes/__init__.py         Lane protocol, LANES registry
-  lanes/seeds.py            seed lane: fts_query() and the FTS5 search
-  lanes/openalex.py         OpenAlex lane: works -> authors -> affiliations, considered list
+  lanes/seeds.py            seed lane: fts_query() over the topic words that carry meaning and the FTS5 search; for a question that names only a place, the 20 nearest people based there
+  lanes/openalex.py         OpenAlex lane: works -> authors -> affiliations, the matching works as topic claims, considered list; store_author() for enrich
   lanes/web.py              web lane: Parallel Search and Extract, pages as vendor_page sources, people through extract.py
   lanes/linkedin.py         LinkedIn lane: Apify profile search, profiles as vendor_record sources with dated claims
   orgs.py                   spelling -> org id from data/org_aliases.csv; ROR and Wikidata records -> facts; save(); belgian_claims()
-  orgjob.py                 fn-orgs: fetches every id in the alias file and saves its facts, as a job with one step
-  resolve.py                hits mapped to canonical ids; one entry per name (group key) in a result list; name-only match flags; splits on not-same pairs and different ORCIDs
-  rank.py                   the belgian_years list, reciprocal rank fusion with score parts, section assignment, the cut and its reason
+  orgjob.py                 fn-orgs: fetches every id in the alias file and saves its facts, as a job with one step; --places fills org cities from stored records and locates stored place claims
+  identity.py               who is one person: the name key, same_person(a, b) -> (level, reason), the vetoes, on_card() for the records a card reads
+  resolve.py                hits mapped to canonical ids; one entry per person as identity.py links them; name-only match flags
+  evidence.py               what the records on a card show for a question: topic words, institution, Belgian tie, places (a stated place, else a recent employer's city), sources
+  rank.py                   the belgian_years list, reciprocal rank fusion with score parts, section assignment, groups and bands from evidence.py, the cuts and their reasons
+  enrich.py                 fn-enrich: looks up seed people at OpenAlex and ORCID holders' employments, as a job; one row per lookup in the lookups table
   network.py                staff decisions (add, skip, remove, merge, not same, reject a fact, set a contact detail, undo, mark seen) and the event each writes
   present.py                view models: how a person, a claim, a card, the network and a profile read
   importer.py               CSV text to rows, row checks, the preview and the confirm of an import
@@ -275,9 +278,11 @@ fn-orgs runs outside the Quick workflow. It stores one `searches` row of kind `j
 
 ### Ranking
 
+Since the result quality work ([notes/quality/design.md](../quality/design.md)) the new section is ordered in bands before the score. `evidence.of` says, per card, which topic words its records hold, its Belgian tie and its place. Group 0 holds people with a topic match and a tie, group 1 everyone else. The bands are group 0 not outside the place, group 0 outside it, group 1 not outside, group 1 outside, and last the people placed only outside the question's country. Inside a band, people with more topic words come first, then the fused score below. Four cuts apply to people only OpenAlex found: `no_belgian_evidence`, `weak_openalex`, `no_claim` and `outside_country`; the last three spare a match on an institution chip. The median list went from 518 to 223 people.
+
 rank.py fuses ranked lists by reciprocal rank fusion: an entry gets `1 / (60 + rank)` from each list it is on, and its score is the sum. No weight is set by hand. Each term is stored as a ScorePart, so the card can show where every point came from.
 
-- **Lane lists.** Each lane's best rank for the entry. The web and LinkedIn lanes keep every person they find, so the web lane adds many people to section `new` (69 from 10 pages on GS-02). The seed lane keeps its top 100 and the OpenAlex lane the first 2,000 authors it reads, Belgian or not (see Lanes). An author with no Belgian claim has no belgian_years part, so the fused list places them below Belgian authors with a similar lane rank. In the 2026-11-06 gold run no case had a card without a Belgian claim in its top 10. rank.py owns the order of the fused list and its one cut (see The cut).
+- **Lane lists.** Each lane's best rank for the entry. The web and LinkedIn lanes keep every person they find, so the web lane adds many people to section `new` (69 from 10 pages on GS-02). The seed lane keeps its top 300 and the OpenAlex lane the first 2,000 authors it reads, Belgian or not (see Lanes). An author with no Belgian claim has no belgian_years part, so the fused list places them below Belgian authors with a similar lane rank. In the 2026-11-06 gold run no case had a card without a Belgian claim in its top 10. rank.py owns the order of the fused list and its one cut (see The cut).
 - **The cut.** `rank.cut_reason` sets `no_belgian_evidence` on a candidate in section `new` whose only lane is OpenAlex and that has no `belgian_years` part. Everyone else is kept, and a candidate in section `network` is never cut. On the 24 stored searches with results this takes the median from 1,098 to 518 people and cuts none of the 12 gold picks that reach the ranker (`scripts/gold/cut_gate.py`). A cut candidate stays in the `candidates` table with its reason. Kept and cut candidates are numbered apart within a section, each from 1 (searches stored before migration 007 keep their old rank numbers), so rank numbers on a staff page count kept people only. Staff pages read kept candidates only. The debug search page lists the cut ones too, with "cut:" and the reason, and the trace page shows the rank step as dropped with that reason. A skipped person is not a cut: `store.list_candidates` can leave out a candidate whose hit persons are all skipped, so Undo brings the card back without a new rank run.
 - **belgian_years.** rank.py reads the claims of the entry's hit persons through `store.claims_of`, which includes the records merged into them and leaves out rejected facts, and keeps those at an org with `country_code = BE`. Each claim gives units: the years the source lists (`Claim.years`) when it lists them, else every year from `valid_from` to `valid_to` when both are set and in order, else the years of `valid_from`, `valid_to` and `claim_date` that are set, else one `undated` unit. Listed years come first because OpenAlex lists affiliation years with gaps, and filling the span would count years no source states. The entry's count is the number of distinct units, so the same year from two sources counts once. Entries with a count of 0 are not on the list. Equal counts share a rank (1, 2, 2, 4), so no arbitrary order enters the score. A claim whose org has no stored facts does not count, and the card names that org.
 
@@ -426,7 +431,7 @@ stdlib logging writes to `var/log/fn.log` with rotation. A contextvar filter add
 | Which claims are at a Belgian organization | `orgs.belgian_claims`, called by rank, present, the debug pages and gold |
 | Mapping hits to canonical ids, one entry per name (group key) in a result, name-only flags, splitting on not-same pairs and different ORCIDs | `resolve.py` |
 | Turning claims into ranked lists, fusing the lanes' lists, sections, ordering entries, the cut and its reason | `rank.py` |
-| Which of the people a lane finds it keeps (the seed top 100, the first 2,000 OpenAlex authors with a record, everyone for web and LinkedIn) | each lane, under Lanes |
+| Which of the people a lane finds it keeps (the seed top 300, the first 2,000 OpenAlex authors with a record, everyone for web and LinkedIn) | each lane, under Lanes |
 | The order of a lane's own hits (bm25 for seeds, place group then order seen for OpenAlex, page order for web, actor order for LinkedIn) | each lane, under Lanes |
 | Turning a claim into year units | `rank.units`, called by rank, present, the debug pages and gold |
 | Place text to coordinates, radius and city, the alias file, and the city of an import row (`geo.area`, `geo.locate`, `geo.locate_city`, `geo.coordinates`) | `geo.py` |
@@ -446,6 +451,13 @@ stdlib logging writes to `var/log/fn.log` with rotation. A contextvar filter add
 | Site CSS | `web/static/fn.css`, copied from the design system |
 | Gold scoring and reports, the event-page label, lanes per pick, cost per search, a cut pick lost at rank, failed lanes, refusing `FN_LINKEDIN=1` for more than one case | `gold.py` |
 | Whether the cut keeps the gold picks and shrinks the lists enough | `scripts/gold/cut_gate.py` |
+| Who is one person: name rules, evidence levels, vetoes, the records a card reads | `identity.py`; `resolve`, `network`, the importer and `enrich` call it |
+| What a card shows for a question, and where a person is | `evidence.py`; `rank.py`, `present.py`, the seed lane and `score.py` read it |
+| Running the steps after the lanes again on a stored search | `search.refinish` (`fn-rerank`) |
+| The date a search ranks as of | `steps.as_of` |
+| Looking up what seed people and ORCID holders miss | `enrich.py` (`fn-enrich`) |
+| Coordinates of a place claim, on write and for stored claims | `extract.py` (`drafts`, `locate_stored`) |
+| Scoring results and gating a change | `score.py` (`fn-score`) |
 
 ## Decisions from the reviews
 

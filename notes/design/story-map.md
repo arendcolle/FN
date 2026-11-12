@@ -36,7 +36,7 @@ A staff member types a question and wants people from the network first, then ne
 | 1 | Type a question | The home page has the search box | built |
 | 2 | Wait, and see that FN is working | People appear after each lane, without a page reload, under "Searching… 12 people so far". A lane that fails no longer stops the search; the page then says some sources could not be read | built |
 | 3 | See the people already in the network | "In your network" lists them first, with no buttons | built |
-| 4 | See new people, ranked, each with the reason | 50 people at a time. A fact from a database record reads "Affiliated with KU Leuven, 2008–2013"; only prose sources show a quote. The ranker cuts people only OpenAlex found who have no Belgian evidence, which takes the median search from 1,098 to 518 people. The order still ignores the place of the question | partial |
+| 4 | See new people, ranked, each with the reason | 20 people at a time, each with the words of the question it matches. A fact from a database record reads "Affiliated with KU Leuven, 2008–2013"; only prose sources show a quote. The ranker cuts people only OpenAlex found who have no Belgian evidence, which takes the median search from 1,098 to 518 people. The order still ignores the place of the question | partial |
 | 5 | See the results on a map | List and map side by side; a dot opens a popup | built |
 | 6 | Change the question and search again | The question stays editable at the top of the results | built |
 
@@ -83,7 +83,7 @@ A staff member goes back to a search from last week.
 | # | Step | Today | Status |
 | --- | --- | --- | --- |
 | 1 | Find the search on the home page | The three newest searches, and "All searches" for the rest | built |
-| 2 | Open it and see its results | FN renders the stored results, 50 at a time | built |
+| 2 | Open it and see its results | FN renders the stored results, 20 at a time | built |
 | 3 | See who was added or skipped since | Cards show today's state: "Added to your network", or hidden when skipped | built |
 
 ## Flow 7: Export the network to CSV
