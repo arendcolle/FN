@@ -37,6 +37,7 @@ One line per finished step, newest last. The design is in [design.md](design.md)
 - 2026-11-12 Measured and not adopted: ordering people inside the place before a full topic match outside it. Gold picks in the first 10, 20 and 50 stay the same, first-20 people outside the place go from 10% to 0.2%, and people of unknown place go from 65% to 74%. The panel's order stays.
 - 2026-11-12 Two live searches on the owner's server. The Boston question took 68 s against 257 s in the morning: parse 6.5 s, web lane 57.6 s, resolve and rank 0.3 s. Its OpenAlex lane failed on the used-up budget, and the page said the list may be incomplete. "Who is based in Chicago?" took 6 s and listed 8 seed people, each with "Based in" and the city; it listed nobody before.
 - 2026-11-12 Final check, base on the first snapshot against main on a third snapshot frozen after the last data steps (`var/score/2026-11-12-final`): see the table in [plan.md](plan.md). Six pass lines hold and three are missed: first-20 cards with a place (0.45 against 0.58), one labelled-different pair on one card (0 wanted) and pairs of one person in a first 20 (2 against 0).
+- 2026-11-12 An independent review of the last four changes (three reviewers, each finding checked by a second agent) confirmed two bugs, both fixed and merged (PR 42): the place search counted a recent employer in the city for a person who states another city, and the place backfill skipped the places seed lists write. 582 tests. The scorecard did not move.
 
 ## Review ledger
 
@@ -93,3 +94,9 @@ One line per finished step, newest last. The design is in [design.md](design.md)
 | enrich R3 | Seed people with only Wikidata organizations cost a call that cannot match | nit | fixed by the lead: skipped |
 | enrich R4 | A negative limit looked up almost everyone | nit | fixed by the lead |
 | enrich R1, R2 | No test for the ORCID Accept header; the hand check used 19, not 20 | nit | accepted |
+| final logic-1, inputs-1, tests-1 | The place search took the nearest of a person's places, so an employer's city counted beside a stated place elsewhere | should | fixed: the lane asks `evidence.where` |
+| final inputs-2 | The place backfill took only "lives in" claims and skipped the places seed lists write | should | fixed: every location claim that is not a birthplace. The lead extended the test written an hour earlier for the narrower rule |
+| final tests-3, tests-4, tests-5 | No test that topic words leave the network section alone, the places job named twice, one test without a docstring | nit | fixed |
+| final logic-2 | A failed city index download leaves the organization cities already filled | nit | declined: the next run finishes the claims |
+| final inputs-3 | The place search stores one considered row per person in the box, 1,650 for Brussels | nit | follow-up |
+| final tests-2 | The source-kind filters of the place search have no test of their own | nit | follow-up |
