@@ -1,3 +1,4 @@
+import json
 import shutil
 import sqlite3
 import tempfile
@@ -6,7 +7,10 @@ from pathlib import Path
 from unittest import mock
 
 from fn import db
-from tests.helpers import make_db
+from fn.contracts import Search
+from fn.store import Store
+from fn.worker import now
+from tests.helpers import make_db, make_settings
 
 
 class MigrateTest(unittest.TestCase):
@@ -40,13 +44,50 @@ class MigrateTest(unittest.TestCase):
         self.assertEqual([r[0] for r in store.conn.execute("SELECT version FROM schema_migrations")], versions)
 
 
+class NetworkMigrationTest(unittest.TestCase):
+    def test_006_fills_hit_ids_from_the_stored_resolve_output(self):
+        """Each stored candidate gets the hit ids of the resolve entry whose first person is its person.
+
+        A candidate with no matching entry, or an entry stored without hit ids, keeps '[]'.
+        """
+        store = Store(make_settings(self).db_path)
+        self.addCleanup(store.close)
+        old = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, old)
+        for path in sorted(db.MIGRATIONS.glob("00[1-5]_*.sql")):
+            shutil.copy(path, old / path.name)
+        with mock.patch.object(db, "MIGRATIONS", old):
+            store.migrate()
+        conn = store.conn
+        store.create_search(Search(id="s1", question="q", status="done", created_at=now(), code_sha=None,
+                                   dirty=False, llm_mode="replay", settings_json="{}", boot_id="b"))
+        for p in ("p1", "p2", "p3", "p4"):
+            conn.execute("INSERT INTO persons (id, display_name, name_key, list_status) VALUES (?, ?, ?, 'candidate')",
+                         (p, p, p))
+        entries = [{"name_key": "a", "person_ids": ["p1", "p2"], "hit_person_ids": ["p1", "p2"], "lane_ranks": {}},
+                   {"name_key": "b", "person_ids": ["p3"], "lane_ranks": {}}]
+        conn.execute("INSERT INTO step_runs (id, search_id, seq, step, status, started_at, input_model, "
+                     "contracts_version) VALUES ('r1', 's1', 1, 'resolve', 'ok', '2026-11-02', 'ResolveIn', '2')")
+        conn.execute("INSERT INTO step_payloads (step_run_id, input_json, output_json) VALUES ('r1', '{}', ?)",
+                     (json.dumps({"entries": entries, "flags": []}),))
+        for p in ("p1", "p3", "p4"):
+            conn.execute("INSERT INTO candidates (search_id, person_id, person_ids_json, section, rank, score, "
+                         "lane_ranks_json, reason_claim_ids_json, score_parts_json) "
+                         "VALUES ('s1', ?, '[]', 'new', 1, 0.1, '{}', '[]', '[]')", (p,))
+        self.assertEqual(store.migrate(), [6])
+        found = dict(conn.execute("SELECT person_id, hit_person_ids_json FROM candidates").fetchall())
+        self.assertEqual({p: json.loads(v) for p, v in found.items()}, {"p1": ["p1", "p2"], "p3": [], "p4": []})
+        self.assertEqual([c.hit_person_ids for c in store.list_candidates("s1")], [["p1", "p2"], [], []])
+
+
 class ClaimsFtsTest(unittest.TestCase):
     def test_tokenizer_stems_and_folds_diacritics(self):
         """claims_fts uses porter and unicode61 with diacritics removed, kept in sync by the insert trigger."""
         conn = make_db(self).conn
         sql = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'claims_fts'").fetchone()[0]
         self.assertIn("tokenize = 'porter unicode61 remove_diacritics 2'", sql)
-        conn.execute("INSERT INTO persons VALUES ('p1', 'An Example', 'an example', 'candidate', NULL)")
+        conn.execute("INSERT INTO persons (id, display_name, name_key, list_status) "
+                     "VALUES ('p1', 'An Example', 'an example', 'candidate')")
         conn.execute(
             "INSERT INTO sources (id, kind, url, text, content_hash, normalize_version)"
             " VALUES ('s1', 'record', 'https://example.org', 'Université libre, running models', 'h', 1)"

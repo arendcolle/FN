@@ -40,7 +40,7 @@ def run(ctx: StepContext, inp: LaneIn) -> LaneOut:
         return LaneOut(lane=name, query="", total_seen=0,
                        considered=[Considered(person_key="-", name="", stage="query", kept=False, reason=NO_QUERY)])
     hits, considered = [], []
-    # OpenAlex and vendor sources belong to other lanes; matching them would make seed ranks depend on past searches.
+    # EXCLUDED is the source kinds that searches write; seed, import and staff claims were entered on purpose.
     for rank, (person, claim, score) in enumerate(ctx.store.match_claims(query, exclude=EXCLUDED), 1):
         kept = rank <= MAX_HITS
         if kept:

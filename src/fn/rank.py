@@ -58,8 +58,13 @@ def counted(claims: list[Claim], facts: dict[str, Org]) -> tuple[list[str], froz
     return [c.id for c in found], frozenset().union(*(units(c) for c in found))
 
 
+def hits(entry: Entry) -> list[str]:
+    """The persons a lane hit; an entry stored without hit ids counts its first person as the hit."""
+    return entry.hit_person_ids or entry.person_ids[:1]
+
+
 def belgian_list(entries: list[Entry], claims: list[Claim], facts: dict[str, Org]) -> dict[str, ScorePart]:
-    """The belgian_years part of each entry on the list, by name key.
+    """The belgian_years part of each entry on the list, by the entry's first person id.
 
     An entry's count is the number of units over the Belgian claims of its hit records. Entries with
     none are left out; the rest rank by count, and equal counts share a rank (1, 2, 2, 4).
@@ -71,7 +76,7 @@ def belgian_list(entries: list[Entry], claims: list[Claim], facts: dict[str, Org
     for entry in entries:
         ids, covered = counted([c for p in entry.hit_person_ids for c in by_person.get(p, [])], facts)
         if covered:
-            found[entry.name_key] = (len(covered), ids)
+            found[entry.person_ids[0]] = (len(covered), ids)
     counts = sorted((n for n, _ in found.values()), reverse=True)
     parts = {}
     for key, (n, ids) in found.items():
@@ -96,21 +101,22 @@ def fuse(search_id: str, entries: list[Entry], statuses: dict[str, ListStatus],
          belgian: dict[str, ScorePart] | None = None) -> list[Candidate]:
     """Score each entry by the sum of its parts and number it within its section.
 
-    belgian holds the belgian_years parts by name key. Section network holds entries with a record
+    belgian holds the belgian_years parts by first person id. Section network holds entries with a hit person
     in the list; equal scores are ordered by the first person id.
     """
     belgian = belgian or {}
-    ordered = sorted(((e, parts(e, belgian.get(e.name_key))) for e in entries),
+    ordered = sorted(((e, parts(e, belgian.get(e.person_ids[0]))) for e in entries),
                      key=lambda ep: (-score(ep[1]), ep[0].person_ids[0]))
     counts: dict[Section, int] = {"network": 0, "new": 0}
     found = []
     for entry, entry_parts in ordered:
-        section: Section = "network" if any(statuses.get(p) == "in_list" for p in entry.person_ids) else "new"
+        section: Section = "network" if any(statuses.get(p) == "in_list" for p in hits(entry)) else "new"
         counts[section] += 1
         found.append(Candidate(
             search_id=search_id, person_id=entry.person_ids[0], person_ids=entry.person_ids, section=section,
             rank=counts[section], score=score(entry_parts),
             lane_ranks=entry.lane_ranks, reason_claim_ids=entry.claim_ids, score_parts=entry_parts,
+            hit_person_ids=hits(entry),
         ))
     return found
 
