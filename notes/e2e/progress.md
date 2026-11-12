@@ -22,6 +22,7 @@ One line per finished step, newest last. The plan is in [plan.md](plan.md) and t
 - 2026-11-12 T13a merged: request log, `/debug/stats`, `/debug/feedback` (PR #14).
 - 2026-11-12 T9a merged: the import core (PR #15). 348 tests.
 - 2026-11-12 T7, the Network page, in progress.
+- 2026-11-12 T15 measured and not built: using a question's place in the ranker. A place cut loses a gold pick, and a place list improves nothing, because the only located places are the last institutions OpenAlex knows. Numbers in [research/place-ranking.md](research/place-ranking.md).
 
 ## Review ledger
 
