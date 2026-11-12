@@ -3,6 +3,7 @@ from datetime import date
 from urllib.parse import urlencode
 
 from fn.contracts import (
+    CardView,
     ClaimView,
     ContactView,
     ImportPreview,
@@ -16,7 +17,7 @@ from fn.contracts import (
     Search,
     name_key,
 )
-from fn.present import FIELDS, cut, days_ago, plural
+from fn.present import FIELDS, RESULTS_STEP, cut, days_ago, plural
 from fn.web.html import Safe, h, page
 
 NETWORK_STEP = 200
@@ -99,10 +100,10 @@ def notice(search: Search, read: int) -> Safe:
                  h.p(what, " A broader topic or a wider area may find more.", class_="text-body"), class_="fn-notice")
 
 
-def person_card(view: PersonView, search_id: str | None = None) -> Safe:
+def person_card(view: PersonView, search_id: str | None = None, acts: object = None, card_id: str | None = None) -> Safe:
     """The person's card: the name linking to their page, role and place, Belgian organizations, then the evidence.
 
-    search_id is the search the card shows on, which the Person page links back to.
+    search_id is the search the card shows on, which the Person page links back to; acts follow the evidence.
     """
     job = ", ".join(x for x in (view.role, view.employer) if x)
     shown = view.evidence
@@ -112,8 +113,58 @@ def person_card(view: PersonView, search_id: str | None = None) -> Safe:
         h.p(" · ".join(x for x in (job, view.place or "location not found") if x), class_="fn-card__role text-body"),
         h.p(orgs_line(view.orgs, view.more_orgs), class_="fn-card__ties text-body") if view.orgs else None,
         (quote(shown.quote) if shown.quote else statement(shown)) if shown else None,
-        class_="fn-card", data_person=view.person_id,
+        acts,
+        class_="fn-card", id=card_id, data_person=view.person_id,
     )
+
+
+def results_href(search_id: str, shown: int, skipped: bool, view: str = "list") -> str:
+    """The URL of the results page with a shown count other than the first step, the skipped people and the view."""
+    query = urlencode({k: v for k, v in (("shown", str(shown) if shown != RESULTS_STEP else None),
+                                         ("skipped", "1" if skipped else None)) if v})
+    path = f"/searches/{search_id}" + ("/map" if view == "map" else "")
+    return f"{path}?{query}" if query else path
+
+
+def match_line(match: PersonView) -> Safe:
+    return h.p("Same name as ", h.a(match.name, href=f"/people/{match.person_id}"), " in your network",
+               class_="fn-card__match text-body")
+
+
+def result_card(card: CardView, search_id: str, here: str) -> Safe:
+    """The card in its state: Add and Skip, the same-name buttons, the added line with its note, or the skipped line.
+
+    here is the results page URL the forms return to; a network card has no buttons, an Undo shows when given.
+    """
+    view, card_id = card.person, f"card-{card.key}"
+    anchored, action = f"{here}#{card_id}", f"/searches/{search_id}/people/{card.key}"
+    if card.state == "skipped":
+        words = f"Skipped {view.name}"
+        line = (undo_form(card.undo_event, words, "fn-skipline text-body", anchored) if card.undo_event
+                else h.p(words, class_="fn-skipline text-body"))
+        return h.article(line, class_="fn-card fn-card--skipped", id=card_id)
+    quiet = "fn-btn fn-btn--quiet text-control"
+    skip = post_form(f"{action}/skip", "Skip", quiet, here)
+    acts = None
+    if card.state == "new":
+        acts = h.div(post_form(f"{action}/add", "Add", "fn-btn fn-btn--add text-control", here), skip,
+                     class_="fn-card__acts")
+    elif card.state == "name_match":
+        acts = [match_line(card.match),
+                h.div(post_form(f"{action}/same", "Same person", quiet, here, match=card.match.person_id),
+                      post_form(f"{action}/new", "Add as new", quiet, here, match=card.match.person_id), skip,
+                      class_="fn-card__acts")]
+    elif card.state == "added":
+        note = None
+        if card.note and card.note_href:
+            note = [h.span("·", class_="text-body"), h.a(card.note, class_="text-body", href=card.note_href)]
+        elif card.note:
+            note = h.span(card.note, class_="text-body")
+        done = [h.span("Added to your network", class_="fn-done text-strong"), note]
+        acts = [match_line(card.match) if card.match else None,
+                undo_form(card.undo_event, done, "fn-card__acts", anchored) if card.undo_event
+                else h.div(done, class_="fn-card__acts")]
+    return person_card(view, search_id, acts, card_id)
 
 
 def network_href(flt: NetworkFilter, limit: int = NETWORK_STEP, view: str = "list", path: str = "/people") -> str:
@@ -173,7 +224,6 @@ def filter_bar(flt: NetworkFilter, total: int, not_on_map: int, action: str, imp
     """
     tokens = [(f"From import {import_name}", flt.model_copy(update={"import_id": None}))] if flt.import_id else []
     tokens += [("New facts only", flt.model_copy(update={"new_only": False}))] if flt.new_only else []
-    count = [plural(total, "person", "people")] + ([f"{not_on_map:,} not on the map"] if not_on_map else [])
     return [
         h.form(
             h.div(
@@ -189,19 +239,37 @@ def filter_bar(flt: NetworkFilter, total: int, not_on_map: int, action: str, imp
                  class_="fn-tokens", aria_label="Active filters") if tokens else None,
             class_="fn-filter", method="get", action=action, role="search",
         ),
-        h.p(h.span(joined([" · ".join(count), *count_links(flt, total, new_facts)])),
-            h.a("Clear all", href="/people") if is_filtered(flt) else None, class_="fn-count text-meta"),
+        count_line(total, not_on_map, count_links(flt, total, new_facts),
+                   h.a("Clear all", href="/people") if is_filtered(flt) else None),
     ]
 
 
-def show_more(shown: int, total: int, href: str) -> Safe | None:
-    """'200 of 214 shown' and 'Show 14 more', linking to href at the first new row; None when everyone is shown."""
+def count_line(total: int, not_on_map: int, links: list[Safe], clear: Safe | None = None) -> Safe:
+    """'214 people · 12 not on the map' then the links, and clear at the right."""
+    count = [plural(total, "person", "people")] + ([f"{not_on_map:,} not on the map"] if not_on_map else [])
+    return h.p(h.span(joined([" · ".join(count), *links])), clear, class_="fn-count text-meta")
+
+
+def show_more(shown: int, total: int, href: str, step: int = NETWORK_STEP, anchor: str | None = None) -> Safe | None:
+    """'200 of 214 shown' and 'Show 14 more', linking to href at the first new item; None when everyone is shown.
+
+    anchor is that item's id, person-<n> when not given.
+    """
     if shown >= total:
         return None
-    more = min(NETWORK_STEP, total - shown)
+    more = min(step, total - shown)
     return h.div(h.span(f"{shown:,} of {total:,} shown"),
-                 h.a(f"Show {more:,} more", class_="fn-btn fn-btn--quiet text-control", href=f"{href}#person-{shown + 1}"),
+                 h.a(f"Show {more:,} more", class_="fn-btn fn-btn--quiet text-control",
+                     href=f"{href}#{anchor or f'person-{shown + 1}'}"),
                  class_="fn-more text-meta")
+
+
+def skipped_line(count: int, shown: bool, href: str) -> Safe | None:
+    """'3 skipped people hidden' with Show, or '3 skipped people shown' with Hide; None when nobody was skipped."""
+    if not count:
+        return None
+    words = plural(count, "skipped person", "skipped people") + (" shown" if shown else " hidden")
+    return h.p(h.span(words), h.a("Hide" if shown else "Show", class_="fn-link", href=href), class_="fn-hidden text-meta")
 
 
 def empty_network(home: bool) -> Safe:
