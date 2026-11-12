@@ -10,6 +10,8 @@ from html import unescape
 from pathlib import Path
 from unittest import mock
 
+from fastapi import Request
+from fastapi.responses import HTMLResponse
 from fastapi.testclient import TestClient
 
 from fn import db, orgs
@@ -18,6 +20,7 @@ from fn.contracts import (
     Chip,
     Chips,
     ClaimDraft,
+    Event,
     Identifier,
     OrgFacts,
     ParseIn,
@@ -399,21 +402,74 @@ class WebTest(unittest.TestCase):
         queued_id = self.create_search(client, "waiting")
         self.assertIn('http-equiv="refresh"', client.get(f"/searches/{queued_id}").text)
 
-    def test_unhandled_error_is_stored_and_shows_its_traceback(self):
-        """An exception in a route gives a 500 page with the redacted traceback, stored and listed on /debug/errors."""
+    def test_unhandled_error_is_stored_and_staff_do_not_see_its_traceback(self):
+        """A 500 on a staff page says only that something went wrong; the redacted traceback is stored and on /debug/errors."""
         client = self.client()
         with mock.patch.object(Store, "list_searches", side_effect=RuntimeError(f"boom {SECRET}")), \
                 self.assertLogs("fn.web", "ERROR"):
             response = client.get("/")
         self.assertEqual(response.status_code, 500)
-        self.assertIn("Traceback (most recent call last)", response.text)
-        self.assertIn("RuntimeError: boom ***", response.text)
-        self.assertNotIn(SECRET, response.text)
+        self.assertIn("Something went wrong", response.text)
+        self.assertIn("FN could not show this page. Nothing was changed.", response.text)
+        self.assertNotIn("Traceback", response.text)
+        self.assertNotIn("boom", response.text)
         self.assertIn("frame-ancestors", response.headers["content-security-policy"])
         (stored,) = self.store.list_request_errors()
         self.assertEqual(stored.route, "GET /")
         self.assertIn("RuntimeError: boom ***", stored.traceback)
-        self.assertIn("RuntimeError: boom ***", client.get("/debug/errors").text)
+        errors = client.get("/debug/errors").text
+        self.assertIn("RuntimeError: boom ***", errors)
+        self.assertNotIn(SECRET, errors)
+
+    def test_a_failing_debug_page_keeps_its_traceback(self):
+        """A 500 on a /debug page still shows the redacted traceback."""
+        client = self.client()
+        with mock.patch.object(Store, "list_searches", side_effect=RuntimeError(f"boom {SECRET}")), \
+                self.assertLogs("fn.web", "ERROR"):
+            response = client.get("/debug")
+        self.assertEqual(response.status_code, 500)
+        self.assertIn("Traceback (most recent call last)", response.text)
+        self.assertIn("RuntimeError: boom ***", response.text)
+
+    def test_a_request_writes_one_log_line_without_the_query_string(self):
+        """Each request logs method, path, status, milliseconds and the handler's facts; static files log nothing."""
+        client = self.client()
+
+        async def facts(request: Request):
+            request.state.facts = {"rows": 3}
+            return HTMLResponse("ok")
+
+        client.app.add_api_route("/facts", facts, response_class=HTMLResponse)
+        with self.assertLogs("fn.request", "INFO") as logs:
+            client.get("/facts?name=Secret+Person")
+            client.get("/static/fn.css")
+        (line,) = logs.output
+        self.assertRegex(line, r"GET /facts 200 \d+ms rows=3$")
+        self.assertNotIn("Secret", line)
+
+    def test_a_slow_request_logs_a_warning(self):
+        """A request over 1,000 ms logs at WARNING."""
+        client = self.client()
+        with mock.patch("fn.web.app.time") as clock, self.assertLogs("fn.request", "WARNING") as logs:
+            clock.perf_counter.side_effect = [0.0, 1.5]
+            client.get("/")
+        self.assertRegex(logs.output[0], r"^WARNING:fn.request:GET / 200 1500ms$")
+
+    def test_stats_and_feedback_pages_open_on_an_empty_and_a_filled_database(self):
+        """/debug/stats and /debug/feedback return 200 with no searches and with a search, a step and an add."""
+        client = self.client()
+        for path in ("/debug/stats", "/debug/feedback"):
+            self.assertEqual(client.get(path).status_code, 200)
+        search_id = self.run_search(client, "Who knows wind?")
+        self.store.conn.execute("INSERT INTO persons (id, display_name, name_key, list_status) VALUES ('p', 'P', 'p', 'candidate')")
+        self.store.add_event(Event(id="e", at=now(), kind="add", person_id="p", search_id=search_id, rank=60))
+        stats_page = client.get("/debug/stats")
+        self.assertEqual(stats_page.status_code, 200)
+        self.assertIn("parse", stats_page.text)
+        feedback = client.get("/debug/feedback")
+        self.assertEqual(feedback.status_code, 200)
+        self.assertIn("Who knows wind?", feedback.text)
+        self.assertIn("<td>51 to 100</td><td>1</td>", feedback.text)
 
     def test_debug_page_counts_kept_and_cut_candidates_and_names_the_reason_on_a_cut_card(self):
         """The debug search page says how many candidates are kept and cut; a cut card reads cut: <reason>."""

@@ -510,6 +510,38 @@ class RequestError(Model):
     at: datetime
 
 
+# What /debug/stats and /debug/feedback show.
+class StepStat(Model):
+    step: str
+    runs: int
+    errors: int
+    median_seconds: float | None
+    slowest_seconds: float | None
+    median_cost_usd: float
+    median_calls: float
+
+
+class SearchStat(Model):
+    search_id: str
+    question: str
+    status: SearchStatus
+    seconds: float | None
+    cost_usd: float
+    people: int
+    first_person_seconds: float | None
+
+
+class SearchFeedback(Model):
+    search_id: str
+    question: str
+    kept: int
+    cut: int
+    added: int
+    skipped: int
+    added_ranks: list[int]
+    added_by_lane: dict[LaneName, int]
+
+
 class GeoArea(Model):
     place: str
     city: str
