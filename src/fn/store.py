@@ -1,6 +1,7 @@
 """All SQL in fn; one connection per thread."""
 import hashlib
 import json
+import math
 import sqlite3
 import threading
 import uuid
@@ -445,6 +446,24 @@ class Store:
             if person.id not in found and key not in hidden:
                 found[person.id] = (person, claim, best)
         return list(found.values())
+
+    def persons_near(self, lat: float, lon: float, km: float, exclude: tuple[SourceKind, ...]) -> list[str]:
+        """The ids of the records with a located claim, or a claim at an org with a located city, near the point.
+
+        Near is a box reaching km from the point each way. Rejected claims and claims from a source of a kind in
+        exclude never count.
+        """
+        dlat, dlon = km / 111.0, km / (111.0 * max(math.cos(math.radians(lat)), 0.01))
+        box = (lat - dlat, lat + dlat, lon - dlon, lon + dlon)
+        rows = self.conn.execute(
+            "SELECT DISTINCT c.person_id FROM claims c JOIN sources s ON s.id = c.source_id "
+            "LEFT JOIN orgs o ON o.id = c.org_id AND o.city IS NOT NULL "
+            "WHERE s.kind NOT IN (SELECT value FROM json_each(?)) AND c.rejected_at IS NULL "
+            "AND ((c.lat BETWEEN ? AND ? AND c.lon BETWEEN ? AND ?) OR (o.lat BETWEEN ? AND ? AND o.lon BETWEEN ? AND ?)) "
+            "ORDER BY c.person_id",
+            (json.dumps(exclude), *box, *box),
+        )
+        return [r[0] for r in rows]
 
     def _hidden_everywhere(self) -> set[tuple[str, str, str]]:
         """hidden_keys over the whole persons of every record with a rejected claim."""
