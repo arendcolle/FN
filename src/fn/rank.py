@@ -199,11 +199,12 @@ def fuse(search_id: str, entries: list[Entry], statuses: dict[str, ListStatus],
         ev = found.get(key)
         grp = group(ev, question)
         reason = cut_reason(section, ev, question) if ev else unread_cut(section, e, entry_parts)
-        rows.append((band(section, ev, question, grp), e, section, entry_parts, grp, reason))
-    rows.sort(key=lambda r: (r[0], -score(r[3]), r[1].person_ids[0]))
+        words = len(ev.topic.words) if ev and section == "new" else 0
+        rows.append((band(section, ev, question, grp), e, section, entry_parts, grp, reason, words))
+    rows.sort(key=lambda r: (r[0], -r[6], -score(r[3]), r[1].person_ids[0]))
     counts: dict[tuple[Section, bool], int] = {}
     out = []
-    for _, entry, section, entry_parts, grp, reason in rows:
+    for _, entry, section, entry_parts, grp, reason, _ in rows:
         counts[section, reason is not None] = counts.get((section, reason is not None), 0) + 1
         out.append(Candidate(
             search_id=search_id, person_id=entry.person_ids[0], person_ids=entry.person_ids, section=section,
