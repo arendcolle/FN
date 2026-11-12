@@ -11,12 +11,25 @@ from unittest import mock
 
 import httpx
 
-from fn import db, orgs, seedload
-from fn.contracts import REGISTRY_ID, Chip, Chips, ClaimDraft, OrgFacts, Search, Source, record_source
+from fn import db, orgjob, orgs, seedload
+from fn.contracts import (
+    REGISTRY_ID,
+    Chip,
+    Chips,
+    ClaimDraft,
+    Identifier,
+    OrgFacts,
+    PlacesOut,
+    Search,
+    Source,
+    page_source,
+    record_source,
+)
 from fn.store import Store
 from fn.web.debug import debug_search_page
 from tests.helpers import (
     FIXTURES,
+    StubHttp,
     make_db,
     make_settings,
     recorded_orgs,
@@ -274,6 +287,24 @@ class OrgPlacesTest(unittest.TestCase):
                          {"ror:0aaaaaa11": ("Ghent", 51.05, 3.72), "openalex:I2": ("Leuven", 50.88, 4.7),
                           "ror:0cccccc11": ("Liege", 50.63, 5.57), "ror:0eeeeee11": (None, None, None)})
         self.assertEqual(orgs.backfill_places(self.store), 0)
+
+    def test_the_places_job_fills_cities_and_locates_stored_place_claims_in_one_recorded_step(self):
+        """fn-orgs --places is a job with a places step whose output counts the orgs and the claims it filled."""
+        settings = make_settings(self)
+        self.store = make_db(self, settings)
+        self.put("openalex:I2")
+        self.store.upsert_source(institution_source({"id": "https://openalex.org/I2", "display_name": "Example Two",
+                                                     "geo": {"city": "Leuven", "latitude": 50.88, "longitude": 4.7}}))
+        page = page_source("https://example.org/p", "Page", "Wim Doe lives in Cambridge, Massachusetts.", {}, NOW, None)
+        person = self.store.resolve_person([Identifier(scheme="mention", value="m1")], "Wim Doe")
+        claim = self.store.upsert_claim(ClaimDraft(person_id=person.id, kind="location", relation="lives_in",
+                                                   value="Cambridge, Massachusetts", quote="Cambridge, Massachusetts",
+                                                   quote_start=17, quote_end=41, source=page))
+        job = orgjob.fill_places(self.store, settings, StubHttp())
+        (step,) = self.store.list_steps(job.id)
+        self.assertEqual((job.status, step.step, step.status), ("done", "places", "ok"))
+        self.assertEqual(PlacesOut.model_validate_json(self.store.get_payload(step.id)[1]), PlacesOut(orgs=1, claims=1))
+        self.assertAlmostEqual(self.store.get_claim(claim.id).lat, 42.38, places=1)
 
 
 class OrgPlacesMigrationTest(MigrationTest):
