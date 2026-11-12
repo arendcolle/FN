@@ -236,6 +236,9 @@ class OrgFacts(Model):
     country_code: str | None = None
     region: str | None = None
     name_lang: str | None = None
+    city: str | None = None
+    lat: float | None = None
+    lon: float | None = None
 
     @field_validator("id")
     @classmethod

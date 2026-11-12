@@ -214,5 +214,81 @@ class FnOrgsTest(unittest.TestCase):
         self.assertEqual((stored.name, stored.region, stored.source_id), ("Vrije", None, second.id))
 
 
+NOW = datetime(2026, 11, 2, tzinfo=UTC)
+
+
+def institution_source(inst: dict) -> Source:
+    """The record Source the OpenAlex lane stores for an institution record."""
+    geo = inst.get("geo") or {}
+    fields = [("id", inst["id"]), ("display_name", inst["display_name"]), ("ror", inst.get("ror")),
+              *((f"geo.{p}", geo.get(p)) for p in ("city", "region", "country", "latitude", "longitude"))]
+    return record_source(inst["id"], f"OpenAlex institution {inst['display_name']}", fields, inst, NOW)[0]
+
+
+class OrgPlacesTest(unittest.TestCase):
+    def setUp(self):
+        self.store = make_db(self)
+
+    def put(self, org: str, **place) -> None:
+        source, _ = record_source(f"https://example.org/{org}", "org", [("id", org)], {}, NOW)
+        orgs.save(self.store, [OrgFacts(id=org, name="Example Institute", **place)], source, replace=False)
+
+    def test_a_ror_record_gives_the_city_and_coordinates_of_its_first_location_and_lists_them_in_its_source(self):
+        record = json.loads((FIXTURES / "http" / "ror" / "006e5kg04.json").read_text())
+        facts, source = orgs.ror_record(record, NOW)
+        self.assertEqual((facts.city, facts.lat, facts.lon), ("Brussels", 50.85045, 4.34878))
+        self.assertIn("locations.0.geonames_details.name: Brussels", source.text)
+        self.assertIn("locations.0.geonames_details.lat: 50.85045", source.text)
+        self.assertIn("locations.0.geonames_details.lng: 4.34878", source.text)
+        bare = {k: v for k, v in record.items() if k != "locations"}
+        self.assertEqual(
+            [getattr(orgs.ror_record(bare, NOW)[0], f) for f in ("city", "lat", "lon")], [None, None, None])
+
+    def test_a_lane_save_fills_an_empty_city_and_never_overwrites_a_set_one(self):
+        """upsert_org(replace=False) gives a row without a city the new one; a stored city stays."""
+        self.put("ror:0aaaaaa11")
+        self.put("ror:0aaaaaa11", city="Ghent", lat=51.05, lon=3.72)
+        self.put("ror:0aaaaaa11", city="Leuven", lat=50.88, lon=4.7)
+        stored = self.store.get_orgs(["ror:0aaaaaa11"])["ror:0aaaaaa11"]
+        self.assertEqual((stored.city, stored.lat, stored.lon), ("Ghent", 51.05, 3.72))
+
+    def test_backfill_fills_orgs_from_stored_institution_records_skips_the_rest_and_a_second_run_fills_none(self):
+        """A ROR-keyed and an OpenAlex-keyed institution fill their orgs; an org with a city or not stored is skipped."""
+        ghent = {"id": "https://openalex.org/I1", "display_name": "Example One", "ror": "https://ror.org/0aaaaaa11",
+                 "geo": {"city": "Ghent", "latitude": 51.05, "longitude": 3.72}}
+        leuven = {"id": "https://openalex.org/I2", "display_name": "Example Two",
+                  "geo": {"city": "Leuven", "latitude": 50.88, "longitude": 4.7}}
+        kept = {"id": "https://openalex.org/I3", "display_name": "Example Three", "ror": "https://ror.org/0cccccc11",
+                "geo": {"city": "Mons", "latitude": 50.45, "longitude": 3.95}}
+        unstored = {"id": "https://openalex.org/I4", "display_name": "Example Four", "ror": "https://ror.org/0dddddd11",
+                    "geo": {"city": "Namur", "latitude": 50.47, "longitude": 4.87}}
+        nogeo = {"id": "https://openalex.org/I5", "display_name": "Example Five", "ror": "https://ror.org/0eeeeee11"}
+        for org in ("ror:0aaaaaa11", "openalex:I2", "ror:0eeeeee11"):
+            self.put(org)
+        self.put("ror:0cccccc11", city="Liege", lat=50.63, lon=5.57)
+        for inst in (ghent, leuven, kept, unstored, nogeo):
+            self.store.upsert_source(institution_source(inst))
+        self.assertEqual(orgs.backfill_places(self.store), 2)
+        found = self.store.get_orgs(["ror:0aaaaaa11", "openalex:I2", "ror:0cccccc11", "ror:0dddddd11", "ror:0eeeeee11"])
+        self.assertEqual({k: (o.city, o.lat, o.lon) for k, o in found.items()},
+                         {"ror:0aaaaaa11": ("Ghent", 51.05, 3.72), "openalex:I2": ("Leuven", 50.88, 4.7),
+                          "ror:0cccccc11": ("Liege", 50.63, 5.57), "ror:0eeeeee11": (None, None, None)})
+        self.assertEqual(orgs.backfill_places(self.store), 0)
+
+
+class OrgPlacesMigrationTest(MigrationTest):
+    def test_008_reads_an_old_org_row_back_with_empty_places(self):
+        """A database at schema version 7 with an org keeps it, and the row reads back without city, lat and lon."""
+        self.migrate_to(7)
+        conn = self.store.conn
+        conn.execute("INSERT INTO sources (id, kind, url, text, content_hash, normalize_version)"
+                     " VALUES ('s1', 'record', 'https://example.org', 'text', 'h', 1)")
+        conn.execute("INSERT INTO orgs (id, name, country_code, source_id, fetched_at)"
+                     " VALUES ('ror:0aaaaaa11', 'Example Institute', 'BE', 's1', '2026-11-02T00:00:00+00:00')")
+        self.assertEqual(self.store.migrate(), [8])
+        old = self.store.get_orgs(["ror:0aaaaaa11"])["ror:0aaaaaa11"]
+        self.assertEqual((old.name, old.country_code, old.city, old.lat, old.lon), ("Example Institute", "BE", None, None, None))
+
+
 if __name__ == "__main__":
     unittest.main()

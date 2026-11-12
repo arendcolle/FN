@@ -132,11 +132,20 @@ def author_source(record: dict, fetched_at: datetime) -> tuple[Source, dict[str,
     return record_source(record["id"], f"OpenAlex author {record['display_name']}", fields, record, fetched_at, updated)
 
 
-def affiliation_orgs(record: dict) -> list[OrgFacts]:
-    """The institution of each affiliation with years, with the name and country OpenAlex gives it."""
-    return [OrgFacts(id=org_of(a["institution"]), name=normalize(a["institution"]["display_name"]),
-                     country_code=a["institution"].get("country_code"))
-            for a in record.get("affiliations") or [] if a.get("years")]
+def affiliation_orgs(record: dict, institutions: dict[str, dict]) -> list[OrgFacts]:
+    """The institution of each affiliation with years, with the name and country OpenAlex gives it.
+
+    The city and coordinates come from the institution's fetched record in institutions, by short id, when it has a geo.
+    """
+    found = []
+    for a in record.get("affiliations") or []:
+        inst = a["institution"]
+        if not a.get("years"):
+            continue
+        where = (institutions.get(short(inst["id"])) or {}).get("geo") or {}
+        found.append(OrgFacts(id=org_of(inst), name=normalize(inst["display_name"]), country_code=inst.get("country_code"),
+                              city=where.get("city"), lat=where.get("latitude"), lon=where.get("longitude")))
+    return found
 
 
 def affiliation_drafts(record: dict, person_id: str, source: Source,
@@ -243,7 +252,7 @@ def run(ctx: StepContext, inp: LaneIn) -> LaneOut:
             idents += [Identifier(scheme="orcid", value=record["orcid"])] if record.get("orcid") else []
             person = ctx.store.resolve_person(idents, record["display_name"])
             source, spans = author_source(record, now)
-            orgs.save(ctx.store, affiliation_orgs(record), source, replace=False)
+            orgs.save(ctx.store, affiliation_orgs(record, institutions), source, replace=False)
             claims = [ctx.store.upsert_claim(d, now) for d in affiliation_drafts(record, person.id, source, spans)]
             inst = institutions.get(short(last_known[author]["id"])) if last_known[author] else None
             location = location_draft(inst, person.id, now) if inst else None

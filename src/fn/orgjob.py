@@ -1,4 +1,5 @@
 """fn-orgs: refresh the facts of every org in data/org_aliases.csv as one recorded job."""
+import argparse
 import sys
 
 from fn import orgs
@@ -27,9 +28,16 @@ def refresh(store: Store, settings: Settings, http: HttpClient) -> Search:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(prog="fn-orgs")
+    parser.add_argument("--places", action="store_true", help="fill org cities from stored OpenAlex records, no outside call")
+    places = parser.parse_args().places
     settings = from_env()
     store = Store(settings.db_path)
     store.migrate()
+    if places:
+        print(f"fn-orgs --places: {orgs.backfill_places(store)} orgs got a city in {settings.db_path}")
+        store.close()
+        return 0
     job = refresh(store, settings, Client(settings))
     step = next(iter(store.list_steps(job.id)), None)
     if job.status == "done":

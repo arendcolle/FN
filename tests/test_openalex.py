@@ -181,6 +181,26 @@ class OpenAlexLaneTest(unittest.TestCase):
         self.assertEqual(leuven.source_id, claims[("affiliation", "KU Leuven")].source_id)
         self.assertEqual(self.store.get_orgs(["ror:042nb2s44"])["ror:042nb2s44"], mit_before)
 
+    def test_an_affiliation_institution_is_saved_with_the_city_and_coordinates_of_its_fetched_record(self):
+        """The last known institution is fetched with its geo, so its org row gets the city; an institution never fetched gets none."""
+        record = author("A1", "Some Author", LEUVEN, {"KU Leuven": [2020], MIT["display_name"]: [2021]})
+        leuven = LEUVEN | {"geo": {"city": "Leuven", "latitude": 50.88, "longitude": 4.7}}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/works":
+                work = {"id": "https://openalex.org/W1", "display_name": "w", "publication_year": 2020,
+                        "authorships": [{"author": {"id": record["id"], "display_name": record["display_name"]}}]}
+                return httpx.Response(200, json={"meta": {"count": 1}, "results": [work]})
+            if request.url.path == "/authors":
+                return httpx.Response(200, json={"meta": {"count": 1}, "results": [record]})
+            if request.url.path == "/institutions":
+                return httpx.Response(200, json={"meta": {"count": 1}, "results": [leuven]})
+            return route(request)
+
+        self.search(Chips(topics=[Chip(text="wind", origin="edited")]), handler)
+        found = self.store.get_orgs(["openalex:I99464096"])["openalex:I99464096"]
+        self.assertEqual((found.city, found.lat, found.lon), ("Leuven", 50.88, 4.7))
+
     def test_every_kept_author_is_a_hit_in_the_order_seen(self):
         """Without a place chip all 150 Belgian authors are hits, ranked in the order the works list them.
 
