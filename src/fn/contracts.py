@@ -480,6 +480,7 @@ class NetworkView(Model):
     total: int
     not_on_map: int
     shown: int
+    new_facts: int = 0
 
 
 class ContactView(Model):
