@@ -201,9 +201,10 @@ def drafts(person_id: str, source: Source, located: Located, ctx: StepContext | 
 
 
 def locate_stored(store: Store, names: geo.Names) -> int:
-    """Give stored lives_in claims without coordinates the ones geo finds for their place; returns how many it filled.
+    """Give stored place claims without coordinates the ones geo finds for their place; returns how many it filled.
 
-    Claims written before places were located on write have none. A place that names no city stays as it is.
+    These are the claims evidence reads as a stated place: every location claim that is not a birthplace. A place
+    that names no city stays as it is.
     """
     filled = 0
     with store.tx():
