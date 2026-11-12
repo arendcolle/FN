@@ -6,7 +6,7 @@ import threading
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fn import db
@@ -17,8 +17,10 @@ from fn.contracts import (
     Chips,
     Claim,
     ClaimDraft,
+    Event,
     Identifier,
     IdentifierScheme,
+    ListStatus,
     MatchFlag,
     Org,
     Person,
@@ -40,15 +42,47 @@ PERSON_COLUMNS = list(Person.model_fields)
 SOURCE_COLUMNS = list(Source.model_fields)
 CLAIM_COLUMNS = [*(c for c in Claim.model_fields if c != "years"), "years_json"]
 ORG_COLUMNS = list(Org.model_fields)
+EVENT_COLUMNS = [*(c for c in Event.model_fields if c != "detail"), "detail_json"]
+# Contact claims never make a person a search hit.
+UNMATCHED_KINDS = ("email", "phone")
 
 
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
 
 
+def _at(value: str | None) -> datetime | None:
+    return datetime.fromisoformat(value) if value else None
+
+
 def _claim(row: dict) -> Claim:
     data = dict(row)
     return Claim.model_validate(data | {"years": json.loads(data.pop("years_json"))})
+
+
+def _event(row: sqlite3.Row) -> Event:
+    data = dict(row)
+    return Event.model_validate(data | {"detail": json.loads(data.pop("detail_json"))})
+
+
+def fold(value: str) -> str:
+    """A claim value as the rejection rule compares it: trimmed and case-folded."""
+    return value.strip().casefold()
+
+
+def hidden_keys(claims: list[tuple[Claim, SourceKind]]) -> set[tuple[str, str, str]]:
+    """The (person, kind, folded value) keys a rejected claim hides among one set of a person's claims.
+
+    A key comes back to view when a staff claim of that value was first seen after its latest rejection.
+    """
+    rejected: dict[tuple[str, str, str], datetime] = {}
+    for c, _ in claims:
+        if c.rejected_at:
+            key = (c.person_id, c.kind, fold(c.value))
+            rejected[key] = max(rejected.get(key, c.rejected_at), c.rejected_at)
+    retyped = {(c.person_id, c.kind, fold(c.value)): c.first_seen_at for c, kind in claims
+               if kind == "staff" and not c.rejected_at and c.first_seen_at}
+    return {key for key, at in rejected.items() if not (key in retyped and retyped[key] > at)}
 
 
 class Store:
@@ -259,22 +293,23 @@ class Store:
             f"INSERT INTO sources ({', '.join(data)}) VALUES ({', '.join('?' * len(data))})", list(data.values())
         )
 
-    def upsert_claim(self, draft: ClaimDraft) -> Claim:
-        """Store the claim and its source unless they are stored, and return it.
+    def upsert_claim(self, draft: ClaimDraft, at: datetime | None = None) -> Claim:
+        """Store the claim and its source unless they are stored, and return it as stored.
 
         The id is the sha1 of person, kind, value, source and quote start; a stored claim with that id
-        takes the draft's org_id, relation and years. Raises ValueError when the quote is not at its offsets
-        in the source text as stored.
+        takes the draft's org_id, relation and years. A new claim gets first_seen_at at, else the current
+        UTC time. Raises ValueError when the quote is not at its offsets in the source text as stored.
         """
         source = draft.source
         if source.text[draft.quote_start:draft.quote_end] != draft.quote or not draft.quote:
             raise ValueError(f"quote not at [{draft.quote_start}:{draft.quote_end}] of source {source.id}")
         key = "\0".join([draft.person_id, draft.kind, draft.value, source.id, str(draft.quote_start)])
         claim = Claim(id=hashlib.sha1(key.encode()).hexdigest(), source_id=source.id,
-                      **draft.model_dump(exclude={"source"}))
+                      first_seen_at=at or datetime.now(UTC), **draft.model_dump(exclude={"source"}))
         with self.tx() as conn:
             self.upsert_source(source)
-            data = claim.model_dump(exclude={"years"}) | {"years_json": json.dumps(claim.years)}
+            data = claim.model_dump(exclude={"years"}) | {"years_json": json.dumps(claim.years),
+                                                          "first_seen_at": _iso(claim.first_seen_at)}
             conn.execute(
                 f"INSERT INTO claims ({', '.join(data)}) VALUES ({', '.join('?' * len(data))}) "
                 "ON CONFLICT (id) DO UPDATE SET org_id = excluded.org_id, relation = excluded.relation, "
@@ -282,7 +317,8 @@ class Store:
                 "OR relation IS NOT excluded.relation OR years_json IS NOT excluded.years_json",
                 list(data.values()),
             )
-        return claim
+            row = conn.execute("SELECT first_seen_at, rejected_at FROM claims WHERE id = ?", (claim.id,)).fetchone()
+        return claim.model_copy(update={"first_seen_at": _at(row[0]), "rejected_at": _at(row[1])})
 
     def upsert_org(self, org: Org, replace: bool) -> None:
         """Insert the org row; a stored row with its id is overwritten when replace is set, else kept."""
@@ -305,25 +341,37 @@ class Store:
     def match_claims(self, query: str, exclude: tuple[SourceKind, ...]) -> list[tuple[Person, Claim, float]]:
         """Every person with a claim matching the FTS5 query, from a source of no kind in exclude, best first.
 
-        Each comes with its best claim and that claim's bm25, which is lower for a better match;
-        equal scores are ordered by person id.
+        Each comes with its best claim and that claim's bm25, which is lower for a better match; equal scores
+        are ordered by person id. Hidden claims, as claims_of hides them, and email and phone claims never match.
         """
         rows = self.conn.execute(
             "WITH m AS MATERIALIZED (SELECT rowid, bm25(claims_fts) AS score FROM claims_fts WHERE claims_fts MATCH ?) "
             f"SELECT {', '.join(f'p.{c} AS p_{c}' for c in PERSON_COLUMNS)}, "
-            f"{', '.join(f'c.{c}' for c in CLAIM_COLUMNS)}, MIN(m.score) AS best "
+            f"{', '.join(f'c.{c}' for c in CLAIM_COLUMNS)}, m.score AS best "
             "FROM m JOIN claims c ON c.rowid = m.rowid JOIN persons p ON p.id = c.person_id "
             "JOIN sources s ON s.id = c.source_id WHERE s.kind NOT IN (SELECT value FROM json_each(?)) "
-            "GROUP BY c.person_id ORDER BY best, c.person_id",
-            (query, json.dumps(exclude)),
+            "AND c.rejected_at IS NULL AND c.kind NOT IN (SELECT value FROM json_each(?)) "
+            "ORDER BY best, c.person_id, c.rowid",
+            (query, json.dumps(exclude), json.dumps(UNMATCHED_KINDS)),
         )
-        found = []
+        hidden = self._hidden_everywhere()
+        found: dict[str, tuple[Person, Claim, float]] = {}
         for row in rows:
             data = dict(row)
             person = Person.model_validate({c: data.pop(f"p_{c}") for c in PERSON_COLUMNS})
-            best = data.pop("best")
-            found.append((person, _claim(data), best))
-        return found
+            best, claim = data.pop("best"), _claim(data)
+            key = (person.merged_into or person.id, claim.kind, fold(claim.value))
+            if person.id not in found and key not in hidden:
+                found[person.id] = (person, claim, best)
+        return list(found.values())
+
+    def _hidden_everywhere(self) -> set[tuple[str, str, str]]:
+        """hidden_keys over the whole persons of every record with a rejected claim."""
+        rows = self.conn.execute(
+            "SELECT DISTINCT COALESCE(p.merged_into, p.id) FROM claims c JOIN persons p ON p.id = c.person_id "
+            "WHERE c.rejected_at IS NOT NULL"
+        )
+        return hidden_keys(self._person_claims([r[0] for r in rows]))
 
     def get_persons(self, person_ids: list[str]) -> dict[str, Person]:
         rows = self.conn.execute(
@@ -351,14 +399,41 @@ class Store:
         )
         return {r[0]: r[1] for r in rows}
 
-    def claims_of(self, person_ids: list[str]) -> list[Claim]:
-        """Every claim of the persons, by person, kind and value."""
+    def _person_claims(self, person_ids: list[str]) -> list[tuple[Claim, SourceKind]]:
+        """Every claim of each id's whole person and its source kind, under the canonical id, by person, kind, value.
+
+        A claim of a merged record counts as first seen at the later of its own time and the merge.
+        """
         rows = self.conn.execute(
-            f"SELECT {', '.join(CLAIM_COLUMNS)} FROM claims WHERE person_id IN (SELECT value FROM json_each(?)) "
-            "ORDER BY person_id, kind, value",
+            "WITH asked AS (SELECT DISTINCT COALESCE(merged_into, id) AS id FROM persons "
+            "WHERE id IN (SELECT value FROM json_each(?))), "
+            "records AS (SELECT p.id, a.id AS canonical, p.merged_at FROM asked a JOIN persons p ON p.id = a.id "
+            "UNION ALL SELECT p.id, a.id, p.merged_at FROM asked a JOIN persons p ON p.merged_into = a.id) "
+            f"SELECT {', '.join(f'c.{c}' for c in CLAIM_COLUMNS if c != 'person_id')}, r.canonical AS person_id, "
+            "r.merged_at, s.kind AS source_kind FROM records r JOIN claims c ON c.person_id = r.id "
+            "JOIN sources s ON s.id = c.source_id ORDER BY r.canonical, c.kind, c.value",
             (json.dumps(person_ids),),
         )
-        return [_claim(r) for r in rows]
+        found = []
+        for row in rows:
+            data = dict(row)
+            merged_at, kind = data.pop("merged_at"), data.pop("source_kind")
+            if merged_at and (not data["first_seen_at"] or _at(merged_at) > _at(data["first_seen_at"])):
+                data["first_seen_at"] = merged_at
+            found.append((_claim(data), kind))
+        return found
+
+    def claims_of(self, person_ids: list[str], include_hidden: bool = False) -> list[Claim]:
+        """Every claim of each id's whole person, once, with person_id the canonical id, by person, kind and value.
+
+        Without include_hidden, a rejected claim and the claims of its person with the same kind and folded value
+        are left out, unless a staff claim of that value was first seen after the rejection.
+        """
+        claims = self._person_claims(person_ids)
+        if include_hidden:
+            return [c for c, _ in claims]
+        hidden = hidden_keys(claims)
+        return [c for c, _ in claims if not c.rejected_at and (c.person_id, c.kind, fold(c.value)) not in hidden]
 
     def get_claim(self, claim_id: str) -> Claim | None:
         row = self.conn.execute(f"SELECT {', '.join(CLAIM_COLUMNS)} FROM claims WHERE id = ?", (claim_id,)).fetchone()
@@ -378,10 +453,11 @@ class Store:
             conn.execute("DELETE FROM match_flags WHERE search_id = ?", (search_id,))
             conn.executemany(
                 "INSERT INTO candidates (search_id, person_id, person_ids_json, section, rank, score, lane_ranks_json, "
-                "reason_claim_ids_json, score_parts_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "reason_claim_ids_json, score_parts_json, hit_person_ids_json, cut_reason) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [(search_id, c.person_id, json.dumps(c.person_ids), c.section, c.rank, c.score,
                   json.dumps(c.lane_ranks), json.dumps(c.reason_claim_ids),
-                  json.dumps([p.model_dump() for p in c.score_parts]))
+                  json.dumps([p.model_dump() for p in c.score_parts]), json.dumps(c.hit_person_ids), c.cut_reason)
                  for c in candidates],
             )
             conn.executemany(
@@ -402,6 +478,7 @@ class Store:
                 section=r["section"], rank=r["rank"], score=r["score"], lane_ranks=json.loads(r["lane_ranks_json"]),
                 reason_claim_ids=json.loads(r["reason_claim_ids_json"]),
                 score_parts=[ScorePart.model_validate(p) for p in json.loads(r["score_parts_json"])],
+                hit_person_ids=json.loads(r["hit_person_ids_json"]), cut_reason=r["cut_reason"],
             )
             for r in rows
         ]
@@ -419,3 +496,106 @@ class Store:
             "SELECT person_id, other_person_id, reason, shared_fact FROM match_flags WHERE search_id = ?", (search_id,)
         )
         return [MatchFlag.model_validate(dict(r)) for r in rows]
+
+    def canonical_ids(self, person_ids: list[str]) -> dict[str, str]:
+        """Each id to the id of the record it is merged into, else itself; unknown ids are left out."""
+        rows = self.conn.execute(
+            "SELECT id, COALESCE(merged_into, id) FROM persons WHERE id IN (SELECT value FROM json_each(?))",
+            (json.dumps(person_ids),),
+        )
+        return {r[0]: r[1] for r in rows}
+
+    def records_of(self, person_id: str) -> list[Person]:
+        """The canonical record of the id's person, then the records merged into it, by id."""
+        rows = self.conn.execute(
+            "WITH c AS (SELECT COALESCE(merged_into, id) AS id FROM persons WHERE id = ?) "
+            f"SELECT {', '.join(f'p.{c}' for c in PERSON_COLUMNS)} FROM c JOIN persons p "
+            "ON p.id = c.id OR p.merged_into = c.id ORDER BY p.merged_into IS NOT NULL, p.id",
+            (person_id,),
+        )
+        return [Person.model_validate(dict(r)) for r in rows]
+
+    def set_list_status(self, person_id: str, status: ListStatus) -> None:
+        self.conn.execute("UPDATE persons SET list_status = ? WHERE id = ?", (status, person_id))
+
+    def set_merged_into(self, person_id: str, into_id: str | None, at: datetime | None) -> None:
+        self.conn.execute("UPDATE persons SET merged_into = ?, merged_at = ? WHERE id = ?",
+                          (into_id, _iso(at), person_id))
+
+    def set_seen(self, person_id: str, at: datetime) -> None:
+        self.conn.execute("UPDATE persons SET seen_at = ? WHERE id = ?", (_iso(at), person_id))
+
+    def set_claim_rejected(self, claim_id: str, at: datetime | None) -> None:
+        self.conn.execute("UPDATE claims SET rejected_at = ? WHERE id = ?", (_iso(at), claim_id))
+
+    def add_not_same(self, a: str, b: str, at: datetime) -> None:
+        """Store the pair once, the smaller id first; a stored pair is kept."""
+        self.conn.execute("INSERT OR IGNORE INTO not_same (person_id, other_person_id, at) VALUES (?, ?, ?)",
+                          (min(a, b), max(a, b), _iso(at)))
+
+    def remove_not_same(self, a: str, b: str) -> None:
+        self.conn.execute("DELETE FROM not_same WHERE person_id = ? AND other_person_id = ?", (min(a, b), max(a, b)))
+
+    def not_same_pairs(self, person_ids: list[str]) -> set[frozenset[str]]:
+        """Every stored pair with one of the ids in it, as the record ids it was stored with."""
+        rows = self.conn.execute(
+            "WITH ids AS (SELECT value FROM json_each(?)) "
+            "SELECT person_id, other_person_id FROM not_same WHERE person_id IN ids "
+            "UNION SELECT person_id, other_person_id FROM not_same WHERE other_person_id IN ids",
+            (json.dumps(person_ids),),
+        )
+        return {frozenset(r) for r in rows}
+
+    def add_event(self, event: Event) -> None:
+        row = event.model_dump(exclude={"detail"}) | {"at": _iso(event.at), "detail_json": json.dumps(event.detail)}
+        self.conn.execute(
+            f"INSERT INTO events ({', '.join(row)}) VALUES ({', '.join('?' * len(row))})", list(row.values())
+        )
+
+    def get_event(self, event_id: str) -> Event | None:
+        row = self.conn.execute(f"SELECT {', '.join(EVENT_COLUMNS)} FROM events WHERE id = ?", (event_id,)).fetchone()
+        return _event(row) if row else None
+
+    def events_of(self, person_id: str) -> list[Event]:
+        """The events that name the id as person or other person, newest first."""
+        rows = self.conn.execute(
+            f"SELECT {', '.join(EVENT_COLUMNS)} FROM events WHERE rowid IN "
+            "(SELECT rowid FROM events WHERE person_id = ?1 UNION SELECT rowid FROM events WHERE other_person_id = ?1) "
+            "ORDER BY at DESC, rowid DESC",
+            (person_id,),
+        )
+        return [_event(r) for r in rows]
+
+    def network_by_group_key(self) -> dict[str, list[str]]:
+        """The canonical ids of the people in the network, by the group key of their name, in id order."""
+        found: dict[str, list[str]] = {}
+        for key, person_id in self.conn.execute(
+            "SELECT name_key, id FROM persons WHERE list_status = 'in_list' AND merged_into IS NULL ORDER BY id"
+        ):
+            found.setdefault(group_key(key), []).append(person_id)
+        return found
+
+    def identifiers_of(self, person_ids: list[str]) -> dict[str, list[Identifier]]:
+        """The identifiers each record holds, by scheme and value; a record with none is left out."""
+        rows = self.conn.execute(
+            "SELECT person_id, scheme, value FROM person_identifiers "
+            "WHERE person_id IN (SELECT value FROM json_each(?)) ORDER BY person_id, scheme, value",
+            (json.dumps(person_ids),),
+        )
+        found: dict[str, list[Identifier]] = {}
+        for r in rows:
+            found.setdefault(r[0], []).append(Identifier(scheme=r[1], value=r[2]))
+        return found
+
+    def add_identifier(self, person_id: str, identifier: Identifier) -> bool:
+        """Attach the identifier to the record; False when another record holds it."""
+        with self.tx() as conn:
+            conn.execute("INSERT OR IGNORE INTO person_identifiers (scheme, value, person_id) VALUES (?, ?, ?)",
+                         (identifier.scheme, identifier.value, person_id))
+            row = conn.execute("SELECT person_id FROM person_identifiers WHERE scheme = ? AND value = ?",
+                               (identifier.scheme, identifier.value)).fetchone()
+        return row[0] == person_id
+
+    def remove_identifier(self, person_id: str, identifier: Identifier) -> None:
+        self.conn.execute("DELETE FROM person_identifiers WHERE person_id = ? AND scheme = ? AND value = ?",
+                          (person_id, identifier.scheme, identifier.value))

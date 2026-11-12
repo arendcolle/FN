@@ -5,17 +5,23 @@ import re
 import unicodedata
 from collections.abc import Callable
 from datetime import datetime
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 import httpx
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 CONTRACTS_VERSION = "2"
 NORMALIZE_VERSION = 1
 
 ListStatus = Literal["candidate", "in_list", "skipped"]
 Section = Literal["network", "new"]
-ClaimKind = Literal["topic", "affiliation", "role", "location", "availability"]
+ClaimKind = Literal["topic", "affiliation", "role", "location", "availability", "email", "phone"]
 Relation = Literal[
     "studied_at", "works_at", "worked_at", "affiliated_with", "hosted_by",
     "fellow_of", "member_of", "consul_for", "born_in", "lives_in",
@@ -25,14 +31,14 @@ DateMethod = Literal[
     "record_field", "read_date", "sheet_date", "staff_edit", "stated_in_quote",
 ]
 DatePrecision = Literal["year", "month", "day"]
-SourceKind = Literal["page", "record", "seed_page", "import", "vendor_record", "vendor_page"]
+SourceKind = Literal["page", "record", "seed_page", "import", "vendor_record", "vendor_page", "staff"]
 StepStatus = Literal["running", "ok", "error", "skipped", "interrupted"]
 SearchStatus = Literal["queued", "running", "done", "failed", "interrupted"]
 SearchKind = Literal["search", "job"]
 LaneName = Literal["seeds", "openalex", "web", "linkedin"]
 ChipOrigin = Literal["parsed", "edited"]
 Depth = Literal["quick"]
-IdentifierScheme = Literal["seed", "openalex", "orcid", "profile_url", "mention"]
+IdentifierScheme = Literal["seed", "openalex", "orcid", "profile_url", "mention", "email", "import"]
 Ask = Literal["talk", "mentor", "host", "join", "other"]
 PlaceKind = Literal["metro", "anywhere_us", "abroad"]
 CallKind = Literal["http", "llm"]
@@ -41,6 +47,9 @@ CacheMode = Literal["refresh", "prefer", "only"]
 GoldTie = Literal["flemish", "belgian", "none", "unverified"]
 PickVerdict = Literal["found", "event page", "missed", "no lane in slice"]
 GoldGroup = Literal["dev", "held-out", "other"]
+EventKind = Literal["add", "skip", "merge", "not_same", "reject_claim", "edit_contact", "remove", "import", "export", "undo"]
+CutReason = Literal["no_belgian_evidence"]
+AddedVia = Literal["search", "import", "profile"]
 # Ids the alias file holds and fn-orgs fetches; org rows from the OpenAlex lane may also use openalex: ids.
 REGISTRY_ID = re.compile(r"ror:0[a-z0-9]{6}[0-9]{2}|wikidata:Q[0-9]+")
 ORG_ID = re.compile(rf"{REGISTRY_ID.pattern}|openalex:I[0-9]+")
@@ -149,7 +158,10 @@ class Source(Model):
 
     @field_validator("url")
     @classmethod
-    def _http_only(cls, url: str) -> str:
+    def _http_only(cls, url: str, info: ValidationInfo) -> str:
+        """An http or https URL; an fn: URL only for the import and staff kinds, which FN writes itself."""
+        if url.startswith("fn:") and info.data.get("kind") in ("import", "staff"):
+            return url
         if not url.startswith(("http://", "https://")):
             raise ValueError(f"source url must be http or https: {url!r}")
         return url
@@ -157,7 +169,7 @@ class Source(Model):
 
 def record_source(url: str, title: str, fields: list[tuple[str, object]], raw: dict, fetched_at: datetime,
                   source_date: str | None = None, *,
-                  kind: Literal["record", "vendor_record"] = "record") -> tuple[Source, dict[str, tuple[int, int]]]:
+                  kind: Literal["record", "vendor_record", "staff"] = "record") -> tuple[Source, dict[str, tuple[int, int]]]:
     """A record Source (kind vendor_record for a vendor's answer) with one `path: value` line per field that has a value.
 
     Returns it with each line's offsets by path. The id holds the kind and the content hash, so a record
@@ -254,6 +266,9 @@ class Claim(Model):
     years: list[int] = []
     lat: float | None = None
     lon: float | None = None
+    # When FN first stored the claim; empty on rows from before migration 006.
+    first_seen_at: datetime | None = None
+    rejected_at: datetime | None = None
 
 
 class Person(Model):
@@ -261,7 +276,9 @@ class Person(Model):
     display_name: str
     name_key: str
     list_status: ListStatus = "candidate"
-    merged_into: None = None
+    merged_into: str | None = None
+    merged_at: datetime | None = None
+    seen_at: datetime | None = None
 
 
 class ClaimDraft(Model):
@@ -380,6 +397,25 @@ class Candidate(Model):
     lane_ranks: dict[LaneName, int]
     reason_claim_ids: list[str] = []
     score_parts: list[ScorePart] = []
+    hit_person_ids: list[str] = []
+    cut_reason: CutReason | None = None
+
+
+# One staff decision; detail holds what undo needs, ids and never contact values.
+class Event(Model):
+    id: str
+    at: datetime
+    kind: EventKind
+    person_id: str | None = None
+    other_person_id: str | None = None
+    search_id: str | None = None
+    rank: int | None = None
+    section: Section | None = None
+    import_id: str | None = None
+    claim_id: str | None = None
+    undoes: str | None = None
+    detail: dict[str, Any] = {}
+    user_id: None = None
 
 
 class StepRun(Model):

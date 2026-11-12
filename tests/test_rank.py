@@ -44,10 +44,41 @@ class RankTest(unittest.TestCase):
 
     def test_sections_number_apart(self):
         """An entry with a record in the list is network; each section ranks from 1."""
-        two = Entry(name_key="x", person_ids=["p2", "p4"], lane_ranks={"seeds": 2})
+        two = Entry(name_key="x", person_ids=["p2", "p4"], hit_person_ids=["p2", "p4"], lane_ranks={"seeds": 2})
         out = rank.fuse("s", [entry("p1", seeds=1), two, entry("p3", seeds=3)], {"p4": "in_list", "p1": "candidate"})
         self.assertEqual([(c.person_id, c.section, c.rank) for c in out],
                          [("p1", "new", 1), ("p2", "network", 1), ("p3", "new", 2)])
+
+    def test_a_same_name_record_in_the_list_that_no_lane_hit_leaves_the_card_new(self):
+        """Only hit persons decide the section: an in_list record joined by name alone keeps the card in new.
+
+        The candidate keeps its hit ids, so a page shows and scores only those.
+        """
+        two = Entry(name_key="x", person_ids=["p2", "p4"], hit_person_ids=["p2"], lane_ranks={"seeds": 2})
+        (out,) = rank.fuse("s", [two], {"p4": "in_list"})
+        self.assertEqual((out.section, out.hit_person_ids), ("new", ["p2"]))
+
+    def test_a_hit_person_in_the_list_makes_the_card_a_network_card(self):
+        """A hit whose person is in_list puts its card in section network, also when another hit is a candidate."""
+        two = Entry(name_key="x", person_ids=["p2", "p4"], hit_person_ids=["p2", "p4"], lane_ranks={"seeds": 2})
+        (out,) = rank.fuse("s", [two], {"p2": "candidate", "p4": "in_list"})
+        self.assertEqual((out.section, out.hit_person_ids), ("network", ["p2", "p4"]))
+
+    def test_an_entry_stored_without_hit_ids_counts_its_first_person_as_the_hit(self):
+        """An entry from before hit ids were stored scores and sections on its first person only."""
+        old = Entry(name_key="x", person_ids=["p2", "p4"], lane_ranks={"seeds": 2})
+        self.assertEqual(rank.fuse("s", [old], {"p2": "in_list"})[0].section, "network")
+        (out,) = rank.fuse("s", [old], {"p4": "in_list"})
+        self.assertEqual((out.section, out.hit_person_ids), ("new", ["p2"]))
+
+    def test_two_entries_with_one_name_key_keep_their_own_belgian_part(self):
+        """Entries that share a name key, split by resolve, each get the belgian_years part of their own hits."""
+        entries = [Entry(name_key="ann", person_ids=[p], hit_person_ids=[p], lane_ranks={"seeds": 1})
+                   for p in ("p1", "p2")]
+        claims = [claim("c1", "p1", valid_from="2001", valid_to="2003"), claim("c2", "p2", claim_date="2010")]
+        out = rank.fuse("s", entries, {}, rank.belgian_list(entries, claims, FACTS))
+        found = {c.person_id: [p.claim_ids for p in c.score_parts if p.feature == "belgian_years"] for c in out}
+        self.assertEqual(found, {"p1": [["c1"]], "p2": [["c2"]]})
 
     def test_each_lane_rank_is_one_score_part_and_the_parts_sum_to_the_score(self):
         """A candidate stores one part per lane that ranked it, worth 1 / (60 + rank), and its score is their sum."""

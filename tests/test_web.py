@@ -21,6 +21,7 @@ from fn.contracts import (
     OrgFacts,
     ParseIn,
     ParseOut,
+    Person,
     Place,
     Search,
     Source,
@@ -538,7 +539,9 @@ class ContractsV1Test(unittest.TestCase):
             self.store.migrate()
         self.store.create_search(Search(id="old", question="Who knows wind?", status="done", created_at=now(),
                                         code_sha=None, dirty=False, llm_mode="replay", settings_json="{}", boot_id="b"))
-        person = self.store.resolve_person([Identifier(scheme="seed", value="anne")], "Anne Example")
+        person = Person(id="anne", display_name="Anne Example", name_key="anne example")
+        self.store.conn.execute("INSERT INTO persons (id, display_name, name_key, list_status) VALUES (?, ?, ?, ?)",
+                                (person.id, person.display_name, person.name_key, person.list_status))
         hit = {"person_id": person.id, "name_key": person.name_key, "lane": "seeds", "rank": 1, "score": 1.0,
                "matched_on": "wind", "claim_ids": []}
         label = {"tie": "belgian", "claim_ids": [], "checked": [], "rules_version": "2"}
@@ -554,7 +557,7 @@ class ContractsV1Test(unittest.TestCase):
             self.store.finish_step(run, json.dumps(output))
         self.store.conn.execute("INSERT INTO candidates VALUES ('old', ?, ?, 'new', 1, ?, ?, '[]', ?)",
                                 (person.id, json.dumps([person.id]), 1 / 61, '{"seeds": 1}', json.dumps(label)))
-        self.assertEqual(self.store.migrate(), [4, 5])
+        self.assertEqual(self.store.migrate(), [4, 5, 6])
         app = create_app(self.settings, StubLLM(error=AssertionError("no LLM")), StubHttp())
         self.client = TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=False)
         self.client.__enter__()
@@ -564,7 +567,8 @@ class ContractsV1Test(unittest.TestCase):
         """Migration 004 swaps the old column for score_parts_json, '[]' on old rows, and the results page shows the card."""
         columns = [r[1] for r in self.store.conn.execute("PRAGMA table_info(candidates)")]
         self.assertEqual(columns, ["search_id", "person_id", "person_ids_json", "section", "rank", "score",
-                                   "lane_ranks_json", "reason_claim_ids_json", "score_parts_json"])
+                                   "lane_ranks_json", "reason_claim_ids_json", "score_parts_json",
+                                   "hit_person_ids_json", "cut_reason"])
         (candidate,) = self.store.list_candidates("old")
         self.assertEqual(candidate.score_parts, [])
         response = self.client.get("/debug/searches/old")

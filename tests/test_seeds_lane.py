@@ -84,6 +84,18 @@ class FtsQueryTest(unittest.TestCase):
         out = self.lane(topic("6G"))
         self.assertCountEqual([self.people[h.person_id] for h in out.hits], ["6g", "page"])
 
+    def test_an_imported_affiliation_is_a_seed_hit(self):
+        """Claims that quote an import or staff source match, so imported people are found by organization and role."""
+        text = "organization: Leads 6G networks research"
+        source = Source(id="src-import", kind="import", url="fn:import/i1#row-2", text=text,
+                        content_hash=hashlib.sha256(text.encode()).hexdigest(), date_method="sheet_date")
+        person = self.store.resolve_person([Identifier(scheme="import", value="i1:2")], "Imported Example")
+        self.store.upsert_claim(ClaimDraft(person_id=person.id, kind="affiliation", value="Leads 6G networks research",
+                                           quote=text, quote_start=0, quote_end=len(text), source=source))
+        self.people[person.id] = "import"
+        out = self.lane(topic("6G"))
+        self.assertIn("import", [self.people[h.person_id] for h in out.hits])
+
     def test_query_quotes_tokens_and_adds_institution_aliases_as_phrases(self):
         chips = Chips(topics=[Chip(text='say "hi" OR', origin="edited")], institutions=[Chip(text="MIT", origin="edited")])
         self.assertEqual(seeds.fts_query(chips, lambda text: orgs.names(orgs.org_id(text))),

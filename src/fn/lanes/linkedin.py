@@ -209,7 +209,7 @@ def people(ctx: StepContext, profiles: list[dict], considered: list[Considered])
             now, day = ctx.now(), str(dig(profile, "_meta.scrapedAt") or "")[:10] or None
             source, spans = profile_source(profile, now, day)
             person = ctx.store.resolve_person([Identifier(scheme="profile_url", value=source.url)], who)
-            claims = [ctx.store.upsert_claim(d)
+            claims = [ctx.store.upsert_claim(d, now)
                       for d in drafts(person.id, source, spans, profile, (day or now.date().isoformat())[:4])]
             unmapped |= dict.fromkeys(c.value for c in claims if c.relation == "studied_at" and c.org_id is None)
             where = f"result {rank}, {source.url}"

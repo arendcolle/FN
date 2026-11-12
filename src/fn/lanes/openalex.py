@@ -244,13 +244,13 @@ def run(ctx: StepContext, inp: LaneIn) -> LaneOut:
             person = ctx.store.resolve_person(idents, record["display_name"])
             source, spans = author_source(record, now)
             orgs.save(ctx.store, affiliation_orgs(record), source, replace=False)
-            claims = [ctx.store.upsert_claim(d) for d in affiliation_drafts(record, person.id, source, spans)]
+            claims = [ctx.store.upsert_claim(d, now) for d in affiliation_drafts(record, person.id, source, spans)]
             inst = institutions.get(short(last_known[author]["id"])) if last_known[author] else None
             location = location_draft(inst, person.id, now) if inst else None
             be_names = {normalize(a["institution"]["display_name"]) for a in belgian(record)}
             reasons = [c.id for c in claims if c.value in be_names]
             if location:
-                reasons.append(ctx.store.upsert_claim(location).id)
+                reasons.append(ctx.store.upsert_claim(location, now).id)
             hits.append(LaneHit(person_id=person.id, name_key=person.name_key, lane=name, rank=rank,
                                 score=found_on(seen[author]), matched_on="; ".join([*seen[author].found_by, where[author][1]]), claim_ids=reasons))
     rank_of = {a: r for r, a in enumerate(ordered, 1)}

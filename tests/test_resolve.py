@@ -1,11 +1,14 @@
 import logging
 import unittest
+from datetime import UTC, datetime
 
-from fn import resolve
-from fn.contracts import LaneHit, LaneOut, ResolveIn
+from fn import network, resolve
+from fn.contracts import Identifier, LaneHit, LaneOut, ResolveIn
 from fn.steps import StepContext
 from fn.worker import new_id, now
-from tests.helpers import make_seeded_db, make_settings
+from tests.helpers import make_db, make_seeded_db, make_settings
+
+T0 = datetime(2026, 11, 2, 9, 0, tzinfo=UTC)
 
 
 def hit(person_id: str, name_key: str, rank: int, lane: str = "seeds") -> LaneHit:
@@ -40,6 +43,52 @@ class ResolveTest(unittest.TestCase):
         self.assertEqual(entry.flag, "same name in 2 records, not merged")
         self.assertEqual([(f.person_id, f.other_person_id, f.reason) for f in out.flags],
                          [(ids[1], ids[0], resolve.SAME_NAME)])
+
+
+class StoredDecisionsTest(unittest.TestCase):
+    def setUp(self):
+        settings = make_settings(self)
+        self.store = make_db(self, settings)
+        self.ctx = StepContext(search_id="s", store=self.store, llm=None, http=None, now=now, new_id=new_id,
+                               log=logging.getLogger("fn.step"), settings=settings)
+
+    def person(self, *idents: tuple[str, str]) -> str:
+        return self.store.resolve_person([Identifier(scheme=s, value=v) for s, v in idents], "Ann Example").id
+
+    def entries(self, *hits: LaneHit) -> list:
+        lanes = {}
+        for h in hits:
+            lanes.setdefault(h.lane, []).append(h)
+        outs = [LaneOut(lane=lane, query="q", total_seen=len(found), hits=found) for lane, found in lanes.items()]
+        return resolve.run(self.ctx, ResolveIn(outs=outs)).entries
+
+    def test_two_hit_records_of_one_merged_person_are_one_person(self):
+        """Hits on two records of one merged person give one entry with the canonical id as its one hit.
+
+        The entry keeps both lanes' ranks and shows no "not merged" flag.
+        """
+        ann, twin = self.person(("seed", "ann")), self.person(("openalex", "A1"))
+        network.merge(self.store, [twin], ann, now=T0)
+        (entry,) = self.entries(hit(ann, "ann example", 2), hit(twin, "ann example", 1, "openalex"))
+        self.assertEqual((entry.person_ids, entry.hit_person_ids, entry.flag), ([ann], [ann], None))
+        self.assertEqual(entry.lane_ranks, {"seeds": 2, "openalex": 1})
+
+    def test_a_not_same_pair_gives_two_entries(self):
+        """Two persons staff declared different go on separate cards, each with its own hit."""
+        ann, other = self.person(("seed", "ann")), self.person(("openalex", "A1"))
+        network.not_same(self.store, ann, other, now=T0)
+        found = self.entries(hit(ann, "ann example", 1), hit(other, "ann example", 1, "openalex"))
+        self.assertEqual([(e.person_ids, e.hit_person_ids, e.name_key) for e in found],
+                         [([ann], [ann], "ann example"), ([other], [other], "ann example")])
+
+    def test_different_orcids_give_two_entries_and_a_shared_one_does_not(self):
+        """Persons holding different ORCIDs are two people; an unhit same-name record joins the card it fits."""
+        one = self.person(("openalex", "A1"), ("orcid", "0000-0001"))
+        two = self.person(("openalex", "A2"), ("orcid", "0000-0002"))
+        loose = self.person(("seed", "ann"))
+        found = self.entries(hit(one, "ann example", 1, "openalex"), hit(two, "ann example", 2, "openalex"))
+        self.assertEqual([e.person_ids for e in found], [[one, loose], [two]])
+        self.assertEqual([e.hit_person_ids for e in found], [[one], [two]])
 
 
 if __name__ == "__main__":
