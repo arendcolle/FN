@@ -30,6 +30,7 @@ One line per finished step, newest last. The plan is in [plan.md](plan.md) and t
 - 2026-11-12 Browser walk on a copy of the owner's database: import of a made-up file, the people on the map, a profile, the export, Add, Undo and Skip on a stored search, and a replayed search that showed 12 cards at 5 s and the full list at 10 s without a reload.
 - 2026-11-12 A search with live calls could not be run: the Claude command-line login on this machine has expired ("OAuth session expired and could not be refreshed"), and the parse step needs it. The search failed at parse after its 60 s timeout, and the page showed "This search stopped" with Try again. The owner has to sign in again before new searches work.
 - 2026-11-12 T14 merged: one test per staff flow (PR #21). All seven flows could be walked; 411 tests. T14b merged: the architecture document at version 4.0 (PR #22).
+- 2026-11-12 A search with live calls ran to the end after the owner signed in again: 510 people in 257 s, on one page without a reload. The page showed 96 people after the seed lane at 8 s, 446 after OpenAlex at 26 s and 510 after the web lane at 257 s. The web lane took 231 s, and 228 s of that were 19 model calls that ran one after another to read 10 pages. Two findings on the results: 54 of the seed lane's 100 hits matched only the word "in" from the topic "AI in health care", and 3 of the first 50 cards mention Boston or Massachusetts, the place of the question.
 
 ## Review ledger
 
