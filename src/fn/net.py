@@ -20,6 +20,8 @@ MAX_BYTES = 5 * 1024 * 1024
 MAX_RETRY_AFTER_S = 30
 ERROR_BODY_CHARS = 300
 OPENALEX_HOST = "api.openalex.org"
+# Hosts that answer XML unless the request accepts JSON.
+JSON_ONLY_WHEN_ASKED = ("pub.orcid.org",)
 # Wikimedia refuses httpx's default agent; its policy asks for a name and a contact.
 USER_AGENT = f"FN/0.1 (https://github.com/arendcolle/FN) httpx/{httpx.__version__}"
 
@@ -85,6 +87,8 @@ class Client:
                  timeout_s: float | None) -> httpx.Request:
         timeout = TIMEOUT if timeout_s is None else httpx.Timeout(timeout_s, connect=TIMEOUT.connect)
         request = self.http.build_request(method, url, params=params, json=body, timeout=timeout)
+        if request.url.host in JSON_ONLY_WHEN_ASKED:
+            request.headers["Accept"] = "application/json"
         if request.url.scheme not in ("http", "https"):
             raise HttpError(f"refused {request.url.scheme} URL; http and https only")
         return request

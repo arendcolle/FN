@@ -52,6 +52,8 @@ EventKind = Literal["add", "skip", "merge", "not_same", "reject_claim", "edit_co
 CutReason = Literal["no_belgian_evidence", "weak_openalex", "no_claim", "outside_country"]
 AddedVia = Literal["search", "import", "profile"]
 CardState = Literal["network", "new", "name_match", "added", "skipped"]
+LookupKind = Literal["openalex_author", "orcid_employment"]
+Verdict = Literal["matched", "ambiguous", "no_match", "error"]
 # Ids the alias file holds and fn-orgs fetches; org rows from the OpenAlex lane may also use openalex: ids.
 REGISTRY_ID = re.compile(r"ror:0[a-z0-9]{6}[0-9]{2}|wikidata:Q[0-9]+")
 ORG_ID = re.compile(rf"{REGISTRY_ID.pattern}|openalex:I[0-9]+")
@@ -725,6 +727,23 @@ class SeedIn(Model):
 class SeedOut(Model):
     rows: int
     changed: int
+
+
+# The one step of the fn-enrich job: one lookup per person and kind.
+class EnrichIn(Model):
+    kinds: list[LookupKind]
+    limit: int
+
+
+class Lookup(Model):
+    person_id: str
+    kind: LookupKind
+    verdict: Verdict
+    detail: str
+
+
+class EnrichOut(Model):
+    lookups: list[Lookup]
 
 
 class GoldPick(Model):

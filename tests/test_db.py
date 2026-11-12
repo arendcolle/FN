@@ -74,7 +74,7 @@ class NetworkMigrationTest(unittest.TestCase):
             conn.execute("INSERT INTO candidates (search_id, person_id, person_ids_json, section, rank, score, "
                          "lane_ranks_json, reason_claim_ids_json, score_parts_json) "
                          "VALUES ('s1', ?, '[]', 'new', 1, 0.1, '{}', '[]', '[]')", (p,))
-        self.assertEqual(store.migrate(), [6, 7, 8, 9, 10])
+        self.assertEqual(store.migrate(), [6, 7, 8, 9, 10, 11])
         found = dict(conn.execute("SELECT person_id, hit_person_ids_json FROM candidates").fetchall())
         self.assertEqual({p: json.loads(v) for p, v in found.items()}, {"p1": ["p1", "p2"], "p3": [], "p4": []})
         self.assertEqual([c.hit_person_ids for c in store.list_candidates("s1")], [["p1", "p2"], [], []])
@@ -100,7 +100,7 @@ class NetworkMigrationTest(unittest.TestCase):
             store.conn.execute("INSERT INTO candidates (search_id, person_id, person_ids_json, section, rank, score, "
                                "lane_ranks_json, reason_claim_ids_json, score_parts_json) "
                                "VALUES ('s1', ?, '[]', ?, ?, 0.1, ?, '[]', ?)", (p, section, i, lanes, parts))
-        self.assertEqual(store.migrate(), [7, 8, 9, 10])
+        self.assertEqual(store.migrate(), [7, 8, 9, 10, 11])
         found = {c.person_id: (c.rank, c.cut_reason) for c in store.list_candidates("s1")}
         self.assertEqual(found, {"cut": (1, "no_belgian_evidence"), "years": (2, None), "two": (3, None),
                                  "net": (4, None)})

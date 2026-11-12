@@ -23,6 +23,7 @@ from fn.contracts import (
     ImportRecord,
     ImportStatus,
     ListStatus,
+    Lookup,
     MatchFlag,
     NetworkFilter,
     Org,
@@ -767,6 +768,52 @@ class Store:
     def remove_identifier(self, person_id: str, identifier: Identifier) -> None:
         self.conn.execute("DELETE FROM person_identifiers WHERE person_id = ? AND scheme = ? AND value = ?",
                           (person_id, identifier.scheme, identifier.value))
+
+    # Lookups: what fn-enrich asked of an outside source per person and kind, and the verdict.
+    def seed_only_persons(self) -> list[str]:
+        """Records not merged away that hold only seed identifiers and an affiliation claim at an org OpenAlex can name.
+
+        OpenAlex names organizations by ROR or by its own id, so an org known only to Wikidata never matches.
+        """
+        rows = self.conn.execute(
+            "SELECT p.id FROM persons p WHERE p.merged_into IS NULL "
+            "AND EXISTS (SELECT 1 FROM person_identifiers i WHERE i.person_id = p.id) "
+            "AND NOT EXISTS (SELECT 1 FROM person_identifiers i WHERE i.person_id = p.id AND i.scheme != 'seed') "
+            "AND EXISTS (SELECT 1 FROM claims c WHERE c.person_id = p.id AND c.kind = 'affiliation' "
+            "AND (c.org_id LIKE 'ror:%' OR c.org_id LIKE 'openalex:%') AND c.rejected_at IS NULL) ORDER BY p.rowid"
+        )
+        return [r[0] for r in rows]
+
+    def identifier_holders(self, scheme: IdentifierScheme) -> dict[str, str]:
+        """Each record not merged away that holds an identifier of the scheme, to its lowest value, in stored order."""
+        rows = self.conn.execute(
+            "SELECT p.id, min(i.value) FROM persons p JOIN person_identifiers i ON i.person_id = p.id "
+            "WHERE i.scheme = ? AND p.merged_into IS NULL GROUP BY p.id ORDER BY p.rowid", (scheme,),
+        )
+        return {r[0]: r[1] for r in rows}
+
+    def kept_card_ranks(self) -> dict[str, int]:
+        """Each record on a kept card of a stored search, to its best rank there."""
+        rows = self.conn.execute(
+            "SELECT p.value, min(c.rank) FROM candidates c JOIN searches s ON s.id = c.search_id AND s.kind = 'search', "
+            "json_each(CASE WHEN c.card_person_ids_json != '[]' THEN c.card_person_ids_json "
+            "WHEN c.hit_person_ids_json != '[]' THEN c.hit_person_ids_json ELSE json_array(c.person_id) END) p "
+            "WHERE c.cut_reason IS NULL GROUP BY p.value"
+        )
+        return {r[0]: r[1] for r in rows}
+
+    def looked_up(self, kind: str) -> set[str]:
+        """The records with a lookup of the kind whose verdict is not error."""
+        rows = self.conn.execute("SELECT person_id FROM lookups WHERE kind = ? AND verdict != 'error'", (kind,))
+        return {r[0] for r in rows}
+
+    def save_lookup(self, lookup: Lookup, at: datetime) -> None:
+        """Store the lookup, replacing an earlier one of the same record and kind."""
+        self.conn.execute(
+            "INSERT INTO lookups (person_id, kind, verdict, detail, at) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT (person_id, kind) DO UPDATE SET verdict = excluded.verdict, detail = excluded.detail, "
+            "at = excluded.at", (lookup.person_id, lookup.kind, lookup.verdict, lookup.detail, _iso(at)),
+        )
 
     # Imports: one row per uploaded file, its text and the summary of its row outcomes.
     def add_import(self, record: ImportRecord) -> None:
