@@ -187,6 +187,20 @@ class SeedPlacesAndTitlesTest(unittest.TestCase):
                          (None, "Portland, Oregon", 45.5, "record_field"))
         self.assertEqual(calls, [("Portland", ["Oregon"])])
 
+    def test_a_chambers_row_gives_a_job_a_works_at_and_a_member_of_without_a_list_claim_or_a_place(self):
+        """The job title is a role on the view; the company is works_at, the chamber member_of; a place is not loaded."""
+        row = made_up_row("chambers", "Ada Example", "Senior researcher", place="Portland, Oregon", jurisdiction=None,
+                          quote="Ada Example Senior researcher at Example Labs", institutions=[
+                              {"name": "Example Labs", "relation": "employer"},
+                              {"name": "Example Chamber of the West", "relation": "member_of"}])
+        self.load([row], lambda city, states: (45.5, -122.6))
+        claims = self.claims(row)
+        self.assertEqual(self.view(row).role, "Senior researcher")
+        self.assertEqual([(c.relation, c.value) for c in claims if c.kind == "role"], [(None, "Senior researcher")])
+        self.assertEqual(sorted((c.relation, c.value) for c in claims if c.kind == "affiliation"),
+                         [("member_of", "Example Chamber of the West"), ("works_at", "Example Labs")])
+        self.assertEqual([c for c in claims if c.kind == "location"], [])
+
     def test_loading_the_same_rows_twice_writes_nothing_the_second_time(self):
         rows = [made_up_row("climate", "Ada Example", "Senior researcher"),
                 made_up_row("consuls", "Cy Example", "Honorary Consul of Belgium", place="Portland", jurisdiction=["Oregon"])]
