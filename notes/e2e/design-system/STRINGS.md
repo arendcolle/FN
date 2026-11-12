@@ -70,7 +70,7 @@ This list holds every user-facing string the new and changed parts introduce, gr
 - Fact: "New", "Remove". After Remove: "`{fact}`", "· Removed", "Undo"
 - Found as: "`{source label}`", "· `{n}` facts" or "· 1 fact", "Not this person". After: "`{source label}` · Separated", "Undo"
 - Source labels: "OpenAlex record", "LinkedIn record", "Import `{file name}`, row `{n}`", "Entered in FN", or the site's host name
-- Possible matches note: "These have the same name, but nothing in FN ties them to this person for sure."
+- Possible matches note: "These have the same name, but nothing in FN links them to this person for sure."
 - Possible match buttons: "Same person", "Different person". After: "Merged into this profile" or "Marked as a different person", with "Undo"
 
 ## Import
