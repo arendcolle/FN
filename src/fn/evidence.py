@@ -132,9 +132,14 @@ def tie(card: dict[str, frozenset[str]], claims: list[Claim], facts: dict[str, O
 
 
 def where(found: list[Place], question: Question) -> Where:
-    """inside when a place lies within the area's radius, outside when there are places and none does, else unknown."""
+    """inside when a place lies within the area's radius, outside when there are places and none does, else unknown.
+
+    A stated place says where the person is; an employer's city only counts when no place is stated. The countries
+    are those of every place.
+    """
     countries = frozenset(p.country for p in found if p.country)
     area = question.area
+    found = [p for p in found if p.basis == "stated"] or found
     if not found or area is None:
         return Where(countries=countries)
     km, nearest = min(((geo.distance_km(area.lat, area.lon, p.lat, p.lon), p) for p in found), key=lambda d: d[0])

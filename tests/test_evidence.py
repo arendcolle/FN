@@ -124,12 +124,20 @@ class WhereTest(unittest.TestCase):
     def test_inside_outside_and_unknown(self):
         """A place within 100 km is inside; places none of which is near are outside; no place or no area is unknown."""
         cambridge, leuven = job("c1", MIT, "2024"), lives("c2", "Leuven", 50.88, 4.7)
-        inside = of([leuven, cambridge], question(area=BOSTON)).place
+        inside = of([cambridge], question(area=BOSTON)).place
         self.assertEqual((inside.fit, inside.nearest.claim_id, inside.nearest.basis), ("inside", "c1", "employer"))
         self.assertLess(inside.km, 10)
         self.assertEqual(of([leuven], question(area=BOSTON)).place.fit, "outside")
         self.assertEqual(of([], question(area=BOSTON)).place.fit, "unknown")
         self.assertEqual(of([leuven], question()).place.fit, "unknown")
+
+    def test_a_stated_place_decides_and_an_employers_city_only_counts_without_one(self):
+        """Stated in Leuven with a recent employer in Cambridge is outside Boston; stated in Boston is inside."""
+        cambridge, leuven = job("c1", MIT, "2024"), lives("c2", "Leuven", 50.88, 4.7)
+        away = of([cambridge, leuven], question(area=BOSTON)).place
+        self.assertEqual((away.fit, away.nearest.claim_id, away.nearest.basis), ("outside", "c2", "stated"))
+        home = of([job("c3", LEUVEN, "2024"), lives("c4", "Boston", 42.36, -71.06)], question(area=BOSTON)).place
+        self.assertEqual((home.fit, home.nearest.claim_id), ("inside", "c4"))
 
     def test_the_countries_of_a_person_with_a_belgian_and_a_us_place(self):
         """A stated place in Leuven and a recent employer in Cambridge give BE and US."""
