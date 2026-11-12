@@ -66,7 +66,7 @@ How the build handles the facts it met:
 ## Module layout
 
 ```text
-pyproject.toml              uv project; scripts fn-serve, fn-seed, fn-gold, fn-orgs
+pyproject.toml              uv project; scripts fn-serve, fn-seed, fn-gold, fn-score, fn-orgs
 src/fn/
   contracts.py              every model, Literal and normalize(); record_source(), page_source(), profile_url(), clean_name(); IMPORT_COLUMNS; CONTRACTS_VERSION
   config.py                 Settings (frozen): paths, mode, host, port, llm mode, keys as SecretStr, the FN_LINKEDIN switch
@@ -74,12 +74,12 @@ src/fn/
   migrations/               001_init (the tables below), 002_orgs, 003_chip_refs, 004_score_parts, 005_claim_years, 006_network, 007_cut_reason
   store.py                  all SQL; resolve_person(); upserts; claims_of(); reads for pages, debug and stats
   net.py                    the one outbound HTTP client, GET and POST: timeouts, size cap, scheme check, keys per host, call recording, cache modes
-  llm.py                    StructuredLLM protocol; ClaudeCli; FixtureLLM (record, replay and prefer)
+  llm.py                    StructuredLLM protocol; ClaudeCli; FixtureLLM (record, replay and prefer); live mode records its answers in var/llm
   prompts/parse.md          system prompt for the parse task
   prompts/extract.md        system prompt for the extract task (the people one part of a page names)
   steps.py                  StepContext, run_step(), CallRecorder, redact(), log capture
   worker.py                 one-thread executor, the search lifecycle, the startup sweep
-  search.py                 the Quick workflow: which steps run in which order, with a publish step after each lane but the last
+  search.py                 the Quick workflow: which steps run in which order, with a publish step after each lane but the last; finish() holds the steps after the lanes
   parse.py                  question -> Chips, span checks
   extract.py                page text -> the people it names, quotes located in the text, claim drafts
   lanes/__init__.py         Lane protocol, LANES registry
@@ -99,6 +99,7 @@ src/fn/
   seedload.py               data/seeds/*.jsonl -> persons, sources, claims (fn-seed)
   geo.py                    place text -> coordinates and radius, from a GeoNames cities15000 extract fetched through net.py and data/place_aliases.csv; locate() reads qualifiers and metro aliases, locate_city() serves the import, area() is the lookup the OpenAlex and LinkedIn lanes share, coordinates() serves the web lane's lives_in claims
   gold.py                   fn-gold: runs cases, matches picks, labels event-page finds, writes the report and a scoring CSV
+  score.py                  fn-score: snapshot freezes the database, cache and LLM fixtures; run scores a snapshot's searches by rescore, rerank (search.finish) or replay into scorecard.json; compare gates two scorecards
   web/app.py                app factory, middleware (host, origin, CSP), the request log, error pages, request_errors, fn-serve
   web/staff.py              staff routes and pages
   web/debug.py              debug routes and pages, and the chip rerun
@@ -329,7 +330,7 @@ net.py owns every outbound HTTP call, GET and POST. It sends `User-Agent: FN/0.1
 - **`ClaudeCli`** runs `claude -p --model haiku --output-format json --json-schema <schema> --tools "" --setting-sources "" --strict-mcp-config --no-session-persistence --system-prompt <text of prompts/task.md>` with the user turn on stdin, and reads `structured_output` from the result. It runs with a minimal environment (PATH, HOME, USER, LANG, TMPDIR), in its own process group, with a timeout that kills the group (60 s, or the task's own in `TIMEOUTS`; `extract` gets 120 s). It checks `is_error` before parsing and raises `LLMCallError` carrying the return code, stderr and duration. It uses the owner's Claude subscription. A test call took 3 s and wrote 1,486 cache tokens.
 - **`FixtureLLM`** keys fixtures by task and the sha of (rendered prompt, schema, model). In `record` mode it calls ClaudeCli and writes the fixture; in `replay` mode a missing fixture raises with its key and the first 200 characters of the prompt. It never returns a default. In `prefer` mode it serves a fixture when one exists, else calls ClaudeCli, and never writes a fixture.
 
-`FN_LLM` is `live`, `record`, `replay` or `prefer`; tests set `replay` and ClaudeCli refuses to start when `FN_ENV=test`. Run fn-gold with `FN_LLM=prefer`, so the 28 tracked parse fixtures give the same chips on every run while the extract calls run live on the subscription. Nothing in fn-gold sets the mode, and the report header records it. `.gitignore` excludes `tests/fixtures/llm/extract-*.json`, so a record run cannot commit real page text. `llm.user_turn` raises `TagError`, a `ValueError`, for a data value that holds its own closing tag.
+`FN_LLM` is `live`, `record`, `replay` or `prefer`; `live` calls the CLI through a recording FixtureLLM that writes each answer to `var/llm`, and the other modes read `Settings.fixtures_dir` (`FN_FIXTURES`, default `tests/fixtures/llm`); tests set `replay` and ClaudeCli refuses to start when `FN_ENV=test`. Run fn-gold with `FN_LLM=prefer`, so the 28 tracked parse fixtures give the same chips on every run while the extract calls run live on the subscription. Nothing in fn-gold sets the mode, and the report header records it. `.gitignore` excludes `tests/fixtures/llm/extract-*.json`, so a record run cannot commit real page text. `llm.user_turn` raises `TagError`, a `ValueError`, for a data value that holds its own closing tag.
 
 ## Pages
 
