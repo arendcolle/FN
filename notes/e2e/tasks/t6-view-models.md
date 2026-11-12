@@ -98,6 +98,12 @@ On a throwaway copy of the owner's database, fetch the results page of search `f
 - The site's `fn.css` now holds the design system's classes for a statement without a quote: `fn-fact` for the line and `fn-cite` for its citation. Use them as the PersonCard preview does.
 - The exact words for every string are in `notes/e2e/design-system/STRINGS.md`.
 
+## Decided while building
+
+- The view model for an organization with its years is `OrgView`, with `orgs` and `more_orgs` on `PersonView`. The done check bans the old label's name in code, so the plan's `TieView` could not be used.
+- `tests/test_map.py` changes on purpose: the geo JSON gives one point per card from its hit records, an undated place with coordinates counts when there is no dated one, and the properties are `id`, `name`, `employer`, `place` and `section`. The quote, the claim date and the source link are gone from it, because no page shows them.
+- Citation labels follow STRINGS.md: "OpenAlex record", "LinkedIn record", "Import <file>, row <n>" and "Entered in FN".
+
 ## Not in this task
 
 Add and Skip buttons, the Person page, links from names, the Network page, paging, the cut. The card's look is the design system's PersonCard as it is; add no CSS.

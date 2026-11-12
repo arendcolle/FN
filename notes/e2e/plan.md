@@ -113,8 +113,8 @@ Names and types are fixed here so a later task can rely on them. A builder who h
 
 - `QuoteView(text, label, href, date)`
 - `ClaimView(claim_id, kind, what, years, quote: QuoteView | None, label, href, date, is_new)`. `what` reads "Studied at KU Leuven". `quote` is set only when the source is prose (`page`, `seed_page`, `vendor_page`); a record, import or staff source gives the citation without a quote.
-- `TieView(org, years)`
-- `PersonView(person_id, name, role, employer, place, lat, lon, ties: list[TieView], more_ties, evidence: ClaimView | None, status: ListStatus, added: str | None, new_facts, email, phone)`
+- `OrgView(org, years)`
+- `PersonView(person_id, name, role, employer, place, lat, lon, orgs: list[OrgView], more_orgs, evidence: ClaimView | None, status: ListStatus, added: str | None, new_facts, email, phone)`
 
 `present.py`:
 
