@@ -290,6 +290,12 @@ class OrderTest(unittest.TestCase):
         self.assertEqual([(c.person_id, c.section, c.rank, c.cut_reason) for c in out],
                          [("abroad", "network", 1, None), ("home", "network", 2, None)])
 
+    def test_topic_words_do_not_reorder_the_network_section(self):
+        """A network person with one topic word and the better score stays above one with two words."""
+        out = ranked({"one": (1, found(words=("wind",))), "two": (30, found(words=("wind", "power")))},
+                     statuses={"one": "in_list", "two": "in_list"})
+        self.assertEqual([c.person_id for c in out], ["one", "two"])
+
 
 class CutTest(unittest.TestCase):
     def cut(self, ev: evidence.Evidence, ask: Question = ASK, section: str = "new") -> str | None:

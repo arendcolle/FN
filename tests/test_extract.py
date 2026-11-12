@@ -287,19 +287,25 @@ class ExtractTest(unittest.TestCase):
         self.assertAlmostEqual(cambridge.lat, 42.38, places=1)
         self.assertAlmostEqual(cambridge.lon, -71.11, places=1)
 
-    def test_stored_lives_in_claims_without_coordinates_get_the_ones_geo_finds(self):
-        """A city is located, a place that names no city and a born_in claim are left, and a second run fills none."""
-        source = self.source("Wim Doe lives in Cambridge, Massachusetts, was born in Boston and stays in Nowhereville.")
+    def test_stored_place_claims_without_coordinates_get_the_ones_geo_finds(self):
+        """A city is located with or without a relation; a place that names no city and a birthplace are left.
+
+        A second run fills none.
+        """
+        source = self.source("Wim Doe lives in Cambridge, Massachusetts, was born in Boston, stays in Nowhereville, "
+                             "and his list row says Leuven.")
         person = self.store.resolve_person([Identifier(scheme="mention", value="m1")], "Wim Doe")
         ids = {}
-        for relation_, place in (("lives_in", "Cambridge, Massachusetts"), ("lives_in", "Nowhereville"), ("born_in", "Boston")):
+        for relation_, place in (("lives_in", "Cambridge, Massachusetts"), ("lives_in", "Nowhereville"), ("born_in", "Boston"),
+                                 (None, "Leuven")):
             start = source.text.index(place)
             ids[place] = self.store.upsert_claim(ClaimDraft(
                 person_id=person.id, kind="location", relation=relation_, value=place, quote=place, quote_start=start,
                 quote_end=start + len(place), source=source)).id
-        self.assertEqual(extract.locate_stored(self.store, geo.from_zip(cities_zip())), 1)
+        self.assertEqual(extract.locate_stored(self.store, geo.from_zip(cities_zip())), 2)
         placed = {place: self.store.get_claim(i).lat for place, i in ids.items()}
         self.assertAlmostEqual(placed.pop("Cambridge, Massachusetts"), 42.38, places=1)
+        self.assertAlmostEqual(placed.pop("Leuven"), 50.88, places=1)
         self.assertEqual(placed, {"Nowhereville": None, "Boston": None})
         self.assertEqual(extract.locate_stored(self.store, geo.from_zip(cities_zip())), 0)
 

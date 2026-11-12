@@ -274,7 +274,14 @@ class SeedPlaceTest(unittest.TestCase):
         (hit,) = [h for h in out.hits if self.people[h.person_id] == "recent"]
         self.assertEqual((hit.matched_on, hit.claim_ids), ("based in Cambridge", [recent.id]))
 
+    def test_a_stated_place_elsewhere_with_a_recent_employer_in_the_area_is_no_hit(self):
+        """A stated place decides where a person is, as in the ranker, so an employer's city inside does not count."""
+        self.lives("away", "New York City", 40.71427, -74.00597)
+        self.works("away", "ror:00abcd111", "2025")
+        self.assertEqual(self.keys(self.lane(Chips(place=BOSTON))), [])
+
     def test_25_people_in_the_area_give_the_nearest_20(self):
+        """More people in the area than the cap give the 20 nearest, ranked from the nearest."""
         for i in (7, 3, 24, 0, 18, 11, 22, 5, 14, 1, 20, 9, 16, 2, 23, 12, 6, 19, 4, 15, 10, 21, 8, 17, 13):
             self.lives(f"near{i:02d}", "Boston", 42.35843 + i * 0.01, -71.05977)
         out = self.lane(Chips(place=BOSTON))
