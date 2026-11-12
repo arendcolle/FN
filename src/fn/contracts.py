@@ -49,7 +49,7 @@ GoldTie = Literal["flemish", "belgian", "none", "unverified"]
 PickVerdict = Literal["found", "event page", "missed", "no lane in slice"]
 GoldGroup = Literal["dev", "held-out", "other"]
 EventKind = Literal["add", "skip", "merge", "not_same", "reject_claim", "edit_contact", "remove", "import", "export", "undo"]
-CutReason = Literal["no_belgian_evidence"]
+CutReason = Literal["no_belgian_evidence", "weak_openalex", "no_claim", "outside_country"]
 AddedVia = Literal["search", "import", "profile"]
 CardState = Literal["network", "new", "name_match", "added", "skipped"]
 # Ids the alias file holds and fn-orgs fetches; org rows from the OpenAlex lane may also use openalex: ids.
@@ -383,7 +383,7 @@ class Entry(Model):
 
 
 class ScorePart(Model):
-    feature: LaneName | Literal["belgian_years"]
+    feature: LaneName | Literal["belgian_years", "topic", "place", "seed_list"]
     rank: int
     points: float
     claim_ids: list[str] = []
@@ -403,6 +403,8 @@ class Candidate(Model):
     hit_person_ids: list[str] = []
     cut_reason: CutReason | None = None
     card_person_ids: list[str] = []
+    # 0 for a topic match and a Belgian tie (a tie alone when the question has no topic), else 1.
+    group: int = 1
 
 
 # One staff decision; detail holds what undo needs, ids and never contact values.
@@ -621,6 +623,13 @@ class GeoArea(Model):
     lat: float
     lon: float
     radius_km: float
+
+
+# What evidence reads of a question: its chips, the area of its place and the country it asks about.
+class Question(Model):
+    chips: Chips = Chips()
+    area: GeoArea | None = None
+    country: str | None = None
 
 
 class LLMResult[T](Model):

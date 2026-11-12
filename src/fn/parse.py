@@ -46,6 +46,26 @@ def content_words(text: str) -> list[str]:
     return [w for w in dict.fromkeys(name_key(text).split()) if w not in skip and len(w) > 1]
 
 
+def chip_words(text: str) -> list[str]:
+    """The content words of a topic chip as the matcher looks for them: a final s dropped from a word of four letters or more."""
+    return [w[:-1] if w.endswith("s") and len(w) > 3 else w for w in content_words(text)]
+
+
+def words_in(words: list[str], text: str) -> list[str]:
+    """The words that stand at the start of a word of text, folded like name_key, in the order of words.
+
+    A word of three letters or fewer must be the whole word, so "ai" does not find "aircraft".
+    """
+    tokens = name_key(text).split()
+    return [w for w in words if any(t == w if len(w) <= 3 else t.startswith(w) for t in tokens)]
+
+
+def topic_match(chips: list[str], texts: list[str]) -> bool:
+    """Whether every chip word of at least one chip with content words stands in one of the texts."""
+    wanted = [found for found in map(chip_words, chips) if found]
+    return any(len(words_in(found, text)) == len(found) for found in wanted for text in texts)
+
+
 def _all_chips(chips: Chips) -> list[Chip | Place]:
     return [*chips.topics, *chips.institutions, *([chips.place] if chips.place else [])]
 

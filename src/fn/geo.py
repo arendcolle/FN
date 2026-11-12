@@ -214,3 +214,40 @@ def distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     p1, p2 = math.radians(lat1), math.radians(lat2)
     a = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(math.radians(lon2 - lon1) / 2) ** 2
     return 2 * 6371.0 * math.asin(math.sqrt(a))
+
+
+# Country lookups by point, keyed by the id of the city index they were built from.
+_grids: dict[int, tuple[Names, dict[tuple[int, int], list[City]]]] = {}
+
+
+def _grid(names: Names) -> dict[tuple[int, int], list[City]]:
+    """Each city of the index once, by its whole-degree cell of latitude and longitude, built once per index."""
+    held = _grids.get(id(names))
+    if held is None or held[0] is not names:
+        cells: dict[tuple[int, int], list[City]] = {}
+        for city in {c for found in names.values() for c in found}:
+            cells.setdefault((math.floor(city.lat), math.floor(city.lon)), []).append(city)
+        held = _grids[id(names)] = (names, cells)
+    return held[1]
+
+
+def country_at(names: Names, lat: float, lon: float) -> str | None:
+    """The country code of the city nearest to the point within METRO_RADIUS_KM, or None when there is none."""
+    cells = _grid(names)
+    reach = math.ceil(METRO_RADIUS_KM / (111.0 * max(math.cos(math.radians(min(abs(lat) + 1, 89.0))), 0.01)))
+    near = [c for dy in (-1, 0, 1) for dx in range(-reach, reach + 1)
+            for c in cells.get((math.floor(lat) + dy, (math.floor(lon) + dx + 180) % 360 - 180), [])]
+    best = min(near, key=lambda c: distance_km(lat, lon, c.lat, c.lon), default=None)
+    return best.country if best and distance_km(lat, lon, best.lat, best.lon) <= METRO_RADIUS_KM else None
+
+
+def question_country(names: Names | None, place: Place | None, found: GeoArea | None) -> str | None:
+    """The country a question asks about: US for a place of kind anywhere_us, else the country of the area's city.
+
+    None for no place, a place of kind abroad, and a place whose city is not located.
+    """
+    if place is None or place.kind == "abroad":
+        return None
+    if place.kind == "anywhere_us":
+        return "US"
+    return country_at(names, found.lat, found.lon) if names is not None and found else None

@@ -15,6 +15,7 @@ fn-seed = "fn.seedload:main"
 fn-gold = "fn.gold:main"
 fn-score = "fn.score:main"
 fn-orgs = "fn.orgjob:main"
+fn-rerank = "fn.search:rerank_main"
 
 [build-system]
 requires = ["uv_build>=0.11,<0.12"]
