@@ -71,7 +71,10 @@ function start() {
       const role = document.createElement("span");
       role.className = "fn-popup__role text-small";
       role.textContent = [p.employer, p.place].filter(Boolean).join(" · ");
-      box.append(name, role);
+      const person = document.createElement("div");
+      person.className = "fn-popup__person";
+      person.append(name, role);
+      box.append(person);
     }
     // Centred on the marker, the popup fits beside it on a phone-wide map.
     map.jumpTo({center: spots[index].coordinates});
