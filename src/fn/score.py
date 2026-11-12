@@ -13,9 +13,9 @@ from datetime import date
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from fn import config, geo, gold, identity, net, parse, present, search
+from fn import config, evidence, geo, gold, identity, net, parse, present, search
 from fn.config import ROOT, Settings
-from fn.contracts import Candidate, Chips, GeoArea, GoldCase, GoldPick, Search, name_key
+from fn.contracts import Candidate, Chips, GeoArea, GoldCase, GoldPick, HttpClient, Question, Search, name_key
 from fn.llm import from_settings
 from fn.steps import StepContext
 from fn.store import Store
@@ -89,10 +89,9 @@ def doubles(cards: list[dict]) -> int:
     return sum(1 for i, a in enumerate(cards) for b in cards[i + 1:] if a["orgs"] & b["orgs"] and likely_same(a["key"], b["key"]))
 
 
-def topic_pattern(chips: Chips | None) -> re.Pattern | None:
-    """A pattern for the content words of the topic chips at a word start, or None."""
-    found = {w for c in (chips.topics if chips else []) for w in parse.content_words(c.text)}
-    return re.compile(r"\b(?:" + "|".join(map(re.escape, sorted(found))) + ")", re.IGNORECASE) if found else None
+def topic_words(chips: Chips | None) -> list[str]:
+    """The words of the topic chips as the evidence matcher looks for them."""
+    return list(dict.fromkeys(w for c in (chips.topics if chips else []) for w in parse.chip_words(c.text)))
 
 
 def fresh(claims: list, employer: str | None, created: date) -> bool:
@@ -108,14 +107,6 @@ def fresh(claims: list, employer: str | None, created: date) -> bool:
     except ValueError:
         return False
     return (claimed.year, claimed.month, claimed.day) >= (created.year - FRESH_YEARS, created.month, created.day)
-
-
-def place_class(claims: list, area: GeoArea) -> str:
-    """inside when a located claim lies within the metro radius, outside when there are located claims and none do."""
-    spots = [(c.lat, c.lon) for c in claims if c.lat is not None and c.lon is not None and c.relation != "born_in"]
-    if not spots:
-        return "unknown"
-    return "inside" if any(geo.distance_km(area.lat, area.lon, la, lo) <= geo.METRO_RADIUS_KM for la, lo in spots) else "outside"
 
 
 def card_ids(store: Store, candidate: Candidate) -> list[str]:
@@ -204,23 +195,31 @@ def pair_metrics(store: Store, kept: list, pairs: list[dict]) -> dict:
 
 
 def card_metrics(store: Store, scored: Search, kept: list, created: date, area: GeoArea | None) -> dict:
-    """The doubles counts, the card shares of the first TOP cards, and the place and lane shares."""
+    """The doubles counts, the card shares of the first TOP cards, and the place, group and lane shares.
+
+    A card's place is evidence's place of its records, so the city of a recent employer counts.
+    """
     top = kept[:50]
-    views = present.person_views(store, [card_ids(store, c) for c in top], created, [c.reason_claim_ids for c in top])
+    ids = [card_ids(store, c) for c in top]
+    views = present.person_views(store, ids, created, [c.reason_claim_ids for c in top])
     by_person: dict[str, list] = {}
-    for claim in store.claims_of([p for c in top for p in card_ids(store, c)]):
+    for claim in store.claims_of([p for found in ids for p in found]):
         by_person.setdefault(claim.person_id, []).append(claim)
-    pattern = topic_pattern(scored.chips)
+    facts = store.get_orgs(list({x.org_id for found in by_person.values() for x in found if x.org_id}))
+    schemes = {p: frozenset(i.scheme for i in found) for p, found in store.identifiers_of([p for f in ids for p in f]).items()}
+    question = Question(chips=scored.chips or Chips(), area=area)
+    words = topic_words(scored.chips)
     cards = []
-    for c, view in zip(top, views, strict=True):
-        claims = [x for p in card_ids(store, c) for x in by_person.get(p, [])]
+    for c, view, records in zip(top, views, ids, strict=True):
+        claims = [x for p in records for x in by_person.get(p, [])]
         text = " ".join(f"{x.value} {x.quote}" for x in claims)
+        found = evidence.of({p: schemes.get(p, frozenset()) for p in records}, claims, facts, question, created)
         card = {
             "key": name_key(view.name), "orgs": {x.org_id for x in claims if x.org_id}, "lanes": set(c.lane_ranks),
             "place": view.place is not None, "role": view.role is not None, "employer": view.employer is not None,
             "tie": view.evidence is not None or bool(view.orgs), "sources2": len({x.source_id for x in claims}) >= 2,
-            "fresh": fresh(claims, view.employer, created), "topic": bool(pattern and pattern.search(name_key(text))),
-            "where": place_class(claims, area) if area else None,
+            "fresh": fresh(claims, view.employer, created), "topic": bool(words and parse.words_in(words, text)),
+            "where": found.place.fit if area else None, "group0": c.group == 0,
         }
         cards.append(card | {"complete": all(card[f] for f in COMPLETE)})
     first, out = cards[:TOP], {"doubles_top20": doubles(cards[:20]), "doubles_top50": doubles(cards)}
@@ -228,23 +227,37 @@ def card_metrics(store: Store, scored: Search, kept: list, created: date, area: 
         x["lanes"] == {"seeds"} and not x["topic"] for x in first)
     flags = {f: lambda x, f=f: x[f] for f in (*COMPLETE, "complete", "fresh")}
     flags |= {f"place_{w}": lambda x, w=w: x["where"] == w for w in ("inside", "outside", "unknown")} if area else {}
-    flags |= {"topic": lambda x: x["topic"]} if pattern else {}
+    flags |= {"topic": lambda x: x["topic"]} if words else {}
+    flags |= {"group0_top20": lambda x: x["group0"]}
     flags |= {"lane_openalex_only": lambda x: x["lanes"] == {"openalex"}, "lane_seeds_only": lambda x: x["lanes"] == {"seeds"},
               "lane_web_only": lambda x: x["lanes"] == {"web"}, "lane_multi": lambda x: len(x["lanes"]) >= 2}
     return out | {name: share(sum(bool(test(x)) for x in first), len(first)) for name, test in flags.items() if first}
+
+
+def cut_seed(store: Store, candidates: list[Candidate]) -> list[str]:
+    """The 12-character ids of the records on cut cards that hold a seed-list record, without those on a kept card."""
+    records = {id(c): c.card_person_ids or c.hit_person_ids or c.person_ids[:1] for c in candidates}
+    cut = [c for c in candidates if c.cut_reason]
+    schemes = store.identifiers_of([p for c in cut for p in records[id(c)]])
+    seeded = {p[:12] for c in cut if any(i.scheme == "seed" for p in records[id(c)] for i in schemes.get(p, []))
+              for p in records[id(c)]}
+    return sorted(seeded - {p[:12] for c in candidates if not c.cut_reason for p in records[id(c)]})
 
 
 def score_search(store: Store, scored: Search, stored: Search, case: GoldCase | None, names: geo.Names | None,
                  pairs: list[dict] | None = None) -> dict:
     """The metrics of scored's kept candidates; stored supplies the date that freshness counts from.
 
-    pairs are the labelled identity pairs; without them the pair metrics are left out.
+    pairs are the labelled identity pairs; without them the pair metrics are left out. cut_seed lists the ids
+    that compare looks for in the other scorecard's first 20.
     """
-    kept = store.list_candidates(scored.id, kept_only=True)
+    every = store.list_candidates(scored.id)
+    kept = [c for c in every if not c.cut_reason]
     place = scored.chips.place if scored.chips else None
     area = geo.locate(place.text, names) if place and names and place.kind in geo.METRO_KINDS else None
-    row = {"question_sha256": hashlib.sha256(stored.question.encode()).hexdigest(), "gold_case": case.id if case else None,
-           "kept": len(kept)} | (gold_metrics(store, case, kept) if case else {})
+    row = ({"question_sha256": hashlib.sha256(stored.question.encode()).hexdigest(), "gold_case": case.id if case else None,
+            "kept": len(kept)} | ({"cut_seed": cut_seed(store, every)} if every else {})
+           | (gold_metrics(store, case, kept) if case else {}))
     if not kept:
         return row
     top20 = [{"id": c.person_id[:12], "rank": n, "lanes": sorted(c.lane_ranks), "parts": [p.feature for p in c.score_parts]}
@@ -277,11 +290,11 @@ def degraded(store: Store, search_id: str, known: set[str]) -> bool:
     return False
 
 
-def rerank(store: Store, stored: Search, settings: Settings) -> bool:
+def rerank(store: Store, stored: Search, settings: Settings, http: HttpClient | None = None) -> bool:
     """Run search.refinish over the stored lane outputs and chips; True when the run is degraded."""
     known = {s.id for s in store.list_steps(stored.id)}
     try:
-        ctx = StepContext(search_id=stored.id, store=store, llm=None, http=None, now=now, new_id=new_id,
+        ctx = StepContext(search_id=stored.id, store=store, llm=None, http=http, now=now, new_id=new_id,
                           log=logging.getLogger("fn.score"), settings=settings)
         search.refinish(ctx, stored)
     except Exception:  # noqa: BLE001 any failure marks the search degraded and the scorecard goes on
@@ -291,7 +304,7 @@ def rerank(store: Store, stored: Search, settings: Settings) -> bool:
 
 def replay(worker: Worker, stored: Search) -> tuple[Search, bool]:
     """A new search with the stored question and chips from fixtures and cache; it and whether the run is degraded."""
-    new = worker.execute(worker.create_search(stored.question, stored.chips, stored.chips_origin).id)
+    new = worker.execute(worker.create_search(stored.question, stored.chips, stored.chips_origin, rerun_of=stored.id).id)
     return new, new.status != "done" or degraded(worker.store, new.id, set())
 
 
@@ -324,7 +337,7 @@ def run(snap: Path, mode: str, out: Path, allow_degraded: bool) -> int:
                 live[key] = step_seconds(store, stored)
             scored, is_bad = stored, False
             if mode == "rerank":
-                is_bad = rerank(store, stored, settings)
+                is_bad = rerank(store, stored, settings, client)
             elif mode == "replay":
                 scored, is_bad = replay(worker, stored)
             rows[key] = score_search(store, scored, stored, cases.get(stored.question), names, pairs)
@@ -374,8 +387,20 @@ def moved_picks(a: dict, b: dict) -> list[str]:
     return lines
 
 
+def seed_cuts(a: dict, b: dict) -> int | None:
+    """The first-20 cards of A that B cut although they hold a seed-list record; None when B lists no cut_seed."""
+    skip = set(a["meta"]["degraded"]) | set(b["meta"]["degraded"])
+    keys = [k for k in sorted(a["searches"].keys() & b["searches"].keys() - skip) if "cut_seed" in b["searches"][k]]
+    if not keys:
+        return None
+    return sum(len({p["id"] for p in a["searches"][k].get("top20", [])} & set(b["searches"][k]["cut_seed"])) for k in keys)
+
+
 def compare(path_a: Path, path_b: Path) -> int:
-    """Print the aggregate metrics that changed and the gold picks that moved; 1 when a gate fails, else 0."""
+    """Print the aggregate metrics that changed, cut_seed_top20 and the gold picks that moved; 1 when a gate fails.
+
+    cut_seed_top20 fails when it is above 0.
+    """
     a, b = (json.loads(p.read_text()) for p in (path_a, path_b))
     old, new = a["aggregate"], b["aggregate"]
     failed = []
@@ -388,6 +413,9 @@ def compare(path_a: Path, path_b: Path) -> int:
     for name in sorted(GATES.keys() & (old.keys() - new.keys())):
         print(f"{name} is missing in {path_b}")
         failed.append(name)
+    if (seed := seed_cuts(a, b)) is not None:
+        print(f"cut_seed_top20: {seed}")
+        failed += ["cut_seed_top20"] if seed else []
     lines = moved_picks(a, b)
     print("gold picks moved:\n" + "\n".join(lines) if lines else "no gold picks moved")
     for name in failed:

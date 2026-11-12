@@ -443,6 +443,52 @@ class SeedNoiseTest(unittest.TestCase):
                 self.assertEqual(score.score_search(store, found, found, None, None)["seed_noise_top20"], noise)
 
 
+class EvidenceMetricsTest(unittest.TestCase):
+    def test_the_place_metrics_count_the_city_of_a_recent_employer(self):
+        """A card whose only place is a 2025 employer in Cambridge is inside a Boston question; one of 2015 is unknown."""
+        store = make_db(self)
+        store.upsert_source(Source(id="org", kind="record", url="https://example.org/orgs", text="orgs", content_hash="o"))
+        mit = Org(id="ror:042nb2s44", name="MIT", country_code="US", city="Cambridge", lat=42.3751, lon=-71.10561,
+                  source_id="org", fetched_at=CREATED)
+        store.upsert_org(mit, True)
+        chips = Chips(topics=[{"text": "wind power", "origin": "parsed"}], place=Place(text="Boston", origin="parsed", kind="metro"))
+        names = geo.from_zip(cities_zip())
+        for stamp, inside in (("2025", 1.0), ("2015", 0.0)):
+            with self.subTest(stamp=stamp):
+                person = add_person(store, f"Ada Quist{stamp}", place=None, employer="MIT", org=mit, date=stamp)
+                search_id = make_search(store, f"e{stamp}000", QUESTION, chips)
+                store.save_candidates(search_id, [candidate(search_id, person, 1, {"openalex": 1})], [])
+                found = store.get_search(search_id)
+                row = score.score_search(store, found, found, None, names)
+                self.assertEqual((row["place_inside"], row["place_unknown"]), (inside, 1.0 - inside))
+
+
+class CutSeedTest(unittest.TestCase):
+    def test_compare_counts_the_first_20_cards_of_a_that_b_cut_with_a_seed_list_record_and_fails_on_one(self):
+        """A card in A's first 20 whose id B lists in cut_seed counts; an id outside A's first 20 does not."""
+        def card(searches: dict) -> dict:
+            return {"schema": 1, "aggregate": {}, "searches": searches, "meta": {"degraded": []}}
+        a = card({"s1": {"top20": [{"id": "aaa", "rank": 1, "lanes": [], "parts": []}]}})
+        work = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, work)
+        for cut, expected, code in ((["aaa", "zzz"], "cut_seed_top20: 1", 1), (["zzz"], "cut_seed_top20: 0", 0)):
+            with self.subTest(cut=cut):
+                (work / "a.json").write_text(json.dumps(a))
+                (work / "b.json").write_text(json.dumps(card({"s1": {"top20": [], "cut_seed": cut}})))
+                printed = io.StringIO()
+                with contextlib.redirect_stdout(printed):
+                    self.assertEqual(score.compare(work / "a.json", work / "b.json"), code)
+                self.assertIn(expected, printed.getvalue())
+
+    def test_a_cut_card_with_a_seed_record_lists_its_records_and_a_cut_openalex_card_does_not(self):
+        """cut_seed holds the 12-character ids of the records on cut cards that hold a seed-list record."""
+        store = make_db(self)
+        seeded = seed_person(store, "Pat Lee", "https://example.org/p")
+        plain = store.resolve_person([Identifier(scheme="openalex", value="A1")], "Oli Vance").id
+        cands = [candidate("s", seeded, 1, {"seeds": 1}, cut=True), candidate("s", plain, 2, {"openalex": 1}, cut=True)]
+        self.assertEqual(score.cut_seed(store, cands), [seeded[:12]])
+
+
 class FreshTest(unittest.TestCase):
     def test_a_stamp_is_padded_to_its_first_day_and_compared_with_the_search_date_minus_five_years(self):
         """2021-01 is older than 2021-11 and not fresh for a search of 2026-11; 2022 is fresh."""
