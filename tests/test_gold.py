@@ -383,6 +383,12 @@ class RunCaseTest(unittest.TestCase):
         self.assertTrue(result.lost_reason.endswith(f"; reach.json: {anne.reach_evidence}"))
         self.assertIn("lane:openalex query authors filter=last_known_institutions.ror", result.lost_reason)
 
+    def test_a_cut_pick_is_lost_at_the_rank_step_with_the_reason(self):
+        """A pick the ranker cuts is not a candidate of the kept list; its dropped rank row names the reason."""
+        with mock.patch("fn.rank.cut_reason", return_value="no_belgian_evidence"):
+            result = self.results(self.case)["Michel Goemans"]
+        self.assertEqual((result.verdict, result.lost_step, result.lost_reason), ("missed", "rank", "no_belgian_evidence"))
+
 
 class EventPageRunTest(unittest.TestCase):
     """Whole searches over page claims in the store, so run_case reads the reason sources itself."""

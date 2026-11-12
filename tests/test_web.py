@@ -415,6 +415,19 @@ class WebTest(unittest.TestCase):
         self.assertIn("RuntimeError: boom ***", stored.traceback)
         self.assertIn("RuntimeError: boom ***", client.get("/debug/errors").text)
 
+    def test_debug_page_counts_kept_and_cut_candidates_and_names_the_reason_on_a_cut_card(self):
+        """The debug search page says how many candidates are kept and cut; a cut card reads cut: <reason>."""
+        client = self.client()
+        search_id = self.create_search(client, "q")
+        ids = [self.store.resolve_person([Identifier(scheme="seed", value=n)], n).id for n in ("Ann Kept", "Bob Cut")]
+        self.store.save_candidates(search_id, [
+            Candidate(search_id=search_id, person_id=p, person_ids=[p], section="new", rank=1, score=0.1,
+                      lane_ranks={"openalex": 1}, cut_reason=reason)
+            for p, reason in zip(ids, (None, "no_belgian_evidence"))], [])
+        html = client.get(f"/debug/searches/{search_id}").text
+        self.assertIn("kept: 1, cut: 1", html)
+        self.assertEqual(html.count("cut: no_belgian_evidence"), 1)
+
     def test_debug_page_lists_failed_step_traceback_and_payload_links(self):
         """The debug page shows a failed step's error and traceback, its call count and links to its payloads."""
         client = self.client(StubLLM(error=ValueError("model said no")))
@@ -583,7 +596,7 @@ class ContractsV1Test(unittest.TestCase):
             self.store.finish_step(run, json.dumps(output))
         self.store.conn.execute("INSERT INTO candidates VALUES ('old', ?, ?, 'new', 1, ?, ?, '[]', ?)",
                                 (person.id, json.dumps([person.id]), 1 / 61, '{"seeds": 1}', json.dumps(label)))
-        self.assertEqual(self.store.migrate(), [4, 5, 6])
+        self.assertEqual(self.store.migrate(), [4, 5, 6, 7])
         app = create_app(self.settings, StubLLM(error=AssertionError("no LLM")), StubHttp())
         self.client = TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=False)
         self.client.__enter__()

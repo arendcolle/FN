@@ -6,6 +6,7 @@ from fn import orgs
 from fn.contracts import (
     Candidate,
     Claim,
+    CutReason,
     Entry,
     ListStatus,
     Org,
@@ -97,9 +98,17 @@ def score(found: list[ScorePart]) -> float:
     return math.fsum(p.points for p in found)
 
 
+def cut_reason(section: Section, entry: Entry, found: list[ScorePart]) -> CutReason | None:
+    """no_belgian_evidence for a new-section entry that only OpenAlex found and that has no belgian_years part."""
+    only_openalex = set(entry.lane_ranks) == {"openalex"}
+    if section == "new" and only_openalex and not any(p.feature == "belgian_years" for p in found):
+        return "no_belgian_evidence"
+    return None
+
+
 def fuse(search_id: str, entries: list[Entry], statuses: dict[str, ListStatus],
          belgian: dict[str, ScorePart] | None = None) -> list[Candidate]:
-    """Score each entry by the sum of its parts and number it within its section.
+    """Score each entry by the sum of its parts and number it within its section, kept entries apart from cut ones.
 
     belgian holds the belgian_years parts by first person id. Section network holds entries with a hit person
     in the list; equal scores are ordered by the first person id.
@@ -107,16 +116,17 @@ def fuse(search_id: str, entries: list[Entry], statuses: dict[str, ListStatus],
     belgian = belgian or {}
     ordered = sorted(((e, parts(e, belgian.get(e.person_ids[0]))) for e in entries),
                      key=lambda ep: (-score(ep[1]), ep[0].person_ids[0]))
-    counts: dict[Section, int] = {"network": 0, "new": 0}
+    counts: dict[tuple[Section, bool], int] = {}
     found = []
     for entry, entry_parts in ordered:
         section: Section = "network" if any(statuses.get(p) == "in_list" for p in hits(entry)) else "new"
-        counts[section] += 1
+        reason = cut_reason(section, entry, entry_parts)
+        counts[section, reason is not None] = counts.get((section, reason is not None), 0) + 1
         found.append(Candidate(
             search_id=search_id, person_id=entry.person_ids[0], person_ids=entry.person_ids, section=section,
-            rank=counts[section], score=score(entry_parts),
+            rank=counts[section, reason is not None], score=score(entry_parts),
             lane_ranks=entry.lane_ranks, reason_claim_ids=entry.claim_ids, score_parts=entry_parts,
-            hit_person_ids=hits(entry),
+            hit_person_ids=hits(entry), cut_reason=reason,
         ))
     return found
 
