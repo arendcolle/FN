@@ -1,7 +1,6 @@
 """Reciprocal rank fusion over the lane lists and the evidence lists, the order by evidence and the cuts."""
 import math
 import re
-from datetime import datetime
 
 from fn import evidence, geo, orgs, parse
 from fn.contracts import (
@@ -17,7 +16,7 @@ from fn.contracts import (
     ScorePart,
     Section,
 )
-from fn.steps import StepContext
+from fn.steps import StepContext, as_of
 
 K = 60
 UNDATED = "undated"
@@ -235,10 +234,7 @@ def run(ctx: StepContext, inp: RankIn) -> RankOut:
     claims = ctx.store.claims_of(records)
     facts = ctx.store.get_orgs(list(dict.fromkeys(c.org_id for c in claims if c.org_id)))
     schemes = {p: frozenset(i.scheme for i in found) for p, found in ctx.store.identifiers_of(records).items()}
-    search = ctx.store.get_search(ctx.search_id)
-    # A rerun ranks as of the search it repeats, so a replay of a snapshot gives the same answer every day.
-    origin = ctx.store.get_search(search.rerun_of) if search and search.rerun_of else search
-    today: datetime = origin.created_at if origin else ctx.now()
+    today = as_of(ctx)
     question, names = question_of(ctx, inp)
     by_person: dict[str, list[Claim]] = {}
     for c in claims:

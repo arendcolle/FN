@@ -223,7 +223,7 @@ def card_metrics(store: Store, scored: Search, kept: list, created: date, area: 
         }
         cards.append(card | {"complete": all(card[f] for f in COMPLETE)})
     first, out = cards[:TOP], {"doubles_top20": doubles(cards[:20]), "doubles_top50": doubles(cards)}
-    out["seed_noise_top20"] = 0 if scored.chips and scored.chips.institutions else sum(
+    out["seed_noise_top20"] = 0 if not words or scored.chips.institutions else sum(
         x["lanes"] == {"seeds"} and not x["topic"] for x in first)
     flags = {f: lambda x, f=f: x[f] for f in (*COMPLETE, "complete", "fresh")}
     flags |= {f"place_{w}": lambda x, w=w: x["where"] == w for w in ("inside", "outside", "unknown")} if area else {}
