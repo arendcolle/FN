@@ -1,6 +1,6 @@
 # How FN gets from search-only to the seven staff flows
 
-2026-11-12 · version 2, measured against `main` at `e1250ca` · decisions D5 to D10 settled
+2026-11-12 · version 3: the design as built, with decisions D5 to D10 · written against `main` at `e1250ca`, checked against the code after the last task merged
 
 **TL;DR.** FN can search and reopen a search today. This design adds what the other flows in the [story map](../design/story-map.md) need: a network that people join through import and Add, merge and skip decisions, a profile per person, a network list and map, CSV export, a ranker that cuts, and a log of every staff decision. It keeps the rules of [the architecture document](../mvp0/architecture.md) and adds six modules, each with one job. Six review panels of three reviewers settled the open decisions. Their records are in [panel-records.md](panel-records.md), and the build order is in [plan.md](plan.md).
 
@@ -60,7 +60,7 @@ A **record** is one row in `persons`: one seed row, one OpenAlex author, one Lin
 Claims stay immutable evidence. Three additions:
 
 - `first_seen_at`: when FN first stored the claim. Old rows keep it empty and count as old. A claim is **new** when `first_seen_at` is later than the person's `seen_at` and the person is in the network. A fact that arrives through a merge counts from the time of the merge. The profile shows the marks and then moves `seen_at`.
-- `rejected_at`: staff removed the fact. `store.claims_of` and `store.match_claims` leave out a rejected claim and every other claim of that person with the same kind and the same value, so a lane that finds the fact again does not bring it back. A value staff typed after the removal shows again.
+- `rejected_at`: staff removed the fact. `store.claims_of` and `store.match_claims` leave out a rejected claim and every other claim of that person with the same kind and the same organization, or the same value when it names no organization. A lane that finds the fact again does not bring it back, and a value staff typed after the removal shows again.
 - Two new claim kinds, `email` and `phone`. They quote their source like every claim, and they never make a person a search hit: `match_claims` leaves these kinds out.
 
 Imported and hand-typed facts need a source:
@@ -99,7 +99,7 @@ One append-only table, `events`, records what staff decided:
 One table, `imports`: id, file name, upload time, status (`preview`, `confirmed` or `discarded`), the file text and a summary of row outcomes. The preview and the confirm both compute rows from the stored text, so they cannot disagree.
 
 - The expected columns are those of the [story map](../design/story-map.md) (D3): `name` required, then `email`, `phone`, `organization`, `role`, `city`, `state`, `country`, `linkedin_url` and `orcid`. The reader matches headers by name, accepts commas and semicolons, and ignores other columns. A blank cell clears nothing.
-- A row finds its person through `store.resolve_person` with its strong identifiers: the LinkedIn URL, the ORCID and the email. A row with none becomes a new person with the identifier `import:<import id>:<row>`. A name is never an identifier. An email typed on the profile becomes an identifier too.
+- A row finds its person through `store.resolve_person` with its strong identifiers: the LinkedIn URL, the ORCID and the email. Every row also gets the identifier `import:<import id>:<row>`, so a row with no strong identifier is a person of its own. A name is never an identifier. An email typed on the profile becomes an identifier too.
 - When a row's name matches a network person and no identifier ties them, the preview shows "Same as this person?" with an unticked box. A ticked box merges on confirm. A header box ticks them all, which is the way to import a newer version of the same file.
 - The export writes the same columns first, so an exported file imports again. A cell that starts with `=`, `+`, `-` or `@` gets a leading apostrophe, so a spreadsheet does not run it as a formula.
 
@@ -107,7 +107,7 @@ One table, `imports`: id, file name, upload time, status (`preview`, `confirmed`
 
 - `Candidate` gains `hit_person_ids`, the canonical ids of the records a lane found, and `cut_reason`. A card shows and scores only its hit records.
 - `rank.py` sets `cut_reason = no_belgian_evidence` on a candidate in section `new` whose only lane is OpenAlex and that has no `belgian_years` part. Everyone else is kept. On the stored searches this takes the median from 1,098 people to 518 and cuts none of the 12 gold picks that reach the ranker.
-- Rank numbers count kept people only. Cut rows stay in the table and show on the debug page with their reason.
+- Kept people are numbered from 1, and cut ones apart from them. Cut rows stay in the table and show on the debug page with their reason.
 - A skipped person is not a cut. `store.list_candidates` leaves out a candidate whose hit records are all skipped, so Undo brings the card back without a new rank run.
 - The results page shows 50 people and adds 50 per "Show more".
 
@@ -129,7 +129,7 @@ One table, `imports`: id, file name, upload time, status (`preview`, `confirmed`
 
 - Lanes stay one after another. After each lane except the last, a step named `publish` resolves, ranks and saves what the lanes found so far, so people appear after the first lane and move as later lanes report.
 - The page asks `GET /searches/{id}/status` every 2 s. It returns the status, the people count and a version that goes up with each publish. A script of about 30 lines swaps the list when the version changes, keeps the scroll position and updates the map in place. It waits while the pointer or the focus is on a card. Without JavaScript the page falls back to the reload.
-- A failing lane keeps its error row and the search goes on. The page then says "Some sources could not be read, so this list may be incomplete." A search that stopped shows the people it had published.
+- A failing lane keeps its error row and the search goes on; it fails only when every lane failed. The page then says "Some sources could not be read, so this list may be incomplete." A search that stopped shows the people it had published.
 - Running lanes at the same time waits for numbers. `/debug/stats` shows each lane's time and the time to the first person. Before lanes can run together, three things change: `next_step_seq` moves inside the insert transaction, the busy timeout goes up, and every lane write stays a short transaction.
 
 ## Modules and who owns what
@@ -178,7 +178,7 @@ Boundaries:
 | Export | `/people/export.csv`, `/searches/{id}/export.csv` | The filtered network, or one search's kept people, as CSV |
 | Source | `/sources/{id}` | Unchanged |
 
-The header has two links, Search and Network. A dot on the map opens a popup at every screen width, with the name as a link, role and employer, place and "Open profile". Clicking a row pans to its dot and opens the same popup. Results and Network share the layout, the map, the popup, the row-to-dot link and the count line, so the product reads as one.
+The header has two links, Search and Network. A dot on the map opens a popup at every screen width, with the name as a link, role and employer, place and "Open profile". From 900px up, clicking a row pans to its dot and opens the same popup. Results and Network share the layout, the map, the popup, the row-to-dot link and the count line, so the product reads as one.
 
 ## Logging for later work
 
@@ -186,7 +186,7 @@ The header has two links, Search and Network. A dot on the map opens a popup at 
 
 **Result quality.** The events table is the feedback data. `/debug/feedback` shows per search how many people were kept, cut, added and skipped, at which ranks the added people stood and which lanes found them. The gold runner reports a pick the cut removed as lost at the rank step with the cut's reason, and reports lane errors on searches that still ended done.
 
-**Data quality.** The import stores each row's outcome. `geo` logs every place it could not resolve.
+**Data quality.** The import stores each row's outcome and names a city it cannot find in the preview. `geo` logs a place it cannot resolve for a web page's claim.
 
 ## Decisions
 
