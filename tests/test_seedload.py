@@ -1,12 +1,20 @@
 import json
+import shutil
+import tempfile
 import unittest
+from datetime import date
+from pathlib import Path
 from typing import get_args
+from unittest import mock
 
-from fn import seedload
+from fn import present, seedload
 from fn.contracts import DateMethod, Person
-from tests.helpers import make_seeded_db
+from tests.helpers import FIXTURES, StubHttp, make_db, make_seeded_db, make_settings
 
 ROWS = [json.loads(line) for path in sorted(seedload.SEEDS.glob("*.jsonl")) for line in path.read_text().splitlines()]
+
+
+load = seedload.load
 
 
 class SeedLoadTest(unittest.TestCase):
@@ -77,11 +85,111 @@ class SeedLoadTest(unittest.TestCase):
         self.assertEqual([(c.relation, c.claim_date, c.date_precision, c.date_method) for c in kvab["affiliation"]],
                          [("member_of", "2025-12", "month", "document_heading")])
         consul = self.claims("consuls|jonathan-hoffmann||")
-        self.assertEqual([(c.relation, c.date_method) for c in consul["role"]], [("consul_for", "page_date")])
+        self.assertEqual([(c.relation, c.date_method) for c in consul["role"]], [("consul_for", "page_date"), (None, "page_date")])
 
     def test_names_are_stored_as_on_the_page_and_folded_in_the_key(self):
         person = self.person("climate|gregoire-wallenborn||")
         self.assertEqual((person.display_name, person.name_key), ("Grégoire Wallenborn", "gregoire wallenborn"))
+
+
+PAGE = "Dr. Ada Example Senior researcher Example University Portland, OR 97201"
+
+
+def made_up_row(list_name: str, name: str, role: str | None, **fields) -> dict:
+    return {"list": list_name, "row_key": f"{list_name}|{name.lower().replace(' ', '-')}||", "name": name,
+            "name_on_page": name, "year": None, "role": role, "institutions": [], "field": None, "place": None,
+            "jurisdiction": [], "profile_url": None, "source_url": f"https://example.org/{list_name}",
+            "source_title": "Example list", "source_date": "2026-07-16", "date_method": "page text", "page": None,
+            "quote": PAGE.replace("Ada Example", name), "raw_path": "", "fetched_at": "2026-10-29"} | fields
+
+
+class SeedPlacesAndTitlesTest(unittest.TestCase):
+    def setUp(self):
+        self.store = make_db(self)
+        self.seeds = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.seeds)
+
+    def load(self, rows: list[dict], locate=None) -> int:
+        raw = self.seeds / "page.txt"
+        raw.write_text(" ".join(r["quote"] for r in rows), encoding="utf-8")
+        text = "\n".join(json.dumps(r | {"raw_path": str(raw)}) for r in rows)
+        (self.seeds / "rows.jsonl").write_text(text + "\n", encoding="utf-8")
+        return seedload.load(self.store, self.seeds, locate)
+
+    def view(self, row: dict) -> present.PersonView:
+        (person,) = self.store.person_ids_by_identifier("seed", [row["row_key"]]).values()
+        (found,) = present.person_views(self.store, [[person]], date(2026, 11, 12))
+        return found
+
+    def claims(self, row: dict) -> list:
+        (person,) = self.store.person_ids_by_identifier("seed", [row["row_key"]]).values()
+        return self.store.claims_of([person])
+
+    def test_a_climate_row_gives_a_job_title_on_the_view_and_keeps_its_list_claim(self):
+        """The title is a role claim without a relation; the member_of claim stays; a BAEF role is still no job."""
+        climate = made_up_row("climate", "Ada Example", "Senior researcher")
+        baef = made_up_row("baef", "Bo Example", "Fellow 2012")
+        self.load([climate, baef])
+        self.assertEqual(self.view(climate).role, "Senior researcher")
+        self.assertEqual(sorted((c.relation or "") for c in self.claims(climate) if c.kind == "role"), ["", "member_of"])
+        self.assertIsNone(self.view(baef).role)
+        self.assertEqual([c.relation for c in self.claims(baef) if c.kind == "role"], ["fellow_of"])
+
+    def test_a_consul_title_is_a_job_even_when_the_quote_does_not_hold_it(self):
+        row = made_up_row("consuls", "Cy Example", "Honorary Consul of Belgium")
+        self.load([row])
+        self.assertEqual(self.view(row).role, "Honorary Consul of Belgium")
+
+    def test_a_consul_place_is_a_located_claim_dated_like_the_row_and_none_without_locate(self):
+        """The location claim has the coordinates locate returned; without locate it has none; no place, no claim."""
+        row = made_up_row("consuls", "Cy Example", "Honorary Consul of Belgium", place="Portland", jurisdiction=["Oregon"])
+        bare = made_up_row("consuls", "Di Example", "Honorary Consul of Belgium")
+        calls = []
+
+        def locate(city: str, states: list[str]):
+            calls.append((city, states))
+            return 45.5, -122.6
+
+        self.load([row, bare], locate)
+        (place,) = [c for c in self.claims(row) if c.kind == "location"]
+        self.assertEqual((place.value, place.lat, place.lon, place.claim_date, place.date_method),
+                         ("Portland", 45.5, -122.6, "2026-07-16", "page_date"))
+        self.assertEqual(calls, [("Portland", ["Oregon"])])
+        self.assertEqual([c for c in self.claims(bare) if c.kind == "location"], [])
+        store, self.store = self.store, make_db(self, make_settings(self))
+        self.load([row])
+        (unplaced,) = [c for c in self.claims(row) if c.kind == "location"]
+        self.assertEqual((unplaced.lat, unplaced.lon), (None, None))
+        store.close()
+
+    def test_loading_the_same_rows_twice_writes_nothing_the_second_time(self):
+        rows = [made_up_row("climate", "Ada Example", "Senior researcher"),
+                made_up_row("consuls", "Cy Example", "Honorary Consul of Belgium", place="Portland", jurisdiction=["Oregon"])]
+        self.load(rows, lambda city, states: (45.5, -122.6))
+        before = self.store.conn.total_changes
+        self.load(rows, lambda city, states: (45.5, -122.6))
+        self.assertEqual(self.store.conn.total_changes - before, 0)
+
+    def test_the_fn_seed_job_locates_a_consul_city_with_each_state_then_the_city_alone(self):
+        """Springfield is in Missouri, not Maine; Portland in Oregon is not Portland in Maine; an unknown city has no pin."""
+        rows = [made_up_row("consuls", "Cy Example", "Honorary Consul of Belgium", place="Portland", jurisdiction=["Oregon"]),
+                made_up_row("consuls", "Di Example", "Honorary Consul of Belgium", place="Springfield",
+                            jurisdiction=["Maine", "Missouri"]),
+                made_up_row("consuls", "Ed Example", "Honorary Consul of Belgium", place="Nowhereville",
+                            jurisdiction=["Oregon"])]
+        raw = self.seeds / "page.txt"
+        raw.write_text(" ".join(r["quote"] for r in rows), encoding="utf-8")
+        text = "\n".join(json.dumps(r | {"raw_path": str(raw)}) for r in rows)
+        (self.seeds / "rows.jsonl").write_text(text + "\n", encoding="utf-8")
+        settings = make_settings(self)
+        with mock.patch.object(seedload, "load", lambda store, locate: load(store, self.seeds, locate)):
+            job = seedload.refresh(self.store, settings, StubHttp())
+        self.assertEqual(job.status, "done", job.error)
+        cities = [line.split("\t") for line in (FIXTURES / "geo" / "cities15000-extract.txt").read_text().splitlines()]
+        pin = {(c[1], c[10]): (float(c[4]), float(c[5])) for c in cities if c[8] == "US"}
+        found = {r["name"]: [(c.lat, c.lon) for c in self.claims(r) if c.kind == "location"] for r in rows}
+        self.assertEqual(found, {"Cy Example": [pin["Portland", "OR"]], "Di Example": [pin["Springfield", "MO"]],
+                                 "Ed Example": [(None, None)]})
 
 
 if __name__ == "__main__":
