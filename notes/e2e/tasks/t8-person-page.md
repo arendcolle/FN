@@ -41,7 +41,6 @@ Follow the mockups and the Profile part.
 
 ### 4. Links to the page
 
-- When people in the network have new facts, the count line on the Network page and on Home ends with a link that turns the "New facts only" token on: "214 people · 12 not on the map · 3 with new facts". It is left out at 0.
 
 
 - The name on a result card and on a network row links to `/people/<id>` (with `?search=<id>` from a card).
@@ -69,6 +68,10 @@ Each new test must fail without the change. An existing test that asserts a plai
 ## Hand check
 
 On a throwaway copy of the owner's database with 20 people added from a stored search: with the Playwright browser tools at 1280 px and 390 px, open one person from `/people`, edit the email, remove a fact and undo it, open a person with several records and separate one, then undo. Report what each step showed, any console error, and the time `/people/<id>` took for the person with the most facts (it must stay under 1 s). Save a screenshot of the page at both widths in your temp folder and give the paths.
+
+## Working beside another task
+
+The import and export pages are being built at the same time in another worktree. That task owns the count line, the Network heading and the empty-network Notice in `web/parts.py`, and adds its own routes to `web/staff.py`. Do not change those parts; add your functions next to the existing ones without reordering the file.
 
 ## Not in this task
 

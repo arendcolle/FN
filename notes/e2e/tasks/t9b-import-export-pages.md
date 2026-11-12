@@ -22,6 +22,8 @@ Read first: [design.md](../design.md) "Imports" and "Pages"; the plan's ["T9 pro
 - `GET /people/export.csv`: the same query as `/people` without the limit, as a download named `fn-network-<date>.csv`. Register it before `/people/{id}`, or that route answers it. It writes the export event through `network.record_export` with the count and whether a filter was on.
 - The count line on the Network page and on Home ends with the Export link: "Export" without a filter, "Export these 9" with one, nothing at 0 people.
 
+- When people in the network have new facts, the count line also carries a link that turns the "New facts only" token on: "214 people · 12 not on the map · 3 with new facts · Export". It is left out at 0.
+
 ### 3. Request log
 
 Each of these routes puts its counts in `request.state.facts`: rows read, outcome counts, people exported.
@@ -46,6 +48,10 @@ Each new test must fail without the change.
 ## Hand check
 
 With the Playwright browser tools at 1280 px on a throwaway copy of the owner's database: write a CSV of twelve made-up people (semicolons, one row without a name, cities in three US states and Belgium), upload it through the page, read the preview, confirm, open "Show them", check the people have dots on the map, press Export, and open the downloaded file. Report each step and paste the first three lines of the exported file. Then upload the exported file and report the preview's counts. Save screenshots of the upload page and the preview at 1280 px and 390 px in your temp folder and give the paths.
+
+## Working beside another task
+
+The Person page is being built at the same time in another worktree. That task adds `/people/{id}` and its POST routes to `web/staff.py`, the profile parts to `web/parts.py` and `present.profile` to `present.py`, and turns the names on cards and rows into links. Do not change those; add your functions next to the existing ones without reordering the file. This task owns the count line, the Network heading and the empty-network Notice.
 
 ## Not in this task
 
