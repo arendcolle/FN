@@ -5,6 +5,8 @@ from urllib.parse import urlsplit
 
 from fn import network, orgs, rank
 from fn.contracts import (
+    Candidate,
+    CardView,
     Claim,
     ClaimView,
     ContactView,
@@ -40,6 +42,7 @@ RECORD_LABELS = {"record": "OpenAlex record", "vendor_record": "LinkedIn record"
 GROUPS = ("Ties to Belgium", "Work", "Places")
 DONE = {"add": "Added to your network", "skip": "Skipped", "edit_contact": "Saved", "merge": "Merged into this profile",
         "not_same": "Marked as a different person"}
+RESULTS_STEP = 50
 
 
 def employer_of(claims: list[Claim]) -> str | None:
@@ -212,13 +215,93 @@ def person_views(store: Store, groups: list[list[str]], today: date,
     return [person_view(store, persons[g[0]], claims, facts, sources, s) for g, claims, s in zip(groups, owned, shown)]
 
 
-def results(store: Store, search: Search, today: date) -> ResultsView:
-    """The search's kept candidates as views by section, each from the records a lane hit, else from its first record."""
+def hits_of(candidate: Candidate) -> list[str]:
+    """The records a lane hit, else the candidate's first record."""
+    return candidate.hit_person_ids or candidate.person_ids[:1]
+
+
+def skipped_here(store: Store, person_id: str, search_id: str) -> bool:
+    """Whether the person's latest skip was made on this search."""
+    skip = next((e for e in store.events_of(person_id) if e.kind == "skip"), None)
+    return bool(skip and skip.search_id == search_id)
+
+
+def is_skipped(store: Store, candidate: Candidate) -> bool:
+    """Whether every hit person of the candidate is skipped."""
+    hits = hits_of(candidate)
+    canonical = store.canonical_ids(hits)
+    persons = store.get_persons(list(set(canonical.values())))
+    return all(persons[canonical[p]].list_status == "skipped" for p in hits if p in canonical)
+
+
+def added_card(store: Store, candidate: Candidate, base: dict, event: Event | None, today: date) -> CardView:
+    """The card of a person added since: the note of the add or merge that brought them in, and its Undo."""
+    view = base["person"]
+    added = next((e for e in store.events_of(view.person_id)
+                  if e.kind in ("add", "merge") and e.person_id == view.person_id), None)
+    match, note, href = None, None, None
+    if added and added.kind == "merge" and any(r["id"] in hits_of(candidate) for r in added.detail["merged"]):
+        match, note = view, f"· same person as {view.name}"
+    elif added and added.kind == "add" and added.detail.get("not_same"):
+        match, note = person_views(store, [added.detail["not_same"][:1]], today)[0], "· as a new person"
+    elif added and added.kind == "add" and (apart := len(added.detail.get("left_apart", []))):
+        note, href = plural(apart, "possible match", "possible matches"), f"/people/{view.person_id}#matches"
+    undo = (LastView(event_id=added.id, kind=added.kind, words=DONE["add"])
+            if added and event and event.id == added.id else None)
+    return CardView(**base, state="added", match=match, undo_event=undo, note=note, note_href=href)
+
+
+def card_view(store: Store, candidate: Candidate, view: PersonView, skipped: bool, today: date) -> CardView:
+    """The candidate's card: its state from the people's status now, the same-name network person and the Undo."""
+    base = {"key": candidate.person_id, "section": candidate.section, "person": view}
+    event = latest(store, view.person_id)
+    if skipped:
+        undo = LastView(event_id=event.id, kind="skip", words=DONE["skip"]) if event and event.kind == "skip" else None
+        return CardView(**base, state="skipped", undo_event=undo)
+    if candidate.section == "network":
+        return CardView(**base, state="network")
+    if view.status == "in_list":
+        return added_card(store, candidate, base, event, today)
+    if found := next(iter(network.name_matches(store, hits_of(candidate))), None):
+        return CardView(**base, state="name_match", match=person_views(store, [[found]], today)[0])
+    return CardView(**base, state="new")
+
+
+def card(store: Store, candidate: Candidate, today: date) -> CardView:
+    """The card of one candidate, as the results page shows it."""
+    view = person_views(store, [hits_of(candidate)], today, [candidate.reason_claim_ids])[0]
+    return card_view(store, candidate, view, is_skipped(store, candidate), today)
+
+
+def results(store: Store, search: Search, today: date, shown: int = RESULTS_STEP,
+            show_skipped: bool = False) -> ResultsView:
+    """The search's kept candidates: the people who are not skipped by section, and the cards of the first shown.
+
+    A person skipped on this search keeps its card where it stood; one skipped elsewhere is counted as hidden and
+    shows only with show_skipped. Skipped people never take a place among the shown.
+    """
     candidates = store.list_candidates(search.id, kept_only=True)
-    views = person_views(store, [c.hit_person_ids or c.person_ids[:1] for c in candidates], today,
-                         [c.reason_claim_ids for c in candidates])
-    return ResultsView(network=[v for c, v in zip(candidates, views) if c.section == "network"],
-                       new=[v for c, v in zip(candidates, views) if c.section == "new"])
+    views = person_views(store, [hits_of(c) for c in candidates], today, [c.reason_claim_ids for c in candidates])
+    skipped = [is_skipped(store, c) for c in candidates]
+    kept = [(c, v) for c, v, s in zip(candidates, views, skipped) if not s]
+    cards, counted, hidden, next_key = [], 0, 0, None
+    for c, v, s in zip(candidates, views, skipped):
+        if s:
+            mine = skipped_here(store, v.person_id, search.id)
+            hidden += not mine
+            if next_key or not (mine or show_skipped):
+                continue
+        elif counted == shown:
+            next_key = next_key or c.person_id
+            continue
+        else:
+            counted += 1
+        cards.append(card_view(store, c, v, s, today))
+    people = [v for _, v in kept]
+    return ResultsView(network=[v for c, v in kept if c.section == "network"],
+                       new=[v for c, v in kept if c.section == "new"], cards=cards, total=len(kept), shown=counted,
+                       skipped_hidden=hidden, not_on_map=sum(1 for v in people if v.lat is None or v.lon is None),
+                       next_key=next_key)
 
 
 def network_view(store: Store, flt: NetworkFilter, limit: int | None, today: date) -> NetworkView:

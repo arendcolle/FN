@@ -537,13 +537,19 @@ class Store:
             )
         return len(candidates)
 
-    def list_candidates(self, search_id: str, kept_only: bool = False) -> list[Candidate]:
+    def list_candidates(self, search_id: str, kept_only: bool = False, include_skipped: bool = True) -> list[Candidate]:
         """The search's candidates, section network first, kept before cut within a section, then by rank.
 
-        kept_only leaves out the cut ones.
+        kept_only leaves out the cut ones. include_skipped=False leaves out those whose hit persons are all
+        skipped; a candidate without hits counts its first person.
         """
         rows = self.conn.execute(
-            "SELECT * FROM candidates WHERE search_id = ?" + (" AND cut_reason IS NULL" if kept_only else "")
+            "SELECT * FROM candidates c WHERE search_id = ?" + (" AND cut_reason IS NULL" if kept_only else "")
+            + ("" if include_skipped else
+               " AND EXISTS (SELECT 1 FROM json_each(CASE WHEN c.hit_person_ids_json = '[]' "
+               "THEN json_array(json_extract(c.person_ids_json, '$[0]')) ELSE c.hit_person_ids_json END) hit "
+               "JOIN persons p ON p.id = hit.value LEFT JOIN persons m ON m.id = p.merged_into "
+               "WHERE COALESCE(m.list_status, p.list_status) != 'skipped')")
             + " ORDER BY section = 'new', cut_reason IS NOT NULL, rank", (search_id,)
         )
         return [

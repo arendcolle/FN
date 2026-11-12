@@ -51,6 +51,7 @@ GoldGroup = Literal["dev", "held-out", "other"]
 EventKind = Literal["add", "skip", "merge", "not_same", "reject_claim", "edit_contact", "remove", "import", "export", "undo"]
 CutReason = Literal["no_belgian_evidence"]
 AddedVia = Literal["search", "import", "profile"]
+CardState = Literal["network", "new", "name_match", "added", "skipped"]
 # Ids the alias file holds and fn-orgs fetches; org rows from the OpenAlex lane may also use openalex: ids.
 REGISTRY_ID = re.compile(r"ror:0[a-z0-9]{6}[0-9]{2}|wikidata:Q[0-9]+")
 ORG_ID = re.compile(rf"{REGISTRY_ID.pattern}|openalex:I[0-9]+")
@@ -464,9 +465,36 @@ class PersonView(Model):
     phone: str | None = None
 
 
+# The person's latest decision while it can still be undone; claim_id names the fact or contact it concerns.
+class LastView(Model):
+    event_id: str
+    kind: EventKind
+    words: str
+    claim_id: str | None = None
+    separated: bool = False
+
+
+class CardView(Model):
+    key: str
+    section: Section
+    person: PersonView
+    state: CardState
+    match: PersonView | None = None
+    undo_event: LastView | None = None
+    note: str | None = None
+    note_href: str | None = None
+
+
+# network and new hold every kept person who is not skipped; cards are the ones the page shows, in order.
 class ResultsView(Model):
     network: list[PersonView] = []
     new: list[PersonView] = []
+    cards: list[CardView] = []
+    total: int = 0
+    shown: int = 0
+    skipped_hidden: int = 0
+    not_on_map: int = 0
+    next_key: str | None = None
 
 
 class NetworkFilter(Model):
@@ -499,15 +527,6 @@ class RecordView(Model):
     label: str
     href: str
     facts: int
-
-
-# The person's latest decision while it can still be undone; claim_id names the fact or contact it concerns.
-class LastView(Model):
-    event_id: str
-    kind: EventKind
-    words: str
-    claim_id: str | None = None
-    separated: bool = False
 
 
 class ProfileView(Model):

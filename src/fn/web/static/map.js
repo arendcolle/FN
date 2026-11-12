@@ -22,7 +22,7 @@ function start() {
   const map = new maplibregl.Map({container: element, style: "/static/positron.json", center: [0, 30], zoom: 1,
     attributionControl: {compact: true}});
   map.addControl(new maplibregl.NavigationControl({showCompass: false}));
-  const cards = new Map([...document.querySelectorAll("[data-person]")].map((card) => [card.dataset.person, card]));
+  const cards = new Map();
   const spots = [];
   const spotsOf = new Map();
   const hovered = new Set();
@@ -99,10 +99,30 @@ function start() {
     if (!narrow.matches) pick(index);
   }
 
-  map.on("load", async () => {
+  function bind(card) {
+    const id = card.dataset.person;
+    card.addEventListener("mouseenter", () => spotsOf.get(id)?.forEach((index) => { hovered.add(index); paint(index); }));
+    card.addEventListener("mouseleave", () => spotsOf.get(id)?.forEach((index) => { hovered.delete(index); paint(index); }));
+    // A network row with a place opens its dot's popup from 900px up; its name link still opens the profile.
+    if (card.classList.contains("fn-row") && card.hasAttribute("data-place")) {
+      card.addEventListener("click", (event) => {
+        if (narrow.matches || event.target.closest("a") || !spotsOf.has(id)) return;
+        choose(spotsOf.get(id).values().next().value);
+      });
+    }
+  }
+
+  // Reads the points again, so a skipped person's dot leaves the map; the first call adds the layer.
+  async function draw() {
     const response = await fetch(element.dataset.geo);
     if (!response.ok) throw new Error(`geo request failed: ${response.status}`);
     const data = await response.json();
+    spots.forEach((spot) => spot.marker?.remove());
+    opened?.remove();
+    spots.length = 0;
+    spotsOf.clear();
+    hovered.clear();
+    picked.clear();
     const atPoint = new Map();
     for (const feature of data.features) {
       const {coordinates} = feature.geometry;
@@ -117,10 +137,16 @@ function start() {
     // One person at a point is a circle; people who share a point get one marker with their count.
     const single = spots.flatMap((spot, index) => (spot.people.length === 1
       ? [{type: "Feature", id: index + 1, geometry: {type: "Point", coordinates: spot.coordinates}, properties: {}}] : []));
-    map.addSource("people", {type: "geojson", data: {type: "FeatureCollection", features: single}});
-    map.addLayer({id: "people", type: "circle", source: "people", paint: {
-      "circle-radius": ["case", ["boolean", ["feature-state", "big"], false], 10, 7],
-      "circle-color": token("--accent"), "circle-stroke-width": 2, "circle-stroke-color": token("--raised")}});
+    const collection = {type: "FeatureCollection", features: single};
+    if (map.getSource("people")) {
+      map.removeFeatureState({source: "people"});
+      map.getSource("people").setData(collection);
+    } else {
+      map.addSource("people", {type: "geojson", data: collection});
+      map.addLayer({id: "people", type: "circle", source: "people", paint: {
+        "circle-radius": ["case", ["boolean", ["feature-state", "big"], false], 10, 7],
+        "circle-color": token("--accent"), "circle-stroke-width": 2, "circle-stroke-color": token("--raised")}});
+    }
     spots.forEach((spot, index) => {
       if (spot.people.length === 1) return;
       const wrap = document.createElement("div");
@@ -134,7 +160,16 @@ function start() {
       wrap.addEventListener("click", (event) => { event.stopPropagation(); choose(index); });
       spot.marker = new maplibregl.Marker({element: wrap}).setLngLat(spot.coordinates).addTo(map);
     });
+    for (const card of document.querySelectorAll("[data-person]")) {
+      if (cards.get(card.dataset.person) === card) continue;
+      cards.set(card.dataset.person, card);
+      bind(card);
+    }
+    element.dataset.ready = String(data.features.length);
+  }
 
+  map.on("load", async () => {
+    await draw();
     let under = null;
     map.on("mousemove", "people", (event) => {
       const index = event.features[0].id - 1;
@@ -151,24 +186,12 @@ function start() {
       map.getCanvas().style.cursor = "";
     });
     map.on("click", "people", (event) => choose(event.features[0].id - 1));
-    for (const [id, card] of cards) {
-      card.addEventListener("mouseenter", () => spotsOf.get(id)?.forEach((index) => { hovered.add(index); paint(index); }));
-      card.addEventListener("mouseleave", () => spotsOf.get(id)?.forEach((index) => { hovered.delete(index); paint(index); }));
-      // A network row with a place opens its dot's popup from 900px up; its name link still opens the profile.
-      if (card.classList.contains("fn-row") && card.hasAttribute("data-place")) {
-        card.addEventListener("click", (event) => {
-          if (narrow.matches || event.target.closest("a") || !spotsOf.has(id)) return;
-          choose(spotsOf.get(id).values().next().value);
-        });
-      }
-    }
-
     if (spots.length) {
       bounds = new maplibregl.LngLatBounds(spots[0].coordinates, spots[0].coordinates);
       spots.forEach((spot) => bounds.extend(spot.coordinates));
       fit();
     }
-    element.dataset.ready = String(data.features.length);
+    document.addEventListener("fn:people-changed", draw);
   });
 }
 

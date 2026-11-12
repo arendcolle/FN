@@ -11,6 +11,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fn import exporter, importer, network
 from fn.contracts import (
     IMPORT_COLUMNS,
+    Candidate,
     Claim,
     ImportPreview,
     NetworkFilter,
@@ -18,13 +19,25 @@ from fn.contracts import (
     Source,
     normalize,
 )
-from fn.present import geo, label_of, network_view, person_views, plural, profile, results, sources_read
+from fn.present import (
+    RESULTS_STEP,
+    card,
+    geo,
+    label_of,
+    network_view,
+    person_views,
+    plural,
+    profile,
+    results,
+    sources_read,
+)
 from fn.store import Store, fold
 from fn.web.html import Safe, h, page
 from fn.web.parts import (
     NETWORK_STEP,
     banner,
     contact_block,
+    count_line,
     empty_network,
     fact_groups,
     filter_bar,
@@ -40,13 +53,15 @@ from fn.web.parts import (
     network_row,
     nobody_matches,
     notice,
-    person_card,
     possible_block,
     profile_banner,
     profile_head,
     recent_list,
+    result_card,
+    results_href,
     search_box,
     show_more,
+    skipped_line,
     upload_form,
 )
 from fn.web.requests import first, form_of, store_of, worker_of
@@ -59,12 +74,14 @@ NO_FILE = "Choose a CSV file to upload."
 SECTIONS = {"network": "In your network", "new": "New"}
 ORIGINS = ("card", "row", "popup", "import")
 CONTACT_KINDS = ("email", "phone")
+CARD_ACTIONS = ("add", "skip", "same", "new")
 
 router = APIRouter()
 
 
 MAP_HEAD = [h.link(rel="stylesheet", href="/static/maplibre-gl.css"), h.script(src="/static/maplibre-gl.js", defer=True),
             h.script(src="/static/map.js", defer=True)]
+RESULTS_HEAD = [*MAP_HEAD, h.script(src="/static/results.js", defer=True)]
 
 
 def network_block(store: Store, flt: NetworkFilter, limit: int, view: str, home: bool) -> tuple[Safe, dict]:
@@ -130,28 +147,43 @@ def network_page(store: Store, flt: NetworkFilter, limit: int, view: str, top: S
     return page("Network", top, block, current="network", body_class="fn-app", extra_head=MAP_HEAD), facts
 
 
-def person_cards(store: Store, search: Search) -> tuple[list[Safe], bool]:
-    """One card per candidate under its section heading, and whether any of them has a place on the map."""
-    found = results(store, search, now().astimezone().date())
-    sections = [[h.h2(title, " ", h.span(f"{len(group):,}"), class_="fn-section text-label"),
-                 [person_card(v, search.id) for v in group]]
-                for section, title in SECTIONS.items() if (group := getattr(found, section))]
-    return sections, any(v.lat is not None for v in found.network + found.new)
+def person_cards(store: Store, search: Search, shown: int, show_skipped: bool, view: str,
+                 active: bool) -> tuple[list[object], bool, dict]:
+    """The count line, the shown cards under their section headings, Show more and the skipped line.
+
+    Also whether anyone has a place on the map, and the facts the request log keeps; nothing when nobody is kept.
+    """
+    found = results(store, search, now().astimezone().date(), shown, show_skipped)
+    here = results_href(search.id, shown, show_skipped, view)
+    facts = {"kept": found.total, "shown": found.shown}
+    if not found.cards and not found.skipped_hidden:
+        return [], False, facts
+    counts = {"network": len(found.network), "new": len(found.new)}
+    sections = [[h.h2(title, " ", h.span(f"{counts[section]:,}"), class_="fn-section text-label"),
+                 [result_card(c, search.id, here) for c in group]]
+                for section, title in SECTIONS.items() if (group := [c for c in found.cards if c.section == section])]
+    count = None if active else count_line(found.total, found.not_on_map,
+                                           [h.a("Export", href=f"/searches/{search.id}/export.csv")] if found.total else [])
+    more = show_more(found.shown, found.total, results_href(search.id, shown + RESULTS_STEP, show_skipped, view),
+                     RESULTS_STEP, f"card-{found.next_key}") if found.next_key else None
+    hidden = skipped_line(found.skipped_hidden, show_skipped, results_href(search.id, shown, not show_skipped, view))
+    return [count, sections, more, hidden], found.total > found.not_on_map, facts
 
 
-def search_page(store: Store, search: Search, view: str = "list") -> str:
+def search_page(store: Store, search: Search, view: str = "list", shown: int = RESULTS_STEP,
+                show_skipped: bool = False) -> tuple[str, dict]:
     """The results page: the question box, then the people's cards beside a map of where they are.
 
     A running search shows the status line, and a stopped or empty one a notice with the map hidden. view picks
     the list or the map on narrow screens; each has its own URL, so the refresh while a search runs keeps it.
     """
     active, stopped = search.status in ("queued", "running"), search.status in ("failed", "interrupted")
-    found, placed = ([], False) if stopped else person_cards(store, search)
+    found, placed, facts = ([], False, {}) if stopped else person_cards(store, search, shown, show_skipped, view, active)
     if active:
         top = h.p(h.span("Searching…"), h.span(class_="fn-status__bar"), class_="fn-status text-strong")
     else:
         top = None if found else notice(search, sources_read(store, search))
-    views = [h.a(name.title(), href=f"/searches/{search.id}" + ("/map" if name == "map" else ""), data_view=name,
+    views = [h.a(name.title(), href=results_href(search.id, shown, show_skipped, name), data_view=name,
                  aria_current="page" if name == view else None) for name in ("list", "map")]
     results = h.div(
         h.nav(views, class_="fn-switch text-switch", aria_label="View"),
@@ -162,13 +194,14 @@ def search_page(store: Store, search: Search, view: str = "list") -> str:
     )
     return page(
         "Search", search_box(search.question), results,
-        refresh=2 if active else None, current="search", body_class="fn-app", extra_head=MAP_HEAD,
-    )
+        refresh=2 if active else None, current="search", body_class="fn-app",
+        extra_head=RESULTS_HEAD if found else MAP_HEAD,
+    ), facts
 
 
 def geo_features(store: Store, search: Search) -> dict:
-    """GeoJSON of the search's people: one point per card whose person has a place with coordinates."""
-    found = results(store, search, now().astimezone().date())
+    """GeoJSON of the search's people who are not skipped: one point per person with a place with coordinates."""
+    found = results(store, search, now().astimezone().date(), shown=0)
     return geo(found.network + found.new)
 
 
@@ -209,7 +242,7 @@ def network_query(request: Request) -> tuple[NetworkFilter, int, str]:
     params = request.query_params
     flt = NetworkFilter(text=params.get("q", ""), import_id=params.get("import") or None, new_only=params.get("new") == "1")
     raw = params.get("limit", "")
-    limit = int(raw) if raw.isdigit() and len(raw) <= 6 else 0
+    limit = int(raw) if raw.isascii() and raw.isdigit() and len(raw) <= 6 else 0
     return flt, limit if limit > 0 and limit % NETWORK_STEP == 0 else NETWORK_STEP, params.get("view", "list")
 
 
@@ -274,14 +307,82 @@ def get_search(request: Request, search_id: str) -> Search:
     return found
 
 
+def results_page(request: Request, search_id: str, view: str) -> HTMLResponse:
+    """The results page with ?shown= (a positive number, else 50) and ?skipped=1."""
+    raw = request.query_params.get("shown", "")
+    shown = int(raw) if raw.isascii() and raw.isdigit() and len(raw) <= 6 and int(raw) > 0 else RESULTS_STEP
+    text, request.state.facts = search_page(store_of(request), get_search(request, search_id), view, shown,
+                                            request.query_params.get("skipped") == "1")
+    return HTMLResponse(text)
+
+
 @router.get("/searches/{search_id}")
 async def show(request: Request, search_id: str) -> HTMLResponse:
-    return HTMLResponse(search_page(store_of(request), get_search(request, search_id)))
+    return results_page(request, search_id, "list")
 
 
 @router.get("/searches/{search_id}/map")
 async def show_map(request: Request, search_id: str) -> HTMLResponse:
-    return HTMLResponse(search_page(store_of(request), get_search(request, search_id), "map"))
+    return results_page(request, search_id, "map")
+
+
+def candidate_of(store: Store, search_id: str, person_id: str) -> Candidate:
+    """The search's kept candidate of that person id; 404 for an unknown search or person."""
+    if store.get_search(search_id) is None:
+        raise HTTPException(404, "No such search")
+    found = next((c for c in store.list_candidates(search_id, kept_only=True) if c.person_id == person_id), None)
+    if found is None:
+        raise HTTPException(404, "No such person in this search")
+    return found
+
+
+def card_decision(store: Store, candidate: Candidate, action: str, match: str) -> None:
+    """Add, skip, merge into the same-name network person, or add as new; a second press changes nothing."""
+    hits = candidate.hit_person_ids or candidate.person_ids[:1]
+    where = {"search_id": candidate.search_id, "rank": candidate.rank, "section": candidate.section}
+    theirs = store.canonical_ids([match]).get(match) if match else None
+    known = theirs in network.name_matches(store, hits) if theirs else False
+    if action == "add":
+        network.add(store, hits, via="search", now=now(), **where)
+    elif action == "skip":
+        statuses = {p.list_status for p in store.get_persons(list(set(store.canonical_ids(hits).values()))).values()}
+        if "in_list" not in statuses and statuses != {"skipped"}:
+            network.skip(store, hits, now=now(), **where)
+    elif action == "same" and known:
+        network.merge(store, hits, theirs, now=now(), **where)
+    elif action == "new":
+        network.add(store, hits, via="search", now=now(), not_same_as=[theirs] if known else [], **where)
+
+
+@router.post("/searches/{search_id}/people/{person_id}/{action}")
+async def card_action(request: Request, search_id: str, person_id: str, action: str) -> Response:
+    """A card's decision; a fetch request gets the card back, any other goes to the results page at the card."""
+    if action not in CARD_ACTIONS:
+        raise HTTPException(404, "No such action")
+    store, form = store_of(request), await form_of(request)
+    candidate = candidate_of(store, search_id, person_id)
+    card_decision(store, candidate, action, first(form, "match"))
+    request.state.facts = {"action": action}
+    here = local_path(form.get("next", [""])[0]) or ""
+    here = here if here.split("?")[0] in (f"/searches/{search_id}", f"/searches/{search_id}/map") else f"/searches/{search_id}"
+    if request.headers.get("x-requested-with") == "fetch":
+        return HTMLResponse(result_card(card(store, candidate, now().astimezone().date()), search_id, here))
+    return RedirectResponse(f"{here}#card-{person_id}", 303)
+
+
+@router.get("/searches/{search_id}/export.csv")
+async def export_search(request: Request, search_id: str) -> Response:
+    """The search's kept people who are not skipped as a CSV download, one row each, recorded as an export event."""
+    store, today = store_of(request), now().astimezone().date()
+    get_search(request, search_id)
+    candidates = store.list_candidates(search_id, kept_only=True, include_skipped=False)
+    views = person_views(store, [c.hit_person_ids or c.person_ids[:1] for c in candidates], today)
+    people = list({v.person_id: v for v in views}.values())
+    text = exporter.csv_text(store, people, str(request.base_url).rstrip("/"))
+    network.record_export(store, now=now(), detail={"count": len(people), "search_id": search_id})
+    request.state.facts = {"people": len(people)}
+    return Response(text, media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="fn-search-{today.isoformat()}.csv"'})
 
 
 @router.get("/api/searches/{search_id}/geo")
@@ -352,9 +453,10 @@ def canonical_of(store: Store, person_id: str) -> str:
 
 
 def back_to(form: dict[str, list[str]], fallback: str, query: str = "") -> RedirectResponse:
-    """A 303 to the form's next path when it is on this site, else to fallback, with query added."""
-    target = local_path(form.get("next", [""])[0]) or fallback
-    return RedirectResponse(f"{target}{'&' if '?' in target else '?'}{query}" if query else target, 303)
+    """A 303 to the form's next path when it is on this site, else to fallback, with query added before its anchor."""
+    target, mark, anchor = (local_path(form.get("next", [""])[0]) or fallback).partition("#")
+    url = f"{target}{'&' if '?' in target else '?'}{query}" if query else target
+    return RedirectResponse(f"{url}{mark}{anchor}", 303)
 
 
 @router.get("/people/{person_id}")
