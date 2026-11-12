@@ -442,6 +442,15 @@ class SeedNoiseTest(unittest.TestCase):
                 found = store.get_search(search_id)
                 self.assertEqual(score.score_search(store, found, found, None, None)["seed_noise_top20"], noise)
 
+    def test_a_question_without_a_topic_word_has_no_seed_noise(self):
+        """A question of only a place lists seed people for their place, so none of them is noise."""
+        store = make_db(self)
+        quiet = seed_person(store, "Quiet Person", "https://example.org/q", value="Dentist")
+        search_id = make_search(store, "p0000000", "Who is in Boston?", Chips(place={"text": "Boston", "origin": "parsed"}))
+        store.save_candidates(search_id, [candidate(search_id, quiet, 1, {"seeds": 1})], [])
+        found = store.get_search(search_id)
+        self.assertEqual(score.score_search(store, found, found, None, None)["seed_noise_top20"], 0)
+
 
 class EvidenceMetricsTest(unittest.TestCase):
     def test_the_place_metrics_count_the_city_of_a_recent_employer(self):
