@@ -18,7 +18,7 @@ from fn.contracts import (
     normalize,
     record_source,
 )
-from fn.steps import StepContext
+from fn.steps import StepContext, fan_out
 
 name: LaneName = "openalex"
 API = "https://api.openalex.org"
@@ -30,6 +30,8 @@ AUTHORS_PER_PAGE = 200
 MAX_PAGES = 4
 BATCH = 100
 MAX_AUTHORS = 2000
+WORKS_PER_AUTHOR = 3
+FETCH_WORKERS = 3
 NO_QUERY = "no topic or institution chip"
 
 
@@ -39,6 +41,7 @@ class Seen:
     order: int
     works: int = 0
     found_by: list[str] = field(default_factory=list)
+    works_seen: list[dict] = field(default_factory=list)
 
 
 def short(openalex_id: str) -> str:
@@ -99,16 +102,26 @@ def seen_authors(ctx: StepContext, chips: Chips, considered: list[Considered]) -
         for work in body["results"]:
             authors = {short(a["author"]["id"]): a["author"] for a in work["authorships"] if a["author"].get("id")}
             for author in authors.values():
-                see(author, f"works on {chip.text!r}").works += 1
+                found = see(author, f"works on {chip.text!r}")
+                found.works += 1
+                if len(found.works_seen) < WORKS_PER_AUTHOR and work["id"] not in {w["id"] for w in found.works_seen}:
+                    found.works_seen.append({k: work.get(k) for k in ("id", "display_name", "publication_year")})
     return seen, queries
 
 
 def fetch(ctx: StepContext, path: str, key: str, ids: list[str], select: str) -> dict[str, dict]:
-    """OpenAlex records by short id, fetched in batches of 100 ids."""
-    found: dict[str, dict] = {}
-    for i in range(0, len(ids), BATCH):
-        body = ctx.http.get(f"{API}/{path}", {"filter": f"{key}:{'|'.join(ids[i:i + BATCH])}",
+    """OpenAlex records by short id, fetched in batches of 100 ids on 3 workers and merged in batch order.
+
+    Raises the error of the first failed batch once every batch has ended.
+    """
+    def batch(start: int) -> dict:
+        return ctx.http.get(f"{API}/{path}", {"filter": f"{key}:{'|'.join(ids[start:start + BATCH])}",
                                               "per_page": str(BATCH), "select": select}).json()
+
+    found: dict[str, dict] = {}
+    for body in fan_out(batch, range(0, len(ids), BATCH), FETCH_WORKERS):
+        if isinstance(body, Exception):
+            raise body
         found |= {short(r["id"]): r for r in body["results"]}
     return found
 
@@ -185,6 +198,21 @@ def location_draft(inst: dict, person_id: str, fetched_at: datetime) -> ClaimDra
     )
 
 
+def topic_drafts(works: list[dict], person_id: str, fetched_at: datetime) -> list[ClaimDraft]:
+    """One topic claim per matching work with a title, dated by its publication year when it has one."""
+    drafts = []
+    for work in works:
+        title, year = normalize(work["display_name"] or ""), work["publication_year"]
+        if not title:
+            continue
+        fields = [("id", work["id"]), ("display_name", title), ("publication_year", year)]
+        source, spans = record_source(work["id"], f"OpenAlex work {title}", fields, work, fetched_at)
+        dated = {"claim_date": str(year), "date_precision": "year", "date_method": "record_field"} if year else {}
+        drafts.append(ClaimDraft(person_id=person_id, kind="topic", value=title, **dated,
+                                 **quote(source, spans, "display_name", "display_name")))
+    return drafts
+
+
 def place_area(ctx: StepContext, chips: Chips, considered: list[Considered]) -> GeoArea | None:
     place = chips.place
     if place is None:
@@ -226,8 +254,8 @@ def run(ctx: StepContext, inp: LaneIn) -> LaneOut:
     """Find authors, order every one with a record by place group, then the order seen, and store every one.
 
     Each of the first 2,000 authors seen that OpenAlex returns a record for is a hit, Belgian or not. Each gets a
-    person, an affiliation claim per affiliation with years and a location claim from the last known institution.
-    Every author seen is in considered with its verdict. Raises RuntimeError without an HTTP client.
+    person, an affiliation claim per affiliation with years, a location claim from the last known institution
+    and a topic claim per matching work, up to 3. Every author seen is in considered with its verdict. Raises RuntimeError without an HTTP client.
     """
     if not inp.chips.topics and not inp.chips.institutions:
         return LaneOut(lane=name, query="", total_seen=0, considered=[note(NO_QUERY)])
@@ -260,6 +288,7 @@ def run(ctx: StepContext, inp: LaneIn) -> LaneOut:
             reasons = [c.id for c in claims if c.value in be_names]
             if location:
                 reasons.append(ctx.store.upsert_claim(location, now).id)
+            reasons += [ctx.store.upsert_claim(d, now).id for d in topic_drafts(seen[author].works_seen, person.id, now)]
             hits.append(LaneHit(person_id=person.id, name_key=person.name_key, lane=name, rank=rank,
                                 score=found_on(seen[author]), matched_on="; ".join([*seen[author].found_by, where[author][1]]), claim_ids=reasons))
     rank_of = {a: r for r, a in enumerate(ordered, 1)}

@@ -1,5 +1,6 @@
 import json
 import re
+import time
 import unittest
 from html import escape
 
@@ -155,8 +156,9 @@ class OpenAlexLaneTest(unittest.TestCase):
         self.assertEqual((row.name, row.stage, row.kept), ("Thierry E. Klein", "rank", True))
         self.assertIn("Belgian affiliations none", row.reason)
         (hit,) = out.hits
-        self.assertEqual((hit.person_id, hit.claim_ids), (self.person(KLEIN), []))
-        self.assertEqual(len(self.claims(hit.person_id)), 5)
+        topic = self.claims(hit.person_id)[("topic", "w")]
+        self.assertEqual((hit.person_id, hit.claim_ids), (self.person(KLEIN), [topic.id]))
+        self.assertEqual(len(self.claims(hit.person_id)), 6)
         self.assertEqual(self.store.conn.execute("SELECT COUNT(*) FROM persons").fetchone()[0], 1)
 
     def test_affiliation_institutions_are_saved_as_orgs_without_replacing_fn_orgs_rows(self):
@@ -266,13 +268,101 @@ class OpenAlexLaneTest(unittest.TestCase):
         out = self.search(Chips(topics=[Chip(text="wind", origin="edited")]), handler)
         self.assertEqual([(h.rank, h.name_key) for h in out.hits],
                          [(1, "mit author"), (2, "leuven author"), (3, "yearless author")])
-        self.assertEqual(out.hits[2].claim_ids, [])
+        self.assertEqual(out.hits[2].claim_ids, [self.claims(out.hits[2].person_id)[("topic", "w")].id])
         self.assertIn("Belgian affiliations none; place unknown", self.considered(out, "A3").reason)
         ids = {a: self.person(a) for a in ("A1", "A2", "A3")}
         found = {c.person_id: c for c in self.store.list_candidates(self.found.id)}
         self.assertEqual(found[ids["A2"]].rank, 1)
         self.assertEqual({a: [p.feature for p in found[p].score_parts] for a, p in ids.items()},
                          {"A1": ["openalex"], "A2": ["openalex", "belgian_years"], "A3": ["openalex"]})
+
+    def works_handler(self, works: list[dict], records: dict[str, dict], delay: float = 0.0):
+        """A handler serving the given works for every topic page and the given author records for every batch."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/works":
+                return httpx.Response(200, json={"meta": {"count": len(works)}, "results": works})
+            if request.url.path == "/authors":
+                time.sleep(delay)
+                ids = request.url.params["filter"].split(":", 1)[1].split("|")
+                return httpx.Response(200, json={"meta": {"count": len(ids)}, "results": [records[i] for i in ids]})
+            return route(request)
+        return handler
+
+    def topic_work(self, number: int, title: str | None, year: int | None, authors: list[dict]) -> dict:
+        return {"id": f"https://openalex.org/W{number}", "display_name": title, "publication_year": year,
+                "authorships": [{"author": {"id": a["id"], "display_name": a["display_name"]}} for a in authors]}
+
+    def test_an_author_on_a_topic_work_gets_a_topic_claim_that_is_one_of_the_hit_reasons(self):
+        """The claim holds the title, is dated by the year and quotes the work's record source at its offsets."""
+        one = author("A1", "Ada Example", LEUVEN, {"KU Leuven": [2020]})
+        work = self.topic_work(7, "Quantum routing for sample networks", 2021, [one])
+        out = self.search(Chips(topics=[Chip(text="quantum", origin="edited")]), self.works_handler([work], {"A1": one}))
+        (hit,) = out.hits
+        topic = self.claims(hit.person_id)[("topic", "Quantum routing for sample networks")]
+        self.assertEqual((topic.claim_date, topic.date_precision, topic.date_method), ("2021", "year", "record_field"))
+        self.assertEqual(topic.quote, "display_name: Quantum routing for sample networks")
+        self.assertEqual(hit.claim_ids[-1], topic.id)
+        self.assertEqual(len(hit.claim_ids), 3)
+        source = self.store.get_sources([topic.source_id])[topic.source_id]
+        self.assertEqual(source.title, "OpenAlex work Quantum routing for sample networks")
+
+    def test_a_work_without_a_year_gives_an_undated_claim_and_one_without_a_title_gives_none(self):
+        """A missing title stores no claim; a missing year stores the claim without a date."""
+        one = author("A1", "Ada Example", LEUVEN, {"KU Leuven": [2020]})
+        works = [self.topic_work(1, "Sample work without a year", None, [one]), self.topic_work(2, None, 2020, [one])]
+        out = self.search(Chips(topics=[Chip(text="quantum", origin="edited")]), self.works_handler(works, {"A1": one}))
+        topics = [c for k, c in self.claims(out.hits[0].person_id).items() if k[0] == "topic"]
+        self.assertEqual([(c.value, c.claim_date) for c in topics], [("Sample work without a year", None)])
+
+    def test_five_works_give_three_claims(self):
+        """Only the first 3 works seen give a topic claim."""
+        one = author("A1", "Ada Example", LEUVEN, {"KU Leuven": [2020]})
+        works = [self.topic_work(i, f"Sample work {i}", 2020, [one]) for i in range(5)]
+        out = self.search(Chips(topics=[Chip(text="quantum", origin="edited")]), self.works_handler(works, {"A1": one}))
+        topics = sorted(value for kind, value in self.claims(out.hits[0].person_id) if kind == "topic")
+        self.assertEqual(topics, ["Sample work 0", "Sample work 1", "Sample work 2"])
+
+    def test_a_work_returned_for_two_chips_gives_one_claim_and_one_reason(self):
+        """The same work under two chips takes one slot: one topic claim, its id once in the hit's reasons."""
+        one = author("A1", "Ada Example", LEUVEN, {"KU Leuven": [2020]})
+        work = self.topic_work(7, "Quantum routing for sample networks", 2021, [one])
+        chips = Chips(topics=[Chip(text="quantum", origin="edited"), Chip(text="photonics", origin="edited")])
+        (hit,) = self.search(chips, self.works_handler([work], {"A1": one})).hits
+        topic = self.claims(hit.person_id)[("topic", "Quantum routing for sample networks")]
+        self.assertEqual(hit.claim_ids.count(topic.id), 1)
+        self.assertEqual(len(set(hit.claim_ids)), len(hit.claim_ids))
+
+    def test_an_author_found_only_through_an_institution_list_gets_no_topic_claim(self):
+        """The MIT list has no works behind it, so its authors keep the affiliation and location claims only."""
+        out = self.search(Chips(institutions=[Chip(text="MIT", origin="edited")]))
+        self.assertTrue(out.hits)
+        kinds = {kind for hit in out.hits for kind, _ in self.claims(hit.person_id)}
+        self.assertNotIn("topic", kinds)
+
+    def test_running_the_lane_twice_writes_no_new_claim(self):
+        """A second search with the same chips finds every claim it needs already stored."""
+        one = author("A1", "Ada Example", LEUVEN, {"KU Leuven": [2020]})
+        work = self.topic_work(7, "Quantum routing for sample networks", 2021, [one])
+        chips, handler = Chips(topics=[Chip(text="quantum", origin="edited")]), self.works_handler([work], {"A1": one})
+        first, = self.search(chips, handler).hits
+        self.assertIn(("topic", "Quantum routing for sample networks"), self.claims(first.person_id))
+        count = lambda: self.store.conn.execute("SELECT COUNT(*) FROM claims").fetchone()[0]
+        before = count()
+        self.search(chips, handler)
+        self.assertEqual(count(), before)
+
+    def test_six_batches_run_on_three_workers_and_keep_batch_order_in_the_records_and_the_log(self):
+        """600 authors need 6 batches of 0.2 s; three workers finish in about a third of the serial 1.2 s."""
+        records = {f"A{i}": author(f"A{i}", f"Author {i}", LEUVEN, {"KU Leuven": [2020]}) for i in range(600)}
+        work = self.topic_work(1, "Sample work", 2020, list(records.values()))
+        started = time.monotonic()
+        out = self.search(Chips(topics=[Chip(text="wind", origin="edited")]), self.works_handler([work], records, 0.2))
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertEqual([h.name_key for h in out.hits], [f"author {i}" for i in range(600)])
+        (lane,) = [s for s in self.store.list_steps(self.found.id) if s.step == "lane:openalex"]
+        batches = [c.request for c in self.store.list_calls(lane.id) if "ids.openalex" in c.request]
+        firsts = [re.search(r"ids\.openalex(?::|%3A)(A\d+)", b).group(1) for b in batches]
+        self.assertEqual(firsts, [f"A{i}" for i in range(0, 600, 100)])
 
     def test_place_only_chips_make_no_call(self):
         """Chips that are only a place produce no hits, no calls and say so in considered."""
