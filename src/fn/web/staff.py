@@ -1,12 +1,25 @@
-"""The staff router: the Ask page, the results page with its map data and the source page."""
+"""The staff router: Home, All searches, the results page, the Network page with their map data and the source page."""
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
-from fn.contracts import Claim, Search, Source
-from fn.present import cut, results, sources_read
+from fn.contracts import Claim, NetworkFilter, Search, Source
+from fn.present import geo, network_view, results, sources_read
 from fn.store import Store
 from fn.web.html import Safe, h, page
-from fn.web.parts import notice, person_card, recent_meta, search_box
+from fn.web.parts import (
+    NETWORK_STEP,
+    empty_network,
+    filter_bar,
+    is_filtered,
+    network_href,
+    network_row,
+    nobody_matches,
+    notice,
+    person_card,
+    recent_list,
+    search_box,
+    show_more,
+)
 from fn.web.requests import form_of, store_of, worker_of
 from fn.worker import now
 
@@ -16,14 +29,68 @@ SECTIONS = {"network": "In your network", "new": "New"}
 router = APIRouter()
 
 
-def home_page(searches: list[Search], counts: dict[str, int], message: str | None = None, question: str = "") -> str:
-    """The Ask page: the question box, then the recent searches with their state; counts holds people per search."""
-    today = now().astimezone().date()
-    rows = [h.li(h.a(cut(s.question, 200), href=f"/searches/{s.id}", class_="text-body"),
-                 recent_meta(s, counts.get(s.id, 0), today)) for s in searches]
-    recent = h.section(h.h2("Recent searches", class_="fn-section text-label"), h.ul(rows, class_="fn-recent"),
-                       class_="fn-page") if rows else None
-    return page("Searches", search_box(question, message), recent, current="search")
+MAP_HEAD = [h.link(rel="stylesheet", href="/static/maplibre-gl.css"), h.script(src="/static/maplibre-gl.js", defer=True),
+            h.script(src="/static/map.js", defer=True)]
+
+
+def network_block(store: Store, flt: NetworkFilter, limit: int, view: str, home: bool) -> tuple[Safe, dict]:
+    """The network list beside its map, as on the Network page and Home, and the facts the request log keeps.
+
+    An empty network shows its notice, and a filter that matches nobody 'Nobody matches'; both hide the map.
+    """
+    found = network_view(store, flt, limit, now().astimezone().date())
+    filtered = is_filtered(flt)
+    everyone = store.list_network(NetworkFilter(), 0)[1] if filtered and not found.total else found.total
+    import_name = (store.import_filename(flt.import_id) or flt.import_id) if flt.import_id else None
+    path = "/" if home else "/people"
+    if not everyone:
+        rows = [empty_network(home)]
+    elif not found.total:
+        rows = [filter_bar(flt, 0, 0, "/people", import_name), nobody_matches(flt, import_name, everyone)]
+    else:
+        rows = [filter_bar(flt, found.total, found.not_on_map, "/people", import_name),
+                [network_row(v, n) for n, v in enumerate(found.people, 1)],
+                show_more(found.shown, found.total, network_href(flt, limit + NETWORK_STEP, view))]
+    views = [h.a(name.title(), href=network_href(flt, limit, name, path), data_view=name,
+                 aria_current="page" if name == view else None) for name in ("list", "map")]
+    placed = found.total > found.not_on_map
+    block = h.div(
+        h.nav(views, class_="fn-switch text-switch", aria_label="View"),
+        h.div(h.div(h.h2("In your network", class_="fn-section text-label"), class_="fn-sectionbar"), rows,
+              class_="fn-results__list"),
+        h.div(id="map", class_="fn-map", role="region", aria_label="Map of your network",
+              data_geo=network_href(flt, path="/api/people/geo")),
+        class_=" ".join(["fn-results", *(["fn-results--page"] if home else []), *([] if placed else ["fn-results--no-map"])]),
+        data_view=view,
+    )
+    return block, {"rows": found.shown, "total": found.total, "filtered": filtered}
+
+
+def home_page(store: Store, view: str, message: str | None = None, question: str = "") -> tuple[str, dict]:
+    """Home: the question box, the three newest searches with All searches past three, then the network block."""
+    today, searches = now().astimezone().date(), store.list_searches(4)
+    recent = h.section(
+        h.h2("Recent searches", class_="fn-section text-label"),
+        recent_list(searches[:3], store.count_candidates([s.id for s in searches[:3]]), today),
+        h.p(h.a("All searches", href="/searches"), class_="fn-recent__all text-meta") if len(searches) > 3 else None,
+        class_="fn-page fn-page--plain",
+    ) if searches else None
+    block, facts = network_block(store, NetworkFilter(), NETWORK_STEP, view, home=True)
+    return page("Searches", search_box(question, message), recent, block, current="search", extra_head=MAP_HEAD), facts
+
+
+def searches_page(store: Store) -> tuple[str, dict]:
+    """All searches: every search, newest first, under its count."""
+    searches = store.list_searches(None)
+    rows = recent_list(searches, store.count_candidates([s.id for s in searches]), now().astimezone().date())
+    heading = h.h1("All searches ", h.span(f"{len(searches):,}"), class_="fn-section text-label")
+    return (page("All searches", h.main(heading, rows if searches else None, class_="fn-page"), current="search"),
+            {"rows": len(searches), "total": len(searches), "filtered": False})
+
+
+def network_page(store: Store, flt: NetworkFilter, limit: int, view: str) -> tuple[str, dict]:
+    block, facts = network_block(store, flt, limit, view, home=False)
+    return page("Network", block, current="network", body_class="fn-app", extra_head=MAP_HEAD), facts
 
 
 def person_cards(store: Store, search: Search) -> tuple[list[Safe], bool]:
@@ -57,22 +124,14 @@ def search_page(store: Store, search: Search, view: str = "list") -> str:
     )
     return page(
         "Search", search_box(search.question), results,
-        refresh=2 if active else None, current="search", body_class="fn-app",
-        extra_head=[h.link(rel="stylesheet", href="/static/maplibre-gl.css"),
-                    h.script(src="/static/maplibre-gl.js", defer=True), h.script(src="/static/map.js", defer=True)],
+        refresh=2 if active else None, current="search", body_class="fn-app", extra_head=MAP_HEAD,
     )
 
 
 def geo_features(store: Store, search: Search) -> dict:
     """GeoJSON of the search's people: one point per card whose person has a place with coordinates."""
     found = results(store, search, now().astimezone().date())
-    features = [{
-        "type": "Feature",
-        "geometry": {"type": "Point", "coordinates": [view.lon, view.lat]},
-        "properties": {"id": view.person_id, "name": view.name, "employer": view.employer, "place": view.place,
-                       "section": section},
-    } for section in SECTIONS for view in getattr(found, section) if view.lat is not None and view.lon is not None]
-    return {"type": "FeatureCollection", "features": features}
+    return geo(found.network + found.new)
 
 
 def source_page(source: Source, claim: Claim | None) -> str:
@@ -90,14 +149,42 @@ def source_page(source: Source, claim: Claim | None) -> str:
 
 
 def recent(request: Request, message: str | None = None, question: str = "") -> str:
-    store = store_of(request)
-    searches = store.list_searches(50)
-    return home_page(searches, store.count_candidates([s.id for s in searches]), message, question)
+    view = "map" if request.query_params.get("view") == "map" else "list"
+    text, request.state.facts = home_page(store_of(request), view, message, question)
+    return text
 
 
 @router.get("/")
 async def home(request: Request) -> HTMLResponse:
     return HTMLResponse(recent(request))
+
+
+@router.get("/searches")
+async def all_searches(request: Request) -> HTMLResponse:
+    text, request.state.facts = searches_page(store_of(request))
+    return HTMLResponse(text)
+
+
+def network_query(request: Request) -> tuple[NetworkFilter, int, str]:
+    """The filter, the limit (a positive step of 200, else 200) and the view of a network request's query."""
+    params = request.query_params
+    flt = NetworkFilter(text=params.get("q", ""), import_id=params.get("import") or None, new_only=params.get("new") == "1")
+    raw = params.get("limit", "")
+    limit = int(raw) if raw.isdigit() and len(raw) <= 6 else 0
+    return flt, limit if limit > 0 and limit % NETWORK_STEP == 0 else NETWORK_STEP, params.get("view", "list")
+
+
+@router.get("/people")
+async def people(request: Request) -> HTMLResponse:
+    flt, limit, view = network_query(request)
+    text, request.state.facts = network_page(store_of(request), flt, limit, "map" if view == "map" else "list")
+    return HTMLResponse(text)
+
+
+@router.get("/api/people/geo")
+async def people_geo(request: Request) -> JSONResponse:
+    flt = network_query(request)[0]
+    return JSONResponse(geo(network_view(store_of(request), flt, None, now().astimezone().date()).people))
 
 
 @router.post("/searches")

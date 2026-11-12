@@ -469,6 +469,19 @@ class ResultsView(Model):
     new: list[PersonView] = []
 
 
+class NetworkFilter(Model):
+    text: str = ""
+    import_id: str | None = None
+    new_only: bool = False
+
+
+class NetworkView(Model):
+    people: list[PersonView]
+    total: int
+    not_on_map: int
+    shown: int
+
+
 class StepRun(Model):
     id: str
     search_id: str

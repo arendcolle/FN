@@ -93,8 +93,8 @@ def page(title: str, *body: object, refresh: int | None = None, extra_head: obje
          current: str | None = None, body_class: str | None = None) -> str:
     """A full document with the FN header, or the debug nav when debug; refresh reloads every that many seconds.
 
-    extra_head adds head children before the site styles, current names the header link of this page ("search")
-    and body_class goes on body. Only debug pages link to other debug pages.
+    extra_head adds head children before the site styles, current names the header link of this page ("search" or
+    "network") and body_class goes on body. Only debug pages link to other debug pages.
     """
     head = h.head(
         h.meta(charset="utf-8"),
@@ -112,6 +112,7 @@ def page(title: str, *body: object, refresh: int | None = None, extra_head: obje
         top = h.header(
             h.a("FN", href="/", class_="fn-logo text-logo"),
             h.nav(h.a("Search", href="/", aria_current="page" if current == "search" else None),
+                  h.a("Network", href="/people", aria_current="page" if current == "network" else None),
                   class_="fn-nav text-body", aria_label="Main"),
             class_="fn-header",
         )
