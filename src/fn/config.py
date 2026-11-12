@@ -22,7 +22,7 @@ class Settings(BaseModel):
     port: int = 8765
     env: Literal["dev", "test"] = "dev"
     llm_mode: LLMMode = "live"
-    http_mode: Literal["live", "replay"] = "live"
+    http_mode: Literal["live", "replay", "prefer"] = "live"
     openalex_api_key: SecretStr | None = None
     parallel_api_key: SecretStr | None = None
     apify_token: SecretStr | None = None
