@@ -13,6 +13,9 @@ One line per finished step, newest last. The plan is in [plan.md](plan.md) and t
 - 2026-11-12 T1 merged: `web/app.py` split by job, 23 pages byte-identical before and after (PR #6).
 - 2026-11-12 T2 merged: place lookup reads states, countries and metro names (PR #7). The LinkedIn location claim was left out.
 - 2026-11-12 Plan reviewed by a fresh Opus reviewer in three rounds and approved. T4, the network core, started.
+- 2026-11-12 T4 merged: the network core (PR #9). Migration 006 ran in 0.6 s on a copy of the 509 MB database. 300 tests.
+- 2026-11-12 T5 done: seven new parts and new states published to the design system (version 8); `fn.css` is its byte copy (PR #10). The strings are in [design-system/STRINGS.md](design-system/STRINGS.md).
+- 2026-11-12 Started five tasks side by side: T6 person views, T11a ranker cut, T12a publish steps, T13a owner logging, T9a import core.
 
 ## Review ledger
 
@@ -44,3 +47,9 @@ Findings from plan and diff reviews, with the outcome of each.
 | plan R15 | Filter fields beyond one text box | nit | partly: the place token is cut, the two link tokens stay |
 | plan R19 | `first_seen_at` came from the store's clock, the other times from the caller's | should | fixed: `upsert_claim(draft, at)` |
 | plan R20 | `resolve.run` read canonical ids for hits only | should | fixed: also for same-name records |
+| netcore R1 | `add` missed a not-same pair stored on a merged record | nit | fixed with a test |
+| netcore R2 | A same-name record that fits no entry is dropped | nit | declined, debug only |
+| netcore R3 | Undo treated an equal timestamp as later | nit | fixed with a test: order of writing decides |
+| netcore R4 | Migration picks any resolve step when a search has several | nit | declined, a search has one |
+| netcore R5 | Pages group claims by stored person ids | nit | follow-up in T6 |
+| netcore R6 | Blank line | nit | fixed |
