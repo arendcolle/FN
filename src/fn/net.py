@@ -5,6 +5,7 @@ import os
 import tempfile
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import unquote
 
@@ -56,6 +57,17 @@ def retry_after(response: httpx.Response) -> float | None:
         return float(response.headers["retry-after"])
     except (KeyError, ValueError):
         return None
+
+
+def cache_file(cache: Path, key: str) -> Path:
+    """The cache file of a call key: the sha256 of the key, with .json."""
+    return cache / f"{hashlib.sha256(key.encode()).hexdigest()}.json"
+
+
+def cached_get(cache: Path, url: str) -> bytes | None:
+    """The cached body of GET url in the cache folder, or None when it is not cached; makes no call."""
+    path = cache_file(cache, str(httpx.URL(url)))
+    return path.read_bytes() if path.exists() else None
 
 
 class Client:
@@ -114,7 +126,7 @@ class Client:
     def _send(self, request: httpx.Request, shown: str, key: str, *, cost: Callable[[bytes], float | None] | None,
               keep: Callable[[bytes], bool] | None, cache: CacheMode) -> httpx.Response:
         """The one path for every call: the cache first when the mode asks for it, then the network with retries."""
-        path = self.cache / f"{hashlib.sha256(key.encode()).hexdigest()}.json"
+        path = cache_file(self.cache, key)
         recorder = current_recorder()
         replay = self.settings.http_mode == "replay"
         if replay or cache != "refresh":

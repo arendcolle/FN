@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from fn import config
 from fn.contracts import Chips
 from fn.llm import (
     TIMEOUTS,
@@ -193,6 +194,16 @@ class LLMTest(unittest.TestCase):
         self.assertEqual(llm.mode, "prefer")
         self.assertIsInstance(llm.cli, ClaudeCli)
         self.assertIsNone(from_settings(self.dev.model_copy(update={"llm_mode": "replay"})).cli)
+
+    def test_live_mode_records_its_answers_in_var_llm_and_other_modes_read_fixtures_dir(self):
+        """Live gives a recording FixtureLLM over the CLI in var_dir/llm; replay reads settings.fixtures_dir, from FN_FIXTURES too."""
+        live = from_settings(self.dev.model_copy(update={"llm_mode": "live"}))
+        self.assertEqual((live.mode, live.directory), ("record", self.dev.var_dir / "llm"))
+        self.assertIsInstance(live.cli, ClaudeCli)
+        other = self.dev.model_copy(update={"llm_mode": "replay", "fixtures_dir": Path("elsewhere")})
+        self.assertEqual(from_settings(other).directory, Path("elsewhere"))
+        with mock.patch.dict("os.environ", {"FN_FIXTURES": "from-env"}), mock.patch("fn.config.keychain", return_value=None):
+            self.assertEqual(config.from_env().fixtures_dir, Path("from-env"))
 
     def test_each_task_waits_for_its_own_timeout_and_the_message_names_it(self):
         """A task listed in TIMEOUTS waits that many seconds, any other task waits 60 s, and a timeout names the seconds it waited."""

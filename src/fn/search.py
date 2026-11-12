@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 from fn import parse, rank, resolve
 from fn.contracts import (
+    Chips,
     LaneIn,
     LaneOut,
     ParseIn,
@@ -34,6 +35,13 @@ def publish(outs: list[LaneOut]) -> Callable[[StepContext, PublishIn], PublishOu
     return step
 
 
+def finish(ctx: StepContext, outs: list[LaneOut], chips: Chips) -> None:
+    """Run the steps after the lanes in order: resolve the lane outputs, rank the entries and save the candidates."""
+    resolved = run_step(ctx, "resolve", resolve.run, ResolveIn(outs=outs))
+    ranked = run_step(ctx, "rank", rank.run, RankIn(entries=resolved.entries, chips=chips))
+    run_step(ctx, "save", save, SaveIn(candidates=ranked.candidates, flags=resolved.flags))
+
+
 def run(ctx: StepContext, search: Search) -> None:
     """Run the Quick steps in order: parse, each lane with a publish after all but the last, resolve, rank and save.
 
@@ -57,9 +65,7 @@ def run(ctx: StepContext, search: Search) -> None:
             run_step(ctx, "publish", publish(list(outs)), PublishIn(lanes=[o.lane for o in outs], chips=chips))
     if failed == len(LANES):
         raise RuntimeError("every lane failed")
-    resolved = run_step(ctx, "resolve", resolve.run, ResolveIn(outs=outs))
-    ranked = run_step(ctx, "rank", rank.run, RankIn(entries=resolved.entries, chips=chips))
-    run_step(ctx, "save", save, SaveIn(candidates=ranked.candidates, flags=resolved.flags))
+    finish(ctx, outs, chips)
 
 
 def main(argv: list[str] | None = None, llm: StructuredLLM | None = None) -> int:

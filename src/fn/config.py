@@ -16,6 +16,7 @@ class Settings(BaseModel):
 
     root: Path = ROOT
     var_dir: Path = ROOT / "var"
+    fixtures_dir: Path = ROOT / "tests" / "fixtures" / "llm"
     mode: Literal["local"] = "local"
     host: str = "127.0.0.1"
     port: int = 8765
@@ -60,6 +61,7 @@ def from_env() -> Settings:
 
     fields = {
         "var_dir": env.get("FN_VAR"),
+        "fixtures_dir": env.get("FN_FIXTURES"),
         "host": env.get("FN_HOST"),
         "port": env.get("FN_PORT"),
         "env": env.get("FN_ENV"),

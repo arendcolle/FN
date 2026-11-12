@@ -20,6 +20,18 @@ SEARCH = "https://api.parallel.ai/v1/search"
 BODY = {"objective": "Belgian 6G researchers", "search_queries": ["6G Belgian"], "mode": "fast"}
 
 
+class CachedGetTest(unittest.TestCase):
+    def test_a_cached_get_body_is_returned_and_an_uncached_url_gives_none(self):
+        """cached_get reads the file the client writes for a GET url and returns None when there is none."""
+        cache = make_settings(self).var_dir / "cache"
+        url = "https://files.example.test/cities.zip"
+        self.assertIsNone(net.cached_get(cache, url))
+        cache.mkdir(parents=True)
+        net.cache_file(cache, url).write_bytes(b"body")
+        self.assertEqual(net.cached_get(cache, url), b"body")
+        self.assertIsNone(net.cached_get(cache, url + "?other=1"))
+
+
 class NetTest(unittest.TestCase):
     def setUp(self):
         self.settings = make_settings(self).model_copy(update={"http_mode": "live"})
