@@ -179,8 +179,12 @@ class FixtureLLM:
 
 
 def from_settings(settings: Settings) -> StructuredLLM:
-    """The LLM for settings.llm_mode: the CLI when live, the fixture directory when recording, replaying or preferring."""
+    """The LLM for settings.llm_mode.
+
+    Live calls the CLI and records each answer in var_dir/llm, so a live search can be replayed later.
+    The other modes use settings.fixtures_dir.
+    """
     if settings.llm_mode == "live":
-        return ClaudeCli(settings)
+        return FixtureLLM(settings.var_dir / "llm", "record", ClaudeCli(settings))
     cli = ClaudeCli(settings) if settings.llm_mode in ("record", "prefer") else None
-    return FixtureLLM(settings.root / "tests" / "fixtures" / "llm", settings.llm_mode, cli)
+    return FixtureLLM(settings.fixtures_dir, settings.llm_mode, cli)
