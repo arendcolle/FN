@@ -262,7 +262,8 @@ class WebTest(unittest.TestCase):
         search_id = self.run_search(client, "q", Chips(topics=[Chip(text="ULB", origin="edited")]))
         page = client.get(f"/searches/{search_id}").text
         self.assertEqual(page.count('class="fn-card"'), 2)
-        self.assertIn(f'data-person="{anne}"><h3 class="fn-card__name text-name">Anne Example</h3>', page)
+        self.assertIn(f'data-person="{anne}"><h3 class="fn-card__name text-name"><a href="/people/{anne}?search={search_id}'
+                      f'&amp;from=card">Anne Example</a></h3>', page)
         self.assertIn("Nokia Bell Labs · Murray Hill, NJ", page)
         self.assertIn('ULB <span class="text-year">2001–2004</span> · KU Leuven <span class="text-year">2005–2008</span>'
                       ' · VUB <span class="text-year">2009</span> · +1 more', page)
@@ -271,7 +272,7 @@ class WebTest(unittest.TestCase):
         self.assertLessEqual(quote.index("”"), 242)
         self.assertIn(" ran radio…”<cite", quote)
         self.assertIn(">anne-3 page</a>, March 2024</cite>", quote)
-        self.assertIn('Bob Nowhere</h3><p class="fn-card__role text-body">location not found</p>', page)
+        self.assertIn('Bob Nowhere</a></h3><p class="fn-card__role text-body">location not found</p>', page)
         self.assertIn("“Bob Nowhere studies ULB history”", page)
         self.assertIn(">bob page</a>, date unknown</cite>", page)
         (point,) = client.get(f"/api/searches/{search_id}/geo").json()["features"]

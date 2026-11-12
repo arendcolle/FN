@@ -3,23 +3,29 @@ from calendar import month_name
 from datetime import date, datetime
 from urllib.parse import urlsplit
 
-from fn import orgs, rank
+from fn import network, orgs, rank
 from fn.contracts import (
     Claim,
     ClaimView,
+    ContactView,
+    Event,
+    FactGroup,
     LaneOut,
+    LastView,
     NetworkFilter,
     NetworkView,
     Org,
     OrgView,
     Person,
     PersonView,
+    ProfileView,
     QuoteView,
+    RecordView,
     ResultsView,
     Search,
     Source,
 )
-from fn.store import Store
+from fn.store import Store, fold
 
 EMPLOYED = ("works_at", "worked_at", "affiliated_with")
 RELATIONS = {
@@ -31,6 +37,9 @@ LIST_ROLES = ("fellow_of", "member_of", "consul_for")
 PROSE = ("page", "seed_page", "vendor_page")
 FIELDS = {"topic": "Field", "email": "Email", "phone": "Phone"}
 RECORD_LABELS = {"record": "OpenAlex record", "vendor_record": "LinkedIn record", "staff": "Entered in FN"}
+GROUPS = ("Ties to Belgium", "Work", "Places")
+DONE = {"add": "Added to your network", "skip": "Skipped", "edit_contact": "Saved", "merge": "Merged into this profile",
+        "not_same": "Marked as a different person"}
 
 
 def employer_of(claims: list[Claim]) -> str | None:
@@ -239,3 +248,132 @@ def sources_read(store: Store, search: Search) -> int:
         output = store.get_payload(step.id)[1] if step.output_model == "LaneOut" else None
         total += LaneOut.model_validate_json(output).total_seen if output else 0
     return total
+
+
+def group_of(claim: Claim, facts: dict[str, Org]) -> str | None:
+    """The profile group a claim shows under: at a Belgian organization, a place, or work; None for a contact."""
+    if claim.org_id in facts and facts[claim.org_id].country_code == "BE":
+        return "Ties to Belgium"
+    if claim.kind == "location":
+        return "Places"
+    return None if claim.kind in ("email", "phone") else "Work"
+
+
+def fact_lines(claims: list[Claim], facts: dict[str, Org], sources: dict[str, Source],
+               seen_at: datetime | None) -> list[ClaimView]:
+    """One line per fact: claims with one kind, relation and organization or value, cited by the newest of them.
+
+    A line has the years of all its claims and is new when any of them is; new lines come first, then newest first.
+    A rejected claim is a line of its own.
+    """
+    same: dict[tuple, list[Claim]] = {}
+    for claim in claims:
+        key = (claim.id,) if claim.rejected_at else (claim.kind, claim.relation, claim.org_id or fold(claim.value))
+        same.setdefault(key, []).append(claim)
+    lines = []
+    for found in same.values():
+        shown = newest(found)
+        years = frozenset().union(*(rank.units(c) for c in found)) - {rank.UNDATED}
+        fresh = any(seen_at and c.first_seen_at and c.first_seen_at > seen_at for c in found)
+        view = claim_view(shown, sources[shown.source_id], facts.get(shown.org_id or ""), seen_at, cut_quote=False)
+        lines.append((shown.claim_date or "", view.model_copy(
+            update={"years": rank.years_text(years).replace("-", "–"), "is_new": fresh})))
+    lines.sort(key=lambda t: t[0], reverse=True)
+    return [view for _, view in sorted(lines, key=lambda t: not t[1].is_new)]
+
+
+def contact_of(kind: str, claims: list[Claim], sources: dict[str, Source]) -> ContactView:
+    """The newest value of the contact kind with its citation, which names an import as 'From import <file>, row n'."""
+    found = [c for c in claims if c.kind == kind]
+    if not found:
+        return ContactView(kind=kind)
+    claim = max(found, key=lambda c: (c.claim_date or "", c.first_seen_at.isoformat() if c.first_seen_at else "", c.id))
+    source = sources[claim.source_id]
+    view = claim_view(claim, source, None)
+    if source.kind == "import":
+        view = view.model_copy(update={"label": f"From import {source.title}"})
+    return ContactView(kind=kind, value=claim.value, claim=view)
+
+
+def found_as(store: Store, person_id: str, claims: list[Claim], sources: dict[str, Source]) -> list[RecordView]:
+    """One entry per record and source the person's facts came from, with its fact count; none for a single record."""
+    records = store.records_of(person_id)
+    if len(records) < 2:
+        return []
+    owner = store.claim_records([c.id for c in claims])
+    counts: dict[tuple[str, str], int] = {}
+    for claim in claims:
+        key = (owner[claim.id], claim.source_id)
+        counts[key] = counts.get(key, 0) + 1
+    order = {r.id: n for n, r in enumerate(records)}
+    return [RecordView(record_id=record, label=label_of(sources[source]), href=f"/sources/{source}", facts=n)
+            for (record, source), n in sorted(counts.items(), key=lambda t: order.get(t[0][0], len(order)))]
+
+
+def separated_label(store: Store, record_id: str) -> str:
+    """The source label of a separated record's first fact, else its name."""
+    claims = store.claims_of([record_id])
+    if not claims:
+        return store.get_persons([record_id])[record_id].display_name
+    return label_of(store.get_sources([claims[0].source_id])[claims[0].source_id])
+
+
+def latest(store: Store, person_id: str) -> Event | None:
+    """The person's latest event when it is about them and can still be undone, else None."""
+    event = next(iter(store.events_of(person_id)), None)
+    return event if event and event.person_id == person_id and not network.refusal(store, event) else None
+
+
+def last_of(store: Store, person: Person, event: Event | None, removed: ClaimView | None) -> LastView | None:
+    """The latest event with the words the page shows for it; removed is the fact a reject removed.
+
+    An add made elsewhere, by a search or an import, leaves the head at 'In your network since' with Remove.
+    """
+    if event is None or (event.kind == "add" and event.detail.get("via") != "profile"):
+        return None
+    separated = event.kind == "not_same" and bool(event.detail.get("separated"))
+    if event.kind == "remove":
+        words = f"{person.display_name} removed from your network."
+    elif event.kind == "reject_claim":
+        words = f"{removed.what} · Removed" if removed else "Removed"
+    elif separated:
+        words = f"{separated_label(store, event.detail['separated']['id'])} · Separated"
+    else:
+        words = DONE[event.kind]
+    return LastView(event_id=event.id, kind=event.kind, words=words, claim_id=event.claim_id, separated=separated)
+
+
+def profile(store: Store, person_id: str, today: date) -> ProfileView | None:
+    """Everything the Person page shows of the id's person, or None for an unknown id.
+
+    The fact a just-undoable reject removed stays in its group, so the page can show it with Undo.
+    """
+    canonical = store.canonical_ids([person_id]).get(person_id)
+    if canonical is None:
+        return None
+    person = store.get_persons([canonical])[canonical]
+    member = person.list_status == "in_list"
+    claims = store.claims_of([canonical])
+    event = latest(store, canonical)
+    removed = store.get_claim(event.claim_id) if event and event.kind == "reject_claim" else None
+    shown = claims + ([removed] if removed and removed.id not in {c.id for c in claims} else [])
+    facts = store.get_orgs(list({c.org_id for c in shown if c.org_id}))
+    sources = store.get_sources(list({c.source_id for c in shown}))
+    seen_at = person.seen_at if member else None
+    groups: dict[str, list[Claim]] = {}
+    for claim in shown:
+        if group := group_of(claim, facts):
+            groups.setdefault(group, []).append(claim)
+    lines = {title: fact_lines(found, facts, sources, seen_at) for title, found in groups.items()}
+    removed_view = claim_view(removed, sources[removed.source_id], facts.get(removed.org_id or "")) if removed else None
+    name_match = None
+    if not member:
+        name_match = next(iter(network.name_matches(store, [canonical])), None)
+    possible = [p for p in network.possible_matches(store, canonical) if p != name_match]
+    views = person_views(store, [[canonical], *([[name_match]] if name_match else []), *[[p] for p in possible]], today)
+    return ProfileView(
+        person=views[0], contact=[contact_of(kind, claims, sources) for kind in ("email", "phone")],
+        facts=[FactGroup(title=title, facts=lines[title]) for title in GROUPS if lines.get(title)],
+        found_as=found_as(store, canonical, claims, sources), possible=views[2:] if name_match else views[1:],
+        name_match=views[1] if name_match else None, last=last_of(store, person, event, removed_view),
+    )
