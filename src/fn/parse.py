@@ -2,7 +2,7 @@
 import logging
 
 from fn import orgs
-from fn.contracts import Chip, Chips, ParseIn, ParseOut, Place, Span
+from fn.contracts import Chip, Chips, ParseIn, ParseOut, Place, Span, name_key
 from fn.steps import StepContext
 
 log = logging.getLogger("fn.parse")
@@ -10,9 +10,40 @@ log = logging.getLogger("fn.parse")
 # The model's character offsets are sometimes off by one; a larger shift means a made-up position.
 SPAN_SLACK = 2
 
+FUNCTION_WORDS = {name_key(w) for w in """
+the a an and or but nor of in on at to for from by with without about as into over under between through during
+before after up down out off than then so if while who whom whose which what when where why how that this these those
+it its they them their he she his her we our you your i me my is are was were be been being am do does did have has
+had having can could will would shall should may might must not no there here also very
+de het een en of maar van in op aan te voor met zonder over uit bij naar tot door om als dat dit die deze wie wat
+welke waar wanneer waarom hoe er is zijn was waren wordt worden werd hebben heeft had hadden kan kunnen zal zullen
+moet moeten mag ik je jij u hij zij ze wij jullie hun hen hem haar ons onze mijn uw niet geen ook nog dan meer zeer
+tussen onder na per
+le la les un une des du et ou mais donc ni dans en sur sous avec sans pour par chez vers entre au aux ce cet cette
+ces qui que quoi dont ou quel quelle quels quelles comment pourquoi quand est sont etait etaient etre ete suis es
+sommes etes ont avait avoir peut peuvent pouvoir fait faire je tu il elle on nous vous ils elles te se lui leur
+leurs son sa ses mon ma mes notre nos votre vos ne pas plus aussi tres
+""".split()}
+# A question is about people with a Belgian tie, so these words match almost every record.
+GENERIC_WORDS = {name_key(w) for w in """
+research researcher science scientist university expert experts people person tech technology us usa belgian belgium
+flemish flanders onderzoek onderzoeker onderzoekers wetenschap wetenschapper universiteit experten mensen persoon
+technologie belgisch belgische belgie vlaams vlaamse vlaanderen recherche chercheur chercheurs scientifique
+universite personnes personne belge belges belgique flamand flamande flamands flandre
+""".split()}
+
 
 class SpanError(ValueError):
     """A chip's span is out of range or does not hold the chip's text."""
+
+
+def content_words(text: str) -> list[str]:
+    """The words of text that carry meaning, folded like name_key, in order, once each.
+
+    Function words (English, Dutch, French), generic words and single characters are left out.
+    """
+    skip = FUNCTION_WORDS | GENERIC_WORDS
+    return [w for w in dict.fromkeys(name_key(text).split()) if w not in skip and len(w) > 1]
 
 
 def _all_chips(chips: Chips) -> list[Chip | Place]:
