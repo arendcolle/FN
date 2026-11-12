@@ -539,12 +539,12 @@ class Store:
             conn.execute("DELETE FROM match_flags WHERE search_id = ?", (search_id,))
             conn.executemany(
                 "INSERT INTO candidates (search_id, person_id, person_ids_json, section, rank, score, lane_ranks_json, "
-                "reason_claim_ids_json, score_parts_json, hit_person_ids_json, cut_reason, card_person_ids_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "reason_claim_ids_json, score_parts_json, hit_person_ids_json, cut_reason, card_person_ids_json, "
+                "rank_group) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [(search_id, c.person_id, json.dumps(c.person_ids), c.section, c.rank, c.score,
                   json.dumps(c.lane_ranks), json.dumps(c.reason_claim_ids),
                   json.dumps([p.model_dump() for p in c.score_parts]), json.dumps(c.hit_person_ids), c.cut_reason,
-                  json.dumps(c.card_person_ids))
+                  json.dumps(c.card_person_ids), c.group)
                  for c in candidates],
             )
             conn.executemany(
@@ -576,7 +576,7 @@ class Store:
                 reason_claim_ids=json.loads(r["reason_claim_ids_json"]),
                 score_parts=[ScorePart.model_validate(p) for p in json.loads(r["score_parts_json"])],
                 hit_person_ids=json.loads(r["hit_person_ids_json"]), cut_reason=r["cut_reason"],
-                card_person_ids=json.loads(r["card_person_ids_json"]),
+                card_person_ids=json.loads(r["card_person_ids_json"]), group=r["rank_group"],
             )
             for r in rows
         ]

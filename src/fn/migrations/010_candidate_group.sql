@@ -1,0 +1,1 @@
+ALTER TABLE candidates ADD COLUMN rank_group INTEGER NOT NULL DEFAULT 1;

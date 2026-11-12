@@ -191,18 +191,18 @@ class WebTest(unittest.TestCase):
         self.assertIn("2 years at Belgian organizations", card)
 
     def test_card_marks_the_claims_that_scored(self):
-        """The hit record's Belgian claim is marked scored; a same-name record's Belgian claim is shown unmarked."""
+        """The Belgian claims of both records on the card, one hit and one linked by a shared organization, are marked scored."""
         card = self.anne_card([("anne", "Anne Example, ULB", {"claim_date": "2020"}),
                                ("anne-2", "Anne Example, Brussels university", {"claim_date": "2001"})])
         belgian = card[card.index("Claims at Belgian organizations"):card.index("Record 1:")]
         self.assertIn("<th>Scored</th>", belgian)
         self.assertIn("<td>2020</td><td>yes</td>", belgian)
-        self.assertIn("<td>2001</td><td></td>", belgian)
+        self.assertIn("<td>2001</td><td>yes</td>", belgian)
 
     def test_card_score_line_names_every_part(self):
-        """The score line names each part with its rank, the belgian_years part too."""
+        """The score line names each part with its rank: the lane, belgian_years, topic and seed_list parts."""
         card = self.anne_card([("anne", "Anne Example, ULB", {"claim_date": "2020"})])
-        self.assertIn("Score 0.0328 from seeds #1, belgian_years #1. ", card)
+        self.assertIn("Score 0.0656 from seeds #1, belgian_years #1, topic #1, seed_list #1. ", card)
 
     def test_the_results_page_names_people_and_shows_no_debug_content(self):
         """Staff see each person's name, never a score, chip, trace, record table, source fact or /debug link.
@@ -224,7 +224,7 @@ class WebTest(unittest.TestCase):
             self.assertNotIn(hidden, staff)
         self.assertIn(f'href="/debug/searches/{search_id}"', client.get("/debug").text)
         debug = client.get(f"/debug/searches/{search_id}").text
-        self.assertIn("Score 0.0164 from seeds #1", debug)
+        self.assertIn("Score 0.0492 from seeds #1, topic #1, seed_list #1", debug)
         self.assertIn(f'href="/debug/sources/src?claim={claim.id}"', debug)
         self.assertNotIn("content hash", client.get(f"/sources/src?claim={claim.id}").text)
         self.assertIn("content hash", client.get(f"/debug/sources/src?claim={claim.id}").text)
@@ -654,7 +654,7 @@ class ContractsV1Test(unittest.TestCase):
             self.store.finish_step(run, json.dumps(output))
         self.store.conn.execute("INSERT INTO candidates VALUES ('old', ?, ?, 'new', 1, ?, ?, '[]', ?)",
                                 (person.id, json.dumps([person.id]), 1 / 61, '{"seeds": 1}', json.dumps(label)))
-        self.assertEqual(self.store.migrate(), [4, 5, 6, 7, 8, 9])
+        self.assertEqual(self.store.migrate(), [4, 5, 6, 7, 8, 9, 10])
         app = create_app(self.settings, StubLLM(error=AssertionError("no LLM")), StubHttp())
         self.client = TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=False)
         self.client.__enter__()
@@ -665,7 +665,7 @@ class ContractsV1Test(unittest.TestCase):
         columns = [r[1] for r in self.store.conn.execute("PRAGMA table_info(candidates)")]
         self.assertEqual(columns, ["search_id", "person_id", "person_ids_json", "section", "rank", "score",
                                    "lane_ranks_json", "reason_claim_ids_json", "score_parts_json",
-                                   "hit_person_ids_json", "cut_reason", "card_person_ids_json"])
+                                   "hit_person_ids_json", "cut_reason", "card_person_ids_json", "rank_group"])
         (candidate,) = self.store.list_candidates("old")
         self.assertEqual(candidate.score_parts, [])
         response = self.client.get("/debug/searches/old")
