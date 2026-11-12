@@ -1,7 +1,7 @@
 """Seed lane: topic and institution chips as a quoted FTS5 query over the seed claims."""
 from collections.abc import Callable
 
-from fn import orgs
+from fn import orgs, parse
 from fn.contracts import (
     Chips,
     Considered,
@@ -14,7 +14,7 @@ from fn.contracts import (
 from fn.steps import StepContext
 
 name: LaneName = "seeds"
-MAX_HITS = 100
+MAX_HITS = 300
 NO_QUERY = "no topic or institution chip"
 EXCLUDED: tuple[SourceKind, ...] = ("record", "vendor_record", "vendor_page")
 
@@ -25,11 +25,12 @@ def phrase(text: str) -> str | None:
 
 
 def fts_query(chips: Chips, aliases: Callable[[str], list[str]] = lambda _: []) -> str:
-    """Every token of every topic and institution chip ORed, plus each institution's aliases as whole phrases.
+    """The content words of every topic chip and every token of every institution chip ORed, plus each alias as a phrase.
 
-    Tokens are quoted, so FTS5 operators and punctuation in a chip are plain text. Empty when no chip has a token.
+    Terms are quoted, so FTS5 operators and punctuation in a chip are plain text. Empty when no chip has a term.
     """
-    terms = [phrase(t) for chip in [*chips.topics, *chips.institutions] for t in chip.text.split()]
+    terms = [phrase(w) for chip in chips.topics for w in parse.content_words(chip.text)]
+    terms += [phrase(t) for chip in chips.institutions for t in chip.text.split()]
     terms += [phrase(a) for chip in chips.institutions for a in aliases(chip.text)]
     return " OR ".join(dict.fromkeys(t for t in terms if t))
 

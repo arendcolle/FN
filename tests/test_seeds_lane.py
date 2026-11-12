@@ -47,6 +47,15 @@ class FtsQueryTest(unittest.TestCase):
                                                quote_start=start, quote_end=start + len(value), source=source))
             self.people[person.id] = key
 
+    def claim(self, key: str, value: str) -> ClaimDraft:
+        """A topic claim for a new seed person, quoted from its own page source."""
+        source = Source(id=f"src-{key}", kind="page", url=f"https://example.org/{key}", text=value,
+                        content_hash=hashlib.sha256(value.encode()).hexdigest())
+        person = self.store.resolve_person([Identifier(scheme="seed", value=key)], key)
+        self.people[person.id] = key
+        return ClaimDraft(person_id=person.id, kind="topic", value=value, quote=value, quote_start=0,
+                          quote_end=len(value), source=source)
+
     def lane(self, chips: Chips):
         ctx = StepContext(search_id="s", store=self.store, llm=None, http=None, now=now, new_id=new_id,
                           log=logging.getLogger("fn.step"), settings=self.settings)
@@ -54,8 +63,8 @@ class FtsQueryTest(unittest.TestCase):
 
     def test_operators_quotes_and_punctuation_are_plain_text(self):
         """Hyphens, C++, quoted 6G, FTS operators and Dutch accents raise nothing and match their row."""
-        for text, expected in (("e-health", "ehealth"), ("C++", "cpp"), ('"6G"', "6g"), ("AND OR NOT", "and"),
-                               ("Universite de Liege", "dutch"), ("een", "dutch")):
+        for text, expected in (("e-health", "ehealth"), ("C++ compilers", "cpp"), ('"6G"', "6g"),
+                               ("AND NEAR e-health", "ehealth"), ("Universite de Liege", "dutch"), ("Liège", "dutch")):
             with self.subTest(text=text):
                 out = self.lane(topic(text))
                 self.assertEqual(self.people[out.hits[0].person_id], expected)
@@ -99,7 +108,36 @@ class FtsQueryTest(unittest.TestCase):
     def test_query_quotes_tokens_and_adds_institution_aliases_as_phrases(self):
         chips = Chips(topics=[Chip(text='say "hi" OR', origin="edited")], institutions=[Chip(text="MIT", origin="edited")])
         self.assertEqual(seeds.fts_query(chips, lambda text: orgs.names(orgs.org_id(text))),
-                         '"say" OR """hi""" OR "OR" OR "MIT" OR "M.I.T." OR "Massachusetts Institute of Technology"')
+                         '"say" OR "hi" OR "MIT" OR "M.I.T." OR "Massachusetts Institute of Technology"')
+
+    def test_function_words_are_not_queried(self):
+        """AI in health care queries ai, health and care. A row that holds only the word in is no hit."""
+        chips = topic("AI in health care")
+        self.assertEqual(seeds.fts_query(chips), '"ai" OR "health" OR "care"')
+        self.store.upsert_claim(self.claim("in", "Lives in a house"))
+        out = self.lane(chips)
+        self.assertEqual([self.people[h.person_id] for h in out.hits], ["ehealth"])
+
+    def test_generic_words_only_and_no_institution_give_no_query(self):
+        """Belgian research and a lone function word hold no content word, so the lane runs no query."""
+        for text in ("Belgian research", "the"):
+            with self.subTest(text=text):
+                out = self.lane(topic(text))
+                self.assertEqual((out.query, out.hits), ("", []))
+                self.assertEqual([c.reason for c in out.considered], [seeds.NO_QUERY])
+
+    def test_institution_chip_alone_still_queries_its_tokens_and_aliases(self):
+        chips = Chips(topics=[Chip(text="research", origin="edited")], institutions=[Chip(text="MIT", origin="edited")])
+        self.assertEqual(seeds.fts_query(chips, lambda text: orgs.names(orgs.org_id(text))),
+                         '"MIT" OR "M.I.T." OR "Massachusetts Institute of Technology"')
+
+    def test_lane_keeps_the_first_300_of_301_matches(self):
+        """With 301 matching rows the lane keeps 300 hits and records the last one as below the cap."""
+        for i in range(301):
+            self.store.upsert_claim(self.claim(f"bulk{i}", f"Studies zebrafish number {i}"))
+        out = self.lane(topic("zebrafish"))
+        self.assertEqual((len(out.hits), out.total_seen), (300, 301))
+        self.assertFalse(out.considered[-1].kept)
 
 
 class SeedLaneSearchTest(unittest.TestCase):
