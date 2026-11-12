@@ -1,4 +1,6 @@
 """The Quick workflow: which steps run in which order."""
+import argparse
+import logging
 import sys
 from collections.abc import Callable
 
@@ -103,6 +105,47 @@ def main(argv: list[str] | None = None, llm: StructuredLLM | None = None) -> int
     for step in store.list_steps(found.id):
         print(f"  {step.seq} {step.step} {step.status} {step.error_type or ''}".rstrip())
     return 0 if found.status == "done" else 1
+
+
+def rerank_main(argv: list[str] | None = None) -> int:
+    """fn-rerank SEARCH_ID... | --all: run refinish on stored searches in the settings' database and print, per search,
+    the people kept before and after.
+
+    --all takes every finished search. Returns 0, or 1 when a search is unknown or has no stored lane outputs.
+    """
+    from fn import config, net
+    from fn.store import Store
+    from fn.worker import new_id, now
+
+    parser = argparse.ArgumentParser(prog="fn-rerank")
+    parser.add_argument("ids", nargs="*")
+    parser.add_argument("--all", action="store_true")
+    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    if bool(args.ids) == args.all:
+        parser.error("give search ids or --all")
+    settings = config.from_env()
+    store = Store(settings.db_path)
+    store.migrate()
+    http = net.Client(settings)
+    found = [s for s in store.list_searches(None) if s.status == "done"] if args.all else [store.get_search(i) for i in args.ids]
+    failed = 0
+    for wanted, stored in zip(args.ids or [s.id for s in found], found, strict=True):
+        if stored is None:
+            print(f"{wanted}: no such search")
+            failed += 1
+            continue
+        before = store.count_candidates([stored.id]).get(stored.id, 0)
+        ctx = StepContext(search_id=stored.id, store=store, llm=None, http=http, now=now, new_id=new_id,
+                          log=logging.getLogger("fn.rerank"), settings=settings)
+        try:
+            refinish(ctx, stored)
+        except ValueError as exc:
+            print(f"{stored.id}: {exc}")
+            failed += 1
+            continue
+        print(f"{stored.id}: kept {before} -> {store.count_candidates([stored.id]).get(stored.id, 0)}")
+    store.close()
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

@@ -1,3 +1,5 @@
+import contextlib
+import io
 import threading
 import time
 import unittest
@@ -111,6 +113,21 @@ class SearchStepsTest(unittest.TestCase):
         empty = self.worker.create_search("Who knows solar?", CHIPS, "edited")
         with self.assertRaisesRegex(ValueError, empty.id):
             search.refinish(self.context(empty.id), empty)
+
+    def test_fn_rerank_changes_the_named_search_and_leaves_another_alone(self):
+        """fn-rerank ID saves new candidates for that search only and prints its kept count before and after."""
+        first = self.execute([self.finds("seeds", "Ann Smith"), self.finds("web", "Pat Lee")])
+        other = self.execute([self.finds("seeds", "Bo Lind")])
+        for search_id in (first, other):
+            self.store.save_candidates(search_id, [], [])
+        printed = io.StringIO()
+        with (mock.patch("fn.config.from_env", return_value=self.settings), mock.patch("fn.net.Client", return_value=StubHttp()),
+              contextlib.redirect_stdout(printed)):
+            self.assertEqual(search.rerank_main([first]), 0)
+            self.assertEqual(search.rerank_main(["no-such-search"]), 1)
+        self.assertEqual(len(self.store.list_candidates(first)), 2)
+        self.assertEqual(self.store.list_candidates(other), [])
+        self.assertEqual(printed.getvalue().splitlines(), [f"{first}: kept 0 -> 2", "no-such-search: no such search"])
 
     def test_progress_of_an_unknown_search_is_none(self):
         """search_progress returns None for an id with no search."""
