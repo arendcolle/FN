@@ -18,6 +18,8 @@ from fn.contracts import (
     OrgFacts,
     PickResult,
     Source,
+    group_key,
+    name_key,
 )
 from fn.lanes import openalex, web
 from fn.worker import Worker
@@ -36,6 +38,16 @@ def candidate(person_ids: list[str], section: str = "new", rank: int = 1) -> Can
 
 def pick(name: str, **fields) -> GoldPick:
     return GoldPick(case_id="GS-00", name=name, gold_tie=fields.pop("gold_tie", "belgian"), **fields)
+
+
+class PickKeyTest(unittest.TestCase):
+    def test_pick_key_gives_what_group_key_of_name_key_gives_today(self):
+        """Ten names, with a middle initial, accents, a hyphen, a tussenvoegsel and extra spaces, key as FN keys them."""
+        names = ["Pat Lee", "Maya J. Ostrand", "François Müller", "Zoë  Van den Berg", "Jean-Luc Picard", "Åsa Lind",
+                 "O'Neil Brandt", "Ana", "J Visser", "Karel de Groot-Smit"]
+        for name in names:
+            with self.subTest(name=name):
+                self.assertEqual(gold.pick_key(name), group_key(name_key(name)))
 
 
 class MatchTest(unittest.TestCase):

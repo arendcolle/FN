@@ -728,6 +728,7 @@ class GoldPick(Model):
     openalex_id: str | None = None
     reachable: bool | None = None
     reach_evidence: str = ""
+    sources: list[str] = []
 
 
 class GoldCase(Model):
