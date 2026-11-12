@@ -24,6 +24,7 @@ from fn.contracts import (
     ImportStatus,
     ListStatus,
     MatchFlag,
+    NetworkFilter,
     Org,
     Person,
     RequestError,
@@ -147,9 +148,10 @@ class Store:
         row = self.conn.execute("SELECT * FROM searches WHERE id = ?", (search_id,)).fetchone()
         return self._search(row) if row else None
 
-    def list_searches(self, limit: int) -> list[Search]:
-        """The newest searches of kind search first, at most limit of them; jobs are left out."""
-        rows = self.conn.execute("SELECT * FROM searches WHERE kind = 'search' ORDER BY created_at DESC LIMIT ?", (limit,))
+    def list_searches(self, limit: int | None) -> list[Search]:
+        """The newest searches of kind search first, at most limit of them, or all with None; jobs are left out."""
+        rows = self.conn.execute("SELECT * FROM searches WHERE kind = 'search' ORDER BY created_at DESC LIMIT ?",
+                                 (-1 if limit is None else limit,))
         return [self._search(r) for r in rows]
 
     def set_search_status(
@@ -635,6 +637,47 @@ class Store:
         ):
             found.setdefault(group_key(key), []).append(person_id)
         return found
+
+    def list_network(self, flt: NetworkFilter, limit: int | None) -> tuple[list[str], int]:
+        """The canonical ids of the network, newest added first, at most limit of them, and the total before the limit.
+
+        The text matches, ignoring case, part of the name or of an affiliation, role, location or topic claim's value
+        or organization name, over every record of the person; new_only keeps people with a fact first seen after
+        seen_at, and import_id the people an event of that import names.
+        """
+        rows = self.conn.execute(
+            "SELECT p.id FROM persons p WHERE p.list_status = 'in_list' AND p.merged_into IS NULL "
+            "AND (?1 IS NULL OR p.id IN (SELECT COALESCE(r.merged_into, r.id) FROM events e JOIN persons r "
+            "ON r.id IN (e.person_id, e.other_person_id) WHERE e.import_id = ?1)) "
+            "AND (NOT ?2 OR p.seen_at IS NOT NULL AND EXISTS (SELECT 1 FROM persons r JOIN claims c ON c.person_id = r.id "
+            "WHERE (r.id = p.id OR r.merged_into = p.id) AND c.rejected_at IS NULL "
+            "AND MAX(COALESCE(c.first_seen_at, ''), COALESCE(r.merged_at, '')) > p.seen_at)) "
+            "ORDER BY (SELECT MAX(e.at) FROM events e WHERE e.person_id = p.id AND e.kind = 'add') DESC NULLS LAST, p.id",
+            (flt.import_id, flt.new_only),
+        )
+        ids = [r[0] for r in rows]
+        if text := flt.text.strip().casefold():
+            matching = self._network_matching(text) if ids else set()
+            ids = [p for p in ids if p in matching]
+        return ids[:limit] if limit is not None else ids, len(ids)
+
+    def _network_matching(self, text: str) -> set[str]:
+        """The canonical ids of the network people whose name or searchable claim contains the case-folded text."""
+        rows = self.conn.execute(
+            "WITH net AS (SELECT id, display_name FROM persons WHERE list_status = 'in_list' AND merged_into IS NULL), "
+            "records AS (SELECT id AS canonical, id FROM net UNION ALL "
+            "SELECT merged_into, id FROM persons WHERE merged_into IN (SELECT id FROM net)) "
+            "SELECT id, display_name FROM net UNION ALL SELECT r.canonical, c.value FROM records r "
+            "JOIN claims c ON c.person_id = r.id WHERE c.kind IN ('affiliation', 'role', 'location', 'topic') "
+            "AND c.rejected_at IS NULL UNION ALL SELECT r.canonical, o.name FROM records r "
+            "JOIN claims c ON c.person_id = r.id JOIN orgs o ON o.id = c.org_id "
+            "WHERE c.kind = 'affiliation' AND c.rejected_at IS NULL"
+        )
+        return {r[0] for r in rows if r[1] and text in r[1].casefold()}
+
+    def import_filename(self, import_id: str) -> str | None:
+        row = self.conn.execute("SELECT filename FROM imports WHERE id = ?", (import_id,)).fetchone()
+        return row[0] if row else None
 
     def identifiers_of(self, person_ids: list[str]) -> dict[str, list[Identifier]]:
         """The identifiers each record holds, by scheme and value; a record with none is left out."""

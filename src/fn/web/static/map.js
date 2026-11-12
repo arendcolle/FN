@@ -22,13 +22,14 @@ function start() {
   const map = new maplibregl.Map({container: element, style: "/static/positron.json", center: [0, 30], zoom: 1,
     attributionControl: {compact: true}});
   map.addControl(new maplibregl.NavigationControl({showCompass: false}));
-  const cards = new Map([...document.querySelectorAll(".fn-card[data-person]")].map((card) => [card.dataset.person, card]));
+  const cards = new Map([...document.querySelectorAll("[data-person]")].map((card) => [card.dataset.person, card]));
   const spots = [];
   const spotsOf = new Map();
   const hovered = new Set();
   const picked = new Set();
   let bounds = null;
   let fitted = false;
+  let opened = null;
 
   function fit() {
     if (!bounds || !element.clientWidth) return;
@@ -51,7 +52,7 @@ function start() {
   }
 
   function pick(index) {
-    document.querySelectorAll('.fn-card[aria-current="true"]').forEach((card) => card.removeAttribute("aria-current"));
+    document.querySelectorAll('[data-person][aria-current="true"]').forEach((card) => card.removeAttribute("aria-current"));
     const before = [...picked];
     picked.clear();
     before.forEach(paint);
@@ -62,27 +63,40 @@ function start() {
     chosen[0]?.scrollIntoView({block: "nearest", behavior: reduced.matches ? "auto" : "smooth"});
   }
 
+  function line(tag, className, text, href) {
+    const node = document.createElement(tag);
+    node.className = className;
+    node.textContent = text;
+    if (href) node.href = href;
+    return node;
+  }
+
+  // The popup follows the MapMarker part: one person with place and Open profile, or everyone at a shared dot.
   function popup(index) {
     const box = document.createElement("div");
-    for (const p of spots[index].people) {
-      const name = document.createElement("span");
-      name.className = "fn-popup__name text-popup";
-      name.textContent = p.name;
-      const role = document.createElement("span");
-      role.className = "fn-popup__role text-small";
-      role.textContent = [p.employer, p.place].filter(Boolean).join(" · ");
-      const person = document.createElement("div");
-      person.className = "fn-popup__person";
-      person.append(name, role);
+    const people = spots[index].people;
+    if (people.length > 1) box.append(line("span", "fn-popup__count text-label", `${people.length} people here`));
+    for (const p of people) {
+      const person = line("div", "fn-popup__person", "");
+      person.append(line("a", "fn-popup__name text-popup", p.name, p.href));
+      const job = [p.role, p.employer].filter(Boolean).join(", ");
+      if (job) person.append(line("span", "fn-popup__role text-small", job));
+      if (people.length === 1 && p.place) person.append(line("span", "fn-popup__role text-small", p.place));
+      if (p.new_facts > 0) {
+        person.append(line("span", "fn-popup__new fn-new text-meta-strong", `${p.new_facts} new ${p.new_facts === 1 ? "fact" : "facts"}`));
+      }
+      if (people.length === 1) person.append(line("a", "fn-popup__open text-small", "Open profile", p.href));
       box.append(person);
     }
     // Centred on the marker, the popup fits beside it on a phone-wide map.
     map.jumpTo({center: spots[index].coordinates});
-    new maplibregl.Popup({offset: 12, maxWidth: "240px"}).setLngLat(spots[index].coordinates).setDOMContent(box).addTo(map);
+    opened?.remove();
+    opened = new maplibregl.Popup({offset: 12, maxWidth: "260px"}).setLngLat(spots[index].coordinates).setDOMContent(box).addTo(map);
   }
 
   function choose(index) {
-    narrow.matches ? popup(index) : pick(index);
+    popup(index);
+    if (!narrow.matches) pick(index);
   }
 
   map.on("load", async () => {
@@ -140,6 +154,13 @@ function start() {
     for (const [id, card] of cards) {
       card.addEventListener("mouseenter", () => spotsOf.get(id)?.forEach((index) => { hovered.add(index); paint(index); }));
       card.addEventListener("mouseleave", () => spotsOf.get(id)?.forEach((index) => { hovered.delete(index); paint(index); }));
+      // A network row with a place opens its dot's popup from 900px up; its name link still opens the profile.
+      if (card.classList.contains("fn-row") && card.hasAttribute("data-place")) {
+        card.addEventListener("click", (event) => {
+          if (narrow.matches || event.target.closest("a") || !spotsOf.has(id)) return;
+          choose(spotsOf.get(id).values().next().value);
+        });
+      }
     }
 
     if (spots.length) {

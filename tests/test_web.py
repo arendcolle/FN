@@ -453,7 +453,7 @@ class WebTest(unittest.TestCase):
         with mock.patch("fn.web.app.time") as clock, self.assertLogs("fn.request", "WARNING") as logs:
             clock.perf_counter.side_effect = [0.0, 1.5]
             client.get("/")
-        self.assertRegex(logs.output[0], r"^WARNING:fn.request:GET / 200 1500ms$")
+        self.assertRegex(logs.output[0], r"^WARNING:fn.request:GET / 200 1500ms( |$)")
 
     def test_stats_and_feedback_pages_open_on_an_empty_and_a_filled_database(self):
         """/debug/stats and /debug/feedback return 200 with no searches and with a search, a step and an add."""

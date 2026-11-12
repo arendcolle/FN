@@ -8,6 +8,8 @@ from fn.contracts import (
     Claim,
     ClaimView,
     LaneOut,
+    NetworkFilter,
+    NetworkView,
     Org,
     OrgView,
     Person,
@@ -208,6 +210,26 @@ def results(store: Store, search: Search, today: date) -> ResultsView:
                          [c.reason_claim_ids for c in candidates])
     return ResultsView(network=[v for c, v in zip(candidates, views) if c.section == "network"],
                        new=[v for c, v in zip(candidates, views) if c.section == "new"])
+
+
+def network_view(store: Store, flt: NetworkFilter, limit: int | None, today: date) -> NetworkView:
+    """The filtered network: views of the first limit people, the total and how many of all of them have no place."""
+    ids, total = store.list_network(flt, None)
+    views = person_views(store, [[p] for p in ids], today)
+    shown = views if limit is None else views[:limit]
+    return NetworkView(people=shown, total=total, not_on_map=sum(1 for v in views if v.lat is None or v.lon is None),
+                       shown=len(shown))
+
+
+def geo(people: list[PersonView]) -> dict:
+    """GeoJSON for map.js: one point per person with a place, carrying what the map's popup shows."""
+    features = [{
+        "type": "Feature",
+        "geometry": {"type": "Point", "coordinates": [v.lon, v.lat]},
+        "properties": {"id": v.person_id, "name": v.name, "role": v.role, "employer": v.employer, "place": v.place,
+                       "new_facts": v.new_facts, "href": f"/people/{v.person_id}"},
+    } for v in people if v.lat is not None and v.lon is not None]
+    return {"type": "FeatureCollection", "features": features}
 
 
 def sources_read(store: Store, search: Search) -> int:
