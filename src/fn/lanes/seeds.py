@@ -10,6 +10,7 @@ from fn.contracts import (
     LaneIn,
     LaneName,
     LaneOut,
+    Question,
     SourceKind,
 )
 from fn.net import HttpError
@@ -53,7 +54,7 @@ def near(ctx: StepContext, area: GeoArea) -> list[tuple[str, float | None, evide
     """Each person with a record in the area's box, with their nearest current place inside the radius and its
     distance, nearest first; None for a person with no such place.
 
-    Only claims from sources of no EXCLUDED kind count, and evidence.places decides what a current place is.
+    Only claims from sources of no EXCLUDED kind count, and evidence.where decides whether a person is inside.
     """
     canonical = ctx.store.canonical_ids(ctx.store.persons_near(area.lat, area.lon, area.radius_km, EXCLUDED))
     people = list(dict.fromkeys(canonical.values()))
@@ -64,12 +65,10 @@ def near(ctx: StepContext, area: GeoArea) -> list[tuple[str, float | None, evide
     for c in claims:
         if kinds.get(c.source_id) not in EXCLUDED:
             own.setdefault(c.person_id, []).append(c)
-    found = []
+    found, ask = [], Question(area=area)
     for person in people:
-        inside = [(km, p) for p in evidence.places(own.get(person, []), facts, when)
-                  if (km := geo.distance_km(area.lat, area.lon, p.lat, p.lon)) <= area.radius_km]
-        km, place = min(inside, key=lambda d: d[0], default=(None, None))
-        found.append((person, km, place))
+        where = evidence.where(evidence.places(own.get(person, []), facts, when), ask)
+        found.append((person, where.km, where.nearest) if where.fit == "inside" else (person, None, None))
     return sorted(found, key=lambda f: (f[1] is None, f[1] or 0.0, f[0]))
 
 

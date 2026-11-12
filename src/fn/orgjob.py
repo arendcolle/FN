@@ -10,6 +10,8 @@ from fn.steps import StepContext, run_step
 from fn.store import Store
 from fn.worker import Worker
 
+PLACES_JOB = "fn-orgs --places"
+
 
 def job_steps(ctx: StepContext, _: Search) -> None:
     run_step(ctx, "orgs", orgs.run, OrgsIn(ids=orgs.ids()))
@@ -41,7 +43,7 @@ def fill_places(store: Store, settings: Settings, http: HttpClient) -> Search:
     """Run fn-orgs --places as a job: one searches row of kind job with one places step; returns the ended job."""
     worker = Worker(store, settings, llm=None, http=http)
     try:
-        return worker.execute(worker.create_search("fn-orgs --places", kind="job").id,
+        return worker.execute(worker.create_search(PLACES_JOB, kind="job").id,
                               lambda ctx, _: run_step(ctx, "places", places, PlacesIn()))
     finally:
         worker.shutdown()
@@ -57,7 +59,7 @@ def main() -> int:
     store.migrate()
     job = run(store, settings, Client(settings))
     step = next(iter(store.list_steps(job.id)), None)
-    if job.status == "done" and job.question == "fn-orgs --places":
+    if job.status == "done" and job.question == PLACES_JOB:
         out = PlacesOut.model_validate_json(store.get_payload(step.id)[1])
         print(f"fn-orgs --places job {job.id} done: {out.orgs} orgs got a city, {out.claims} place claims got "
               f"coordinates in {settings.db_path}")
