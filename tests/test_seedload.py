@@ -201,6 +201,22 @@ class SeedPlacesAndTitlesTest(unittest.TestCase):
                          [("member_of", "Example Chamber of the West"), ("works_at", "Example Labs")])
         self.assertEqual([c for c in claims if c.kind == "location"], [])
 
+    def test_a_missions_row_gives_a_job_an_employer_and_a_session_of_2022_without_a_list_claim_or_place(self):
+        """The title is a job on the view; the employer is a works_at claim and the session a topic claim.
+
+        Every claim is dated 2022 by the row's year; there is no list claim and no location claim.
+        """
+        row = made_up_row("missions", "Ada Example", "Senior researcher", year=2022, date_method="document heading",
+                          institutions=[{"name": "Example University", "relation": "employer"}],
+                          field="Panel on example widgets")
+        self.load([row])
+        claims = self.claims(row)
+        self.assertEqual(self.view(row).role, "Senior researcher")
+        self.assertEqual(sorted((c.kind, c.relation or "", c.value) for c in claims if c.kind != "topic"),
+                         [("affiliation", "works_at", "Example University"), ("role", "", "Senior researcher")])
+        self.assertEqual([c.value for c in claims if c.kind == "topic"], ["Panel on example widgets"])
+        self.assertEqual({(c.claim_date, c.date_precision, c.date_method) for c in claims}, {("2022", "year", "record_field")})
+
     def test_loading_the_same_rows_twice_writes_nothing_the_second_time(self):
         rows = [made_up_row("climate", "Ada Example", "Senior researcher"),
                 made_up_row("consuls", "Cy Example", "Honorary Consul of Belgium", place="Portland", jurisdiction=["Oregon"])]

@@ -48,6 +48,7 @@ SPECS: dict[str, ListSpec] = {
     "fayat": ListSpec(("fellow_of", "Flemish Government")),
     "wikidata": ListSpec(None, job=True, place=True),
     "chambers": ListSpec(None, job=True),
+    "missions": ListSpec(None, job=True),
 }
 # The list claims by list; the other lists' rows carry no list claim.
 LISTS: dict[str, tuple[Relation, str]] = {name: spec.claim for name, spec in SPECS.items() if spec.claim}
