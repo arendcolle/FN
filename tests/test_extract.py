@@ -308,7 +308,7 @@ class ExtractTest(unittest.TestCase):
         self.assertGreaterEqual(len(text), 13000)
         self.assertGreater(len(table), 6000)
         self.mentions([], self.source(text))
-        pages = self.llm.pages
+        pages = sorted(self.llm.pages, key=text.index)
         self.assertEqual(len(pages), 3)
         self.assertTrue(all(len(p) <= 6000 for p in pages), [len(p) for p in pages])
         for page in pages:

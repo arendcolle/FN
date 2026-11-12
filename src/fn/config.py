@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from fn.contracts import LLMMode
 
@@ -27,6 +27,7 @@ class Settings(BaseModel):
     parallel_api_key: SecretStr | None = None
     apify_token: SecretStr | None = None
     linkedin_live: bool = False
+    llm_workers: int = Field(6, ge=1)
 
     @property
     def db_path(self) -> Path:
@@ -71,5 +72,6 @@ def from_env() -> Settings:
         "parallel_api_key": secret("PARALLEL_API_KEY"),
         "apify_token": secret("APIFY_TOKEN"),
         "linkedin_live": env.get("FN_LINKEDIN") == "1",
+        "llm_workers": env.get("FN_LLM_WORKERS"),
     }
     return Settings(**{k: v for k, v in fields.items() if v is not None})
