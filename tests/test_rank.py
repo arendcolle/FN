@@ -246,6 +246,12 @@ class OrderTest(unittest.TestCase):
         out = ranked({"unknown": (1, found(kinds=("seed_list",))), "inside": (30, found(fit="inside", km=5.0, countries=("US",)))})
         self.assertEqual([c.person_id for c in out], ["unknown", "inside"])
 
+    def test_inside_a_band_more_topic_words_come_before_a_better_score(self):
+        """Two words of the question found beat one word with a better lane rank; equal words fall back to the score."""
+        out = ranked({"one": (1, found(words=("wind",))), "two": (30, found(words=("wind", "power"))),
+                      "also_two": (20, found(words=("power", "wind")))})
+        self.assertEqual([c.person_id for c in out], ["also_two", "two", "one"])
+
     def test_groups_never_go_up_down_the_list_outside_the_last_band(self):
         """Over every mix of topic match, tie and place, no group-1 card comes before a group-0 card."""
         cases = {}
