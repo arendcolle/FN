@@ -11,9 +11,11 @@ Level = Literal["sure", "likely", "possible", "no"]
 PARTICLES = frozenset({"van", "von", "de", "den", "der", "des", "du", "la", "le", "ten", "ter", "te", "di", "da", "del",
                        "dos", "el", "al"})
 VETO_SCHEMES = ("orcid", "profile_url")
+# Records of these schemes are rows of a list or mentions on a page, not a person's own profile.
+LISTED = frozenset({"seed", "mention"})
 # An organization held by this many person records or more is too large to back a link.
 BIG_ORG = 300
-# A name key held by at most this many person records, web mentions left out, is rare.
+# A name key held by at most this many person records, web mentions and seed rows left out, is rare.
 RARE = 3
 # Two rows of one seed list are one row only when their years are at most this far apart.
 SEED_YEARS = 10
@@ -117,7 +119,9 @@ class Known:
         if self.same_seed_row(pa, pb):
             return "likely", "same_seed_row"
         rare = self.key_counts.get(key(na), 0) <= RARE
-        if shared and rare:
+        # Two full profiles with one name at one large organization are too often two people.
+        listed = any(set(self.held.get(p, {})) <= LISTED for p in (pa, pb))
+        if shared and rare and listed:
             return "likely", "rare_name_org"
         if rare and any(set(self.held.get(p, {})) == {"mention"} for p in (pa, pb)):
             return "likely", "rare_name_mention"
@@ -131,6 +135,11 @@ class Known:
 
 def _web_only(idents: list) -> bool:
     return bool(idents) and all(i.scheme == "mention" for i in idents)
+
+
+def _listed_only(idents: list) -> bool:
+    """Whether a record is only a web mention or a seed row: one person has many of those, so they prove no namesake."""
+    return bool(idents) and all(i.scheme in LISTED for i in idents)
 
 
 def load(store: "Store", record_ids: list[str], wide: bool = True) -> Known:
@@ -163,7 +172,7 @@ def load(store: "Store", record_ids: list[str], wide: bool = True) -> Known:
         for record, found in store.org_ids_of(every).items():
             known.orgs.setdefault(known.person(record), set()).update(found)
         known.org_sizes = store.org_sizes(list({o for found in known.orgs.values() for o in found}))
-        known.key_counts = {k: sum(not _web_only(idents.get(p, [])) for p, _ in found) for k, found in same_key.items()}
+        known.key_counts = {k: sum(not _listed_only(idents.get(p, [])) for p, _ in found) for k, found in same_key.items()}
     return known
 
 
