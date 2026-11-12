@@ -117,19 +117,24 @@ def status_note(text: str, button: str, question: str) -> Safe:
     )
 
 
-def person_card(view: PersonView, search_id: str | None = None, acts: object = None, card_id: str | None = None) -> Safe:
-    """The person's card: the name linking to their page, role and place, Belgian organizations, then the evidence.
+def person_card(view: PersonView, search_id: str | None = None, acts: object = None, card_id: str | None = None,
+                why: str | None = None) -> Safe:
+    """The person's card: the name linking to their page, role and place, Belgian organizations, the why line, the
+    evidence and the combined line.
 
-    search_id is the search the card shows on, which the Person page links back to; acts follow the evidence.
+    search_id is the search the card shows on, which the Person page links back to; acts follow the combined line.
     """
-    job = ", ".join(x for x in (view.role, view.employer) if x)
     shown = view.evidence
     query = urlencode({"search": search_id, "from": "card"} if search_id else {"from": "card"})
+    combined = h.p(h.a(f"Combined from {view.records} records", href=f"/people/{view.person_id}#matches"),
+                   class_="fn-card__combined text-small") if view.records > 1 else None
     return h.article(
         h.h3(h.a(view.name, href=f"/people/{view.person_id}?{query}"), class_="fn-card__name text-name"),
-        h.p(" · ".join(x for x in (job, view.place or "location not found") if x), class_="fn-card__role text-body"),
+        h.p(role_line(view), class_="fn-card__role text-body") if role_line(view) else None,
         h.p(orgs_line(view.orgs, view.more_orgs), class_="fn-card__ties text-body") if view.orgs else None,
+        h.p(why, class_="fn-card__why text-small") if why else None,
         (quote(shown.quote) if shown.quote else statement(shown)) if shown else None,
+        combined,
         acts,
         class_="fn-card", id=card_id, data_person=view.person_id,
     )
@@ -181,7 +186,7 @@ def result_card(card: CardView, search_id: str, here: str) -> Safe:
         acts = [match_line(card.match) if card.match else None,
                 undo_form(card.undo_event, done, "fn-card__acts", anchored) if card.undo_event
                 else h.div(done, class_="fn-card__acts")]
-    return person_card(view, search_id, acts, card_id)
+    return person_card(view, search_id, acts, card_id, card.why)
 
 
 def network_href(flt: NetworkFilter, limit: int = NETWORK_STEP, view: str = "list", path: str = "/people") -> str:
@@ -201,12 +206,11 @@ def network_row(view: PersonView, n: int) -> Safe:
 
     n is the row's place in the list, which the Show more link jumps to.
     """
-    job = ", ".join(x for x in (view.role, view.employer) if x)
     day, month, year = view.added.split() if view.added else ("", "", "")
     return h.div(
         h.div(
             h.h3(h.a(view.name, href=f"/people/{view.person_id}?from=row"), class_="fn-row__name text-name"),
-            h.p(" · ".join(x for x in (job, view.place or "location not found") if x), class_="fn-row__role text-body"),
+            h.p(role_line(view), class_="fn-row__role text-body") if role_line(view) else None,
             h.p(orgs_line(view.orgs, view.more_orgs), class_="fn-row__ties text-body") if view.orgs else None,
         ),
         h.div(
@@ -320,9 +324,9 @@ MATCH_NOTE = "These have the same name, but nothing in FN links them to this per
 
 
 def role_line(view: PersonView) -> str:
-    """Role and employer, then the place after ' · ', as the card and the network row say it."""
+    """Role and employer, then the place after ' · ', as the card, the network row and the profile say it."""
     job = ", ".join(x for x in (view.role, view.employer) if x)
-    return " · ".join(x for x in (job, view.place or "location not found") if x)
+    return " · ".join(x for x in (job, view.place) if x)
 
 
 def post_form(action: str, label: str, button_class: str, here: str, **fields: str) -> Safe:
@@ -382,7 +386,8 @@ def profile_head(view: ProfileView, search: Search | None, here: str) -> Safe:
         back = h.p(h.a(f"Back to the results for “{cut(search.question, 60)}”", href=f"/searches/{search.id}"),
                    class_="fn-back text-meta")
     return h.div(back, h.h1(view.person.name, class_="fn-profile__name text-name"),
-                 h.p(role_line(view.person), class_="fn-profile__role text-body"), profile_state(view, here),
+                 h.p(role_line(view.person), class_="fn-profile__role text-body") if role_line(view.person) else None,
+                 profile_state(view, here),
                  class_="fn-profile__head")
 
 
@@ -456,6 +461,9 @@ def fact_groups(view: ProfileView, here: str, all_facts: bool) -> list[object]:
                 h.div(h.span(f"{len(shown):,} of {len(group.facts):,} shown"),
                       h.a(f"Show {more:,} more", class_="fn-btn fn-btn--quiet text-control", href=f"{every}#{anchor}"),
                       class_="fn-more text-meta") if more else None]
+    if not any(group.title == "Places" for group in view.facts):
+        out += [h.h2("Places", class_="fn-section text-label", id=GROUP_IDS["Places"]),
+                h.p("Not provided", class_="fn-contact__none text-body")]
     return out
 
 

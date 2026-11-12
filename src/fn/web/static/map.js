@@ -63,6 +63,11 @@ function start() {
     chosen[0]?.scrollIntoView({block: "nearest", behavior: reduced.matches ? "auto" : "smooth"});
   }
 
+  // A results dot whose person is not among the shown cards; the network map has no list facts, so all are shown.
+  function unshown(p) {
+    return p.shown === false;
+  }
+
   function line(tag, className, text, href) {
     const node = document.createElement(tag);
     node.className = className;
@@ -71,7 +76,7 @@ function start() {
     return node;
   }
 
-  // The popup follows the MapMarker part: one person with place and Open profile, or everyone at a shared dot.
+  // The popup follows the MapMarker part: one person with place and Open profile or Show in list, or everyone at a shared dot.
   function popup(index) {
     const box = document.createElement("div");
     const people = spots[index].people;
@@ -85,7 +90,8 @@ function start() {
       if (p.new_facts > 0) {
         person.append(line("span", "fn-popup__new fn-new text-meta-strong", `${p.new_facts} new ${p.new_facts === 1 ? "fact" : "facts"}`));
       }
-      if (people.length === 1) person.append(line("a", "fn-popup__open text-small", "Open profile", p.href));
+      if (people.length === 1 && unshown(p)) person.append(line("a", "fn-popup__open text-small", "Show in list", p.list));
+      else if (people.length === 1) person.append(line("a", "fn-popup__open text-small", "Open profile", p.href));
       box.append(person);
     }
     // Centred on the marker, the popup fits beside it on a phone-wide map.
@@ -130,13 +136,16 @@ function start() {
       if (!atPoint.has(key)) atPoint.set(key, spots.push({coordinates, people: []}) - 1);
       const index = atPoint.get(key);
       const id = feature.properties.id;
-      if (!spots[index].people.some((p) => p.id === id)) spots[index].people.push(feature.properties);
+      const listed = data.list?.[id];
+      const person = listed ? {...feature.properties, shown: listed.shown, list: listed.href} : feature.properties;
+      if (!spots[index].people.some((p) => p.id === id)) spots[index].people.push(person);
       if (!spotsOf.has(id)) spotsOf.set(id, new Set());
       spotsOf.get(id).add(index);
     }
     // One person at a point is a circle; people who share a point get one marker with their count.
     const single = spots.flatMap((spot, index) => (spot.people.length === 1
-      ? [{type: "Feature", id: index + 1, geometry: {type: "Point", coordinates: spot.coordinates}, properties: {}}] : []));
+      ? [{type: "Feature", id: index + 1, geometry: {type: "Point", coordinates: spot.coordinates},
+        properties: {quiet: unshown(spot.people[0])}}] : []));
     const collection = {type: "FeatureCollection", features: single};
     if (map.getSource("people")) {
       map.removeFeatureState({source: "people"});
@@ -144,15 +153,16 @@ function start() {
     } else {
       map.addSource("people", {type: "geojson", data: collection});
       map.addLayer({id: "people", type: "circle", source: "people", paint: {
-        "circle-radius": ["case", ["boolean", ["feature-state", "big"], false], 10, 7],
-        "circle-color": token("--accent"), "circle-stroke-width": 2, "circle-stroke-color": token("--raised")}});
+        "circle-radius": ["case", ["boolean", ["feature-state", "big"], false], 10, ["get", "quiet"], 5, 7],
+        "circle-color": ["case", ["get", "quiet"], token("--rule-strong"), token("--accent")],
+        "circle-stroke-width": 2, "circle-stroke-color": token("--raised")}});
     }
     spots.forEach((spot, index) => {
       if (spot.people.length === 1) return;
       const wrap = document.createElement("div");
       wrap.setAttribute("aria-label", spot.people.map((p) => p.name).join(", "));
       const dot = document.createElement("span");
-      dot.className = "fn-marker fn-marker--count text-label";
+      dot.className = "fn-marker fn-marker--count text-label" + (spot.people.every(unshown) ? " fn-marker--quiet" : "");
       dot.textContent = String(spot.people.length);
       wrap.append(dot);
       wrap.addEventListener("mouseenter", () => hoverSpot(index, true));

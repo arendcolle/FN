@@ -27,6 +27,7 @@ from fn.contracts import (
     Search,
     Source,
 )
+from fn.evidence import places
 from fn.store import Store, fold
 
 EMPLOYED = ("works_at", "worked_at", "affiliated_with")
@@ -42,13 +43,31 @@ RECORD_LABELS = {"record": "OpenAlex record", "vendor_record": "LinkedIn record"
 GROUPS = ("Ties to Belgium", "Work", "Places")
 DONE = {"add": "Added to your network", "skip": "Skipped", "edit_contact": "Saved", "merge": "Merged into this profile",
         "not_same": "Marked as a different person"}
-RESULTS_STEP = 50
+RESULTS_STEP = 20
+WORK = "OpenAlex work "
 
 
-def employer_of(claims: list[Claim]) -> str | None:
-    """The organization of the newest works_at, worked_at or affiliated_with claim, or None."""
+def employer_of(claims: list[Claim], facts: dict[str, Org] | None = None, place: str | None = None) -> str | None:
+    """The organization of the newest works_at, worked_at or affiliated_with claim, or None.
+
+    Of the jobs that share the newest date, one at an organization in the city of place comes first.
+    """
     jobs = [c for c in claims if c.relation in EMPLOYED]
-    return max(jobs, key=lambda c: (c.valid_to or c.claim_date or "", c.claim_date or "")).value if jobs else None
+    if not jobs:
+        return None
+    top = max(jobs, key=job_date)
+    local = [c for c in jobs if job_date(c)[0] == job_date(top)[0]
+             and in_city(facts.get(c.org_id or "") if facts else None, place)]
+    return max(local or [top], key=job_date).value
+
+
+def job_date(claim: Claim) -> tuple[str, str]:
+    return claim.valid_to or claim.claim_date or "", claim.claim_date or ""
+
+
+def in_city(org: Org | None, place: str | None) -> bool:
+    """Whether the organization's city is the place, or the place's first part, as in 'Boston, MA'."""
+    return bool(org and org.city and place and (place == org.city or place.startswith(f"{org.city},")))
 
 
 def belgian_orgs(claims: list[Claim], facts: dict[str, Org]) -> list[tuple[str, list[int]]]:
@@ -59,8 +78,11 @@ def belgian_orgs(claims: list[Claim], facts: dict[str, Org]) -> list[tuple[str, 
     return sorted(((name, sorted(found)) for name, found in years.items()), key=lambda t: (t[1][:1] or [9999], t[0]))
 
 
-def evidence(claims: list[Claim], facts: dict[str, Org], matched: list[str]) -> Claim | None:
-    """The claim to show on a card: the newest at a Belgian organization, else the first the search matched."""
+def evidence(claims: list[Claim], facts: dict[str, Org], matched: list[str], topic: str | None = None) -> Claim | None:
+    """The claim to show on a card: the topic claim when it is among the claims, else the newest at a Belgian
+    organization, else the first the search matched."""
+    if found := next((c for c in claims if c.id == topic), None):
+        return found
     belgian = [c for c, _ in orgs.belgian_claims(claims, facts)]
     if belgian:
         return max(belgian, key=lambda c: (c.claim_date or "", c.id))
@@ -115,6 +137,22 @@ def place_of(claims: list[Claim]) -> Claim | None:
     return newest([c for c in dotted if c.claim_date] or dotted or found)
 
 
+def located(claims: list[Claim], facts: dict[str, Org], today: date) -> tuple[str | None, float | None, float | None, str | None]:
+    """The place, its coordinates and its basis: the newest stated place, else the city of the newest recent employer.
+
+    Without either, the newest location claim gives its text only, as a stated place.
+    """
+    found, by_id = places(claims, facts, today), {c.id: c for c in claims}
+    if stated := place_of([by_id[p.claim_id] for p in found if p.basis == "stated"]):
+        return stated.value, stated.lat, stated.lon, "stated"
+    jobs = [(by_id[p.claim_id], p) for p in found if p.basis == "employer"]
+    if jobs:
+        _, job = max(jobs, key=lambda t: (*job_date(t[0]), t[0].id))
+        return job.text, job.lat, job.lon, "employer"
+    text = place_of(claims)
+    return (text.value, None, None, "stated") if text else (None, None, None, None)
+
+
 def is_job(claim: Claim, source: Source) -> bool:
     """Whether a role claim names a job: not a seed list role, nor a page title or host standing in for a role."""
     return claim.relation not in LIST_ROLES and claim.value not in (source.title, urlsplit(source.url).hostname, source.url)
@@ -137,8 +175,14 @@ def what_of(claim: Claim, org: Org | None) -> str:
     return f"{RELATIONS[claim.relation]} {name}" if claim.relation in RELATIONS else name
 
 
+def is_work(source: Source) -> bool:
+    return source.kind == "record" and (source.title or "").startswith(WORK)
+
+
 def label_of(source: Source) -> str:
     """The source as a citation names it: the record kind, the import file and row (its title), else the page title or host."""
+    if is_work(source):
+        return WORK.strip()
     if source.kind in RECORD_LABELS:
         return RECORD_LABELS[source.kind]
     if source.kind == "import":
@@ -156,11 +200,14 @@ def claim_view(claim: Claim, source: Source, org: Org | None, seen_at: datetime 
                cut_quote: bool = True) -> ClaimView:
     """The claim as every page words it: the fact, its years, the quote when the source is prose, and the citation.
 
-    org is the claim's stored orgs row, if any; is_new is true when the claim was first stored after seen_at.
+    org is the claim's stored orgs row, if any; is_new is true when the claim was first stored after seen_at. A topic
+    claim from an OpenAlex work reads 'Paper: ' and the title, cut like a quote when cut_quote.
     """
     label, href, when = label_of(source), f"/sources/{claim.source_id}?claim={claim.id}#quote", date_words(claim)
     quote = QuoteView(text=quote_words(claim, cut_quote), label=label, href=href, date=when) if source.kind in PROSE else None
-    return ClaimView(claim_id=claim.id, kind=claim.kind, what=what_of(claim, org), years=years_words(claim),
+    paper = claim.kind == "topic" and is_work(source)
+    what = f"Paper: {cut(claim.value, 240) if cut_quote else claim.value}" if paper else what_of(claim, org)
+    return ClaimView(claim_id=claim.id, kind=claim.kind, what=what, years=years_words(claim),
                      quote=quote, label=label, href=href, date=when,
                      is_new=bool(seen_at and claim.first_seen_at and claim.first_seen_at > seen_at))
 
@@ -172,17 +219,19 @@ def added_on(store: Store, person_id: str) -> str | None:
 
 
 def person_view(store: Store, person: Person, claims: list[Claim], facts: dict[str, Org], sources: dict[str, Source],
-                shown: Claim | None) -> PersonView:
-    """The view of one person from the claims of its records; shown is the claim the card gives as evidence."""
+                shown: Claim | None, today: date, records: int = 1) -> PersonView:
+    """The view of one person from the claims of its records; shown is the claim the card gives as evidence.
+
+    records is how many records not merged into one person the claims come from.
+    """
     member = person.list_status == "in_list"
     seen_at = person.seen_at if member else None
     job = newest([c for c in claims if c.kind == "role" and is_job(c, sources[c.source_id])])
-    place, found = place_of(claims), belgian_orgs(claims, facts)
+    (place, lat, lon, basis), found = located(claims, facts, today), belgian_orgs(claims, facts)
     contact = {kind: newest([c for c in claims if c.kind == kind]) for kind in ("email", "phone")}
     return PersonView(
         person_id=person.id, name=person.display_name, role=job.value if job else None,
-        employer=employer_of(claims), place=place.value if place else None,
-        lat=place.lat if place else None, lon=place.lon if place else None,
+        employer=employer_of(claims, facts, place), place=place, lat=lat, lon=lon, place_basis=basis, records=records,
         orgs=[OrgView(org=name, years=f"{y[0]}–{y[-1]}" if len(y) > 1 else "".join(map(str, y))) for name, y in found[:3]],
         more_orgs=max(len(found) - 3, 0),
         evidence=claim_view(shown, sources[shown.source_id], facts.get(shown.org_id or ""), seen_at) if shown else None,
@@ -193,12 +242,13 @@ def person_view(store: Store, person: Person, claims: list[Claim], facts: dict[s
     )
 
 
-def person_views(store: Store, groups: list[list[str]], today: date,
-                 matched: list[list[str]] | None = None) -> list[PersonView]:
+def person_views(store: Store, groups: list[list[str]], today: date, matched: list[list[str]] | None = None,
+                 topics: list[str | None] | None = None) -> list[PersonView]:
     """One view per group of stored person ids, named after its first; all claims come from one claims_of call.
 
     Ids are mapped to their canonical person first. matched holds, per group, the claim ids a search matched,
-    which the evidence falls back to when the group has no claim at a Belgian organization.
+    which the evidence falls back to when the group has no claim at a Belgian organization. topics holds, per
+    group, the claim the evidence shows first.
     """
     canonical = store.canonical_ids([p for g in groups for p in g])
     groups = [list(dict.fromkeys(canonical[p] for p in g)) for g in groups]
@@ -209,10 +259,12 @@ def person_views(store: Store, groups: list[list[str]], today: date,
     persons = store.get_persons(ids)
     facts = store.get_orgs(list({c.org_id for found in by_person.values() for c in found if c.org_id}))
     owned = [[c for p in g for c in by_person.get(p, [])] for g in groups]
-    shown = [evidence(claims, facts, m) for claims, m in zip(owned, matched or [[] for _ in groups])]
+    shown = [evidence(claims, facts, m, t) for claims, m, t in
+             zip(owned, matched or [[] for _ in groups], topics or [None for _ in groups])]
     needed = {c.source_id for claims in owned for c in claims if c.kind == "role"} | {c.source_id for c in shown if c}
     sources = store.get_sources(list(needed))
-    return [person_view(store, persons[g[0]], claims, facts, sources, s) for g, claims, s in zip(groups, owned, shown)]
+    return [person_view(store, persons[g[0]], claims, facts, sources, s, today, len(g))
+            for g, claims, s in zip(groups, owned, shown)]
 
 
 def skipped_here(store: Store, person_id: str, search_id: str) -> bool:
@@ -246,9 +298,24 @@ def added_card(store: Store, candidate: Candidate, base: dict, event: Event | No
     return CardView(**base, state="added", match=match, undo_event=undo, note=note, note_href=href)
 
 
+def topic_claim(candidate: Candidate) -> str | None:
+    """The first claim of the candidate's stored topic part, or None."""
+    return next((p.claim_ids[0] for p in candidate.score_parts if p.feature == "topic" and p.claim_ids), None)
+
+
+def why_of(candidate: Candidate, view: PersonView) -> str | None:
+    """The why line from the candidate's stored parts: the topic words found, else the place it was listed for."""
+    parts = {p.feature: p for p in candidate.score_parts}
+    if topic := parts.get("topic"):
+        return f"Matches: {topic.detail}" + (" · Place from the employer" if view.place_basis == "employer" else "")
+    if place := parts.get("place"):
+        return f"Based in {place.detail.split(': ', 1)[-1]}"
+    return None
+
+
 def card_view(store: Store, candidate: Candidate, view: PersonView, skipped: bool, today: date) -> CardView:
     """The candidate's card: its state from the people's status now, the same-name network person and the Undo."""
-    base = {"key": candidate.person_id, "section": candidate.section, "person": view}
+    base = {"key": candidate.person_id, "section": candidate.section, "person": view, "why": why_of(candidate, view)}
     event = latest(store, view.person_id)
     if skipped:
         undo = LastView(event_id=event.id, kind="skip", words=DONE["skip"]) if event and event.kind == "skip" else None
@@ -264,7 +331,8 @@ def card_view(store: Store, candidate: Candidate, view: PersonView, skipped: boo
 
 def card(store: Store, candidate: Candidate, today: date) -> CardView:
     """The card of one candidate, as the results page shows it."""
-    view = person_views(store, [identity.on_card(store, candidate)], today, [candidate.reason_claim_ids])[0]
+    view = person_views(store, [identity.on_card(store, candidate)], today, [candidate.reason_claim_ids],
+                        [topic_claim(candidate)])[0]
     return card_view(store, candidate, view, is_skipped(store, candidate), today)
 
 
@@ -276,7 +344,8 @@ def results(store: Store, search: Search, today: date, shown: int = RESULTS_STEP
     shows only with show_skipped. Skipped people never take a place among the shown.
     """
     candidates = store.list_candidates(search.id, kept_only=True)
-    views = person_views(store, [identity.on_card(store, c) for c in candidates], today, [c.reason_claim_ids for c in candidates])
+    views = person_views(store, [identity.on_card(store, c) for c in candidates], today, [c.reason_claim_ids for c in candidates],
+                         [topic_claim(c) for c in candidates])
     skipped = [is_skipped(store, c) for c in candidates]
     kept = [(c, v) for c, v, s in zip(candidates, views, skipped) if not s]
     cards, counted, hidden, next_key = [], 0, 0, None
@@ -296,7 +365,7 @@ def results(store: Store, search: Search, today: date, shown: int = RESULTS_STEP
     return ResultsView(network=[v for c, v in kept if c.section == "network"],
                        new=[v for c, v in kept if c.section == "new"], cards=cards, total=len(kept), shown=counted,
                        skipped_hidden=hidden, not_on_map=sum(1 for v in people if v.lat is None or v.lon is None),
-                       next_key=next_key)
+                       next_key=next_key, order=[(v.person_id, c.person_id) for c, v in kept])
 
 
 def network_view(store: Store, flt: NetworkFilter, limit: int | None, today: date) -> NetworkView:
@@ -311,15 +380,22 @@ def network_view(store: Store, flt: NetworkFilter, limit: int | None, today: dat
                        shown=len(shown), new_facts=sum(1 for v in views if v.new_facts))
 
 
-def geo(people: list[PersonView]) -> dict:
-    """GeoJSON for map.js: one point per person with a place, carrying what the map's popup shows."""
+def geo(people: list[PersonView], listed: dict[str, dict] | None = None) -> dict:
+    """GeoJSON for map.js: one point per person with a place, carrying what the map's popup shows.
+
+    listed holds, by person id, whether the results list shows the person and the link that does; the answer carries
+    it as the member 'list' for the people on the map.
+    """
     features = [{
         "type": "Feature",
         "geometry": {"type": "Point", "coordinates": [v.lon, v.lat]},
         "properties": {"id": v.person_id, "name": v.name, "role": v.role, "employer": v.employer, "place": v.place,
                        "new_facts": v.new_facts, "href": f"/people/{v.person_id}"},
     } for v in people if v.lat is not None and v.lon is not None]
-    return {"type": "FeatureCollection", "features": features}
+    found = {"type": "FeatureCollection", "features": features}
+    if listed is not None:
+        found["list"] = {f["properties"]["id"]: listed[f["properties"]["id"]] for f in features if f["properties"]["id"] in listed}
+    return found
 
 
 def sources_read(store: Store, search: Search) -> int:

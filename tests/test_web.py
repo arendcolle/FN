@@ -233,9 +233,8 @@ class WebTest(unittest.TestCase):
     def test_a_card_shows_employer_place_belgian_orgs_and_one_quote(self):
         """A card reads 'employer · place', its first three Belgian orgs with years then '+1 more', and one quote.
 
-        The quote is the newest Belgian claim's, inner double quotes made single and cut at a word past 240
-        characters. Without a place the card says 'location not found'; without a date the citation says
-        'date unknown'. A map point carries the id of its card.
+        The quote is the first claim that matched the topic chip. Without a place, role or employer the card has
+        no role line; without a date the citation says 'date unknown'. A map point carries the id of its card.
         """
         record = Source(id="org", kind="record", url="https://ror.org/x", text="id", content_hash="h0", fetched_at=now())
         names = {"ror:01r9htc13": "ULB", "ror:05f950310": "KU Leuven", "ror:006e5kg04": "VUB", "ror:00cv9y106": "UGent"}
@@ -267,12 +266,10 @@ class WebTest(unittest.TestCase):
         self.assertIn("Nokia Bell Labs · Murray Hill, NJ", page)
         self.assertIn('ULB <span class="text-year">2001–2004</span> · KU Leuven <span class="text-year">2005–2008</span>'
                       ' · VUB <span class="text-year">2009</span> · +1 more', page)
-        quote = unescape(page[page.index("“Anne Example, UGent"):])
-        self.assertTrue(quote.startswith("“Anne Example, UGent 'the engineer' ran radio links"))
-        self.assertLessEqual(quote.index("”"), 242)
-        self.assertIn(" ran radio…”<cite", quote)
-        self.assertIn(">anne-3 page</a>, March 2024</cite>", quote)
-        self.assertIn('Bob Nowhere</a></h3><p class="fn-card__role text-body">location not found</p>', page)
+        quote = unescape(page[page.index("“Anne Example, ULB"):])
+        self.assertTrue(quote.startswith("“Anne Example, ULB”<cite"))
+        self.assertIn(">anne-0 page</a>, 2004</cite>", quote)
+        self.assertNotIn('Bob Nowhere</a></h3><p class="fn-card__role', page)
         self.assertIn("“Bob Nowhere studies ULB history”", page)
         self.assertIn(">bob page</a>, date unknown</cite>", page)
         (point,) = client.get(f"/api/searches/{search_id}/geo").json()["features"]

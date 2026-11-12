@@ -160,20 +160,20 @@ class CardActionsTest(unittest.TestCase):
         response = self.client.post(f"/searches/s2/people/{bob}/add", data={"next": "https://example.org/"})
         self.assertEqual(response.headers["location"], f"/searches/s2#card-{bob}")
 
-    def test_the_page_shows_fifty_kept_people_at_a_time(self):
-        """50 cards by default and 100 with ?shown=100; a shown that is not a positive number is 50. The count
+    def test_the_page_shows_twenty_kept_people_at_a_time(self):
+        """20 cards by default and 40 with ?shown=40; a shown that is not a positive number is 20. The count
         is of kept people who are not skipped, and a cut candidate never shows."""
         people = [self.person(f"Person {n:03}", f"p{n}") for n in range(120)]
         cut, gone = self.person("Cut Example", "cut"), self.person("Gone Example", "gone")
         network.skip(self.store, [gone], now=now(), search_id="elsewhere")
         self.search("s1", [*[([p], "new") for p in people], ([gone], "new")], cut=[cut])
         first = self.page("s1")
-        self.assertEqual(first.count('class="fn-card"'), 50)
-        self.assertIn(f'<span>50 of 120 shown</span><a class="fn-btn fn-btn--quiet text-control" '
-                      f'href="/searches/s1?shown=100#card-{people[50]}">Show 50 more</a>', first)
-        self.assertEqual(self.page("s1", shown="100").count('class="fn-card"'), 100)
+        self.assertEqual(first.count('class="fn-card"'), 20)
+        self.assertIn(f'<span>20 of 120 shown</span><a class="fn-btn fn-btn--quiet text-control" '
+                      f'href="/searches/s1?shown=40#card-{people[20]}">Show 20 more</a>', first)
+        self.assertEqual(self.page("s1", shown="40").count('class="fn-card"'), 40)
         for bad in ("abc", "0", "-1"):
-            self.assertEqual(self.page("s1", shown=bad).count('class="fn-card"'), 50)
+            self.assertEqual(self.page("s1", shown=bad).count('class="fn-card"'), 20)
         everyone = self.page("s1", shown="1000")
         self.assertEqual(everyone.count('class="fn-card"'), 120)
         self.assertNotIn("Cut Example", everyone)
