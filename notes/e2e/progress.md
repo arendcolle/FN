@@ -29,6 +29,7 @@ One line per finished step, newest last. The plan is in [plan.md](plan.md) and t
 - 2026-11-12 T12b merged: the results page updates while a search runs (PR #20). 403 tests.
 - 2026-11-12 Browser walk on a copy of the owner's database: import of a made-up file, the people on the map, a profile, the export, Add, Undo and Skip on a stored search, and a replayed search that showed 12 cards at 5 s and the full list at 10 s without a reload.
 - 2026-11-12 A search with live calls could not be run: the Claude command-line login on this machine has expired ("OAuth session expired and could not be refreshed"), and the parse step needs it. The search failed at parse after its 60 s timeout, and the page showed "This search stopped" with Try again. The owner has to sign in again before new searches work.
+- 2026-11-12 T14 merged: one test per staff flow (PR #21). All seven flows could be walked; 411 tests. T14b merged: the architecture document at version 4.0 (PR #22).
 
 ## Review ledger
 
