@@ -654,7 +654,7 @@ class ContractsV1Test(unittest.TestCase):
             self.store.finish_step(run, json.dumps(output))
         self.store.conn.execute("INSERT INTO candidates VALUES ('old', ?, ?, 'new', 1, ?, ?, '[]', ?)",
                                 (person.id, json.dumps([person.id]), 1 / 61, '{"seeds": 1}', json.dumps(label)))
-        self.assertEqual(self.store.migrate(), [4, 5, 6, 7, 8, 9, 10])
+        self.assertEqual(self.store.migrate(), [4, 5, 6, 7, 8, 9, 10, 11])
         app = create_app(self.settings, StubLLM(error=AssertionError("no LLM")), StubHttp())
         self.client = TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=False)
         self.client.__enter__()

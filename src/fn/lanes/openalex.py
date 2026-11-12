@@ -5,6 +5,7 @@ from datetime import datetime
 from fn import geo, orgs
 from fn.contracts import (
     Chips,
+    Claim,
     ClaimDraft,
     Considered,
     GeoArea,
@@ -14,11 +15,13 @@ from fn.contracts import (
     LaneName,
     LaneOut,
     OrgFacts,
+    Person,
     Source,
     normalize,
     record_source,
 )
 from fn.steps import StepContext, fan_out
+from fn.store import Store
 
 name: LaneName = "openalex"
 API = "https://api.openalex.org"
@@ -198,6 +201,25 @@ def location_draft(inst: dict, person_id: str, fetched_at: datetime) -> ClaimDra
     )
 
 
+def save_author(store: Store, record: dict, institutions: dict[str, dict],
+                now: datetime) -> tuple[Person, list[Claim], Claim | None]:
+    """Store one author record: its person by OpenAlex id and ORCID, its affiliation orgs and claims, and a location.
+
+    The location comes from the last known institution when institutions holds its record by short id.
+    Returns the person, the affiliation claims and the location claim or None.
+    """
+    idents = [Identifier(scheme="openalex", value=short(record["id"]))]
+    idents += [Identifier(scheme="orcid", value=record["orcid"])] if record.get("orcid") else []
+    person = store.resolve_person(idents, record["display_name"])
+    source, spans = author_source(record, now)
+    orgs.save(store, affiliation_orgs(record, institutions), source, replace=False)
+    claims = [store.upsert_claim(d, now) for d in affiliation_drafts(record, person.id, source, spans)]
+    last = (record.get("last_known_institutions") or [None])[0]
+    inst = institutions.get(short(last["id"])) if last else None
+    location = location_draft(inst, person.id, now) if inst else None
+    return person, claims, store.upsert_claim(location, now) if location else None
+
+
 def topic_drafts(works: list[dict], person_id: str, fetched_at: datetime) -> list[ClaimDraft]:
     """One topic claim per matching work with a title, dated by its publication year when it has one."""
     drafts = []
@@ -276,18 +298,11 @@ def run(ctx: StepContext, inp: LaneIn) -> LaneOut:
     with ctx.store.tx():
         for rank, author in enumerate(ordered, 1):
             record, now = records[author], ctx.now()
-            idents = [Identifier(scheme="openalex", value=author)]
-            idents += [Identifier(scheme="orcid", value=record["orcid"])] if record.get("orcid") else []
-            person = ctx.store.resolve_person(idents, record["display_name"])
-            source, spans = author_source(record, now)
-            orgs.save(ctx.store, affiliation_orgs(record, institutions), source, replace=False)
-            claims = [ctx.store.upsert_claim(d, now) for d in affiliation_drafts(record, person.id, source, spans)]
-            inst = institutions.get(short(last_known[author]["id"])) if last_known[author] else None
-            location = location_draft(inst, person.id, now) if inst else None
+            person, claims, location = save_author(ctx.store, record, institutions, now)
             be_names = {normalize(a["institution"]["display_name"]) for a in belgian(record)}
             reasons = [c.id for c in claims if c.value in be_names]
             if location:
-                reasons.append(ctx.store.upsert_claim(location, now).id)
+                reasons.append(location.id)
             reasons += [ctx.store.upsert_claim(d, now).id for d in topic_drafts(seen[author].works_seen, person.id, now)]
             hits.append(LaneHit(person_id=person.id, name_key=person.name_key, lane=name, rank=rank,
                                 score=found_on(seen[author]), matched_on="; ".join([*seen[author].found_by, where[author][1]]), claim_ids=reasons))
