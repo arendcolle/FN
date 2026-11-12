@@ -2,21 +2,28 @@
 import hashlib
 import json
 import sys
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
-from fn import orgs
-from fn.config import ROOT
+from fn import geo, orgs
+from fn.config import ROOT, Settings
 from fn.contracts import (
     ClaimDraft,
     DateMethod,
     DatePrecision,
+    HttpClient,
     Identifier,
     Relation,
+    Search,
+    SeedIn,
+    SeedOut,
     Source,
     normalize,
 )
+from fn.steps import StepContext, run_step
 from fn.store import Store
+from fn.worker import Worker
 
 SEEDS = ROOT / "data" / "seeds"
 # Each list's organization by its name in data/org_aliases.csv.
@@ -40,6 +47,9 @@ DATE_METHODS: dict[str, DateMethod | None] = {
     "page text": "page_date",
 }
 PRECISION: dict[int, DatePrecision] = {4: "year", 7: "month", 10: "day"}
+# The lists whose role field is a job title; the other lists' roles are a fellowship type or an academy class.
+JOB_LISTS = ("climate", "consuls")
+Locate = Callable[[str, list[str]], tuple[float, float] | None]
 
 
 def source_of(row: dict) -> Source:
@@ -53,9 +63,11 @@ def source_of(row: dict) -> Source:
     )
 
 
-def drafts(row: dict, person_id: str, source: Source) -> list[ClaimDraft]:
+def drafts(row: dict, person_id: str, source: Source, locate: Locate | None = None) -> list[ClaimDraft]:
     """The list claim, one affiliation claim per institution and a topic claim, all quoting the row.
 
+    A climate or consul row with a role also gets it as a role claim without a relation; a consul row with a
+    place gets a location claim with the coordinates locate(place, jurisdiction) gives.
     A row's year dates its claims as a record field; without one they take the source's date.
     Raises KeyError for an unknown list, relation or date method, and ValueError when the quote is not in the source.
     """
@@ -73,6 +85,12 @@ def drafts(row: dict, person_id: str, source: Source) -> list[ClaimDraft]:
     relation, list_org = LISTS[row["list"]]
     found = [ClaimDraft(kind="role", relation=relation, org_id=orgs.org_id(list_org),
                         value=row["role"] or row["source_title"], **base)]
+    if row["list"] in JOB_LISTS and row["role"]:
+        cut = max(quote.find(row["role"]), quote.find(" ") + 1)
+        found.append(ClaimDraft(kind="role", value=row["role"], **base | {"quote": quote[cut:], "quote_start": start + cut}))
+    if row["list"] == "consuls" and row["place"]:
+        lat, lon = (locate and locate(row["place"], row["jurisdiction"])) or (None, None)
+        found.append(ClaimDraft(kind="location", relation="lives_in", value=row["place"], lat=lat, lon=lon, **base))
     for inst in row["institutions"]:
         found.append(ClaimDraft(kind="affiliation", relation=RELATIONS[inst["relation"]],
                                 org_id=orgs.org_id(inst["name"]), value=inst["name"], **base))
@@ -81,8 +99,11 @@ def drafts(row: dict, person_id: str, source: Source) -> list[ClaimDraft]:
     return found
 
 
-def load(store: Store, seeds: Path = SEEDS) -> int:
-    """Load every seed row in one transaction and return the row count; a second load writes nothing."""
+def load(store: Store, seeds: Path = SEEDS, locate: Locate | None = None) -> int:
+    """Load every seed row in one transaction and return the row count; a second load writes nothing.
+
+    locate gives the coordinates of a consul's city; without it those claims have none.
+    """
     sources: dict[str, Source] = {}
     count = 0
     with store.tx():
@@ -93,23 +114,68 @@ def load(store: Store, seeds: Path = SEEDS) -> int:
                     sources[row["raw_path"]] = source_of(row)
                 source = sources[row["raw_path"]]
                 person = store.resolve_person([Identifier(scheme="seed", value=row["row_key"])], row["name"])
-                for draft in drafts(row, person.id, source):
+                for draft in drafts(row, person.id, source, locate):
                     store.upsert_claim(draft)
                 count += 1
     return count
 
 
+def locator(http: HttpClient) -> Locate:
+    """A locate function on the GeoNames cities: the city with each state of the jurisdiction in turn.
+
+    The city alone is tried only when no state of the jurisdiction is a known state.
+    """
+    names = geo.cities(http)
+
+    def locate(city: str, states: list[str]) -> tuple[float, float] | None:
+        known = any(geo.name_key(s) in geo.aliases().get("state", {}) for s in states)
+        for state in states if known else [None]:
+            if found := geo.locate_city(city, state, None, names):
+                return found.lat, found.lon
+        return None
+
+    return locate
+
+
+def run(ctx: StepContext, _: SeedIn) -> SeedOut:
+    """Load the seed rows with consul cities located on GeoNames; raises RuntimeError without an HTTP client."""
+    if ctx.http is None:
+        raise RuntimeError("fn-seed needs an HTTP client")
+    locate = locator(ctx.http)
+    before = ctx.store.conn.total_changes
+    rows = load(ctx.store, locate=locate)
+    return SeedOut(rows=rows, changed=ctx.store.conn.total_changes - before)
+
+
+def job_steps(ctx: StepContext, _: Search) -> None:
+    run_step(ctx, "seed", run, SeedIn())
+
+
+def refresh(store: Store, settings: Settings, http: HttpClient) -> Search:
+    """Run fn-seed as a job: one searches row of kind job with one seed step; returns the ended job."""
+    worker = Worker(store, settings, llm=None, http=http)
+    try:
+        return worker.execute(worker.create_search("fn-seed", kind="job").id, job_steps)
+    finally:
+        worker.shutdown()
+
+
 def main() -> int:
     from fn import config
+    from fn.net import Client
 
     settings = config.from_env()
     store = Store(settings.db_path)
     store.migrate()
-    before = store.conn.total_changes
-    count = load(store)
-    print(f"{count} seed rows loaded into {settings.db_path}; {store.conn.total_changes - before} rows changed")
+    job = refresh(store, settings, Client(settings))
+    step = next(iter(store.list_steps(job.id)), None)
+    if job.status == "done":
+        out = SeedOut.model_validate_json(store.get_payload(step.id)[1])
+        print(f"{out.rows} seed rows loaded into {settings.db_path}; {out.changed} rows changed")
+    else:
+        print(f"fn-seed job {job.id} {job.status}: " + (f"{step.error_type}: {step.error_message}" if step else str(job.error)))
     store.close()
-    return 0
+    return 0 if job.status == "done" else 1
 
 
 if __name__ == "__main__":

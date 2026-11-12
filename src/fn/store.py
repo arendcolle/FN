@@ -385,15 +385,32 @@ class Store:
         return claim.model_copy(update={"first_seen_at": _at(row[0]), "rejected_at": _at(row[1])})
 
     def upsert_org(self, org: Org, replace: bool) -> None:
-        """Insert the org row; a stored row with its id is overwritten when replace is set, else kept."""
+        """Insert the org row; a stored row with its id is overwritten when replace is set, else kept.
+
+        A kept row that has no city takes the new row's city, lat and lon; a stored city is never overwritten.
+        """
         data = org.model_dump()
         data["fetched_at"] = _iso(org.fetched_at)
         update = ", ".join(f"{k} = excluded.{k}" for k in data if k != "id")
+        fill = "UPDATE SET city = excluded.city, lat = excluded.lat, lon = excluded.lon " \
+               "WHERE orgs.city IS NULL AND excluded.city IS NOT NULL"
         self.conn.execute(
             f"INSERT INTO orgs ({', '.join(data)}) VALUES ({', '.join('?' * len(data))}) "
-            f"ON CONFLICT (id) DO {f'UPDATE SET {update}' if replace else 'NOTHING'}",
+            f"ON CONFLICT (id) DO {f'UPDATE SET {update}' if replace else fill}",
             list(data.values()),
         )
+
+    def record_texts(self, title_prefix: str) -> list[str]:
+        """The text of every record source whose title starts with title_prefix, in id order."""
+        rows = self.conn.execute("SELECT text FROM sources WHERE kind = 'record' AND substr(title, 1, ?) = ? ORDER BY id",
+                                 (len(title_prefix), title_prefix))
+        return [r[0] for r in rows]
+
+    def fill_org_place(self, org_id: str, city: str, lat: float | None, lon: float | None) -> bool:
+        """Give a stored org without a city this city; returns whether a row changed."""
+        cursor = self.conn.execute("UPDATE orgs SET city = ?, lat = ?, lon = ? WHERE id = ? AND city IS NULL",
+                                   (city, lat, lon, org_id))
+        return cursor.rowcount > 0
 
     def get_orgs(self, org_ids: list[str]) -> dict[str, Org]:
         rows = self.conn.execute(

@@ -108,7 +108,8 @@ def save(store: Store, facts: list[OrgFacts], source: Source, *, replace: bool) 
 
 
 def ror_record(record: dict, fetched_at: datetime) -> tuple[OrgFacts, Source]:
-    """Facts from a ROR v2 record: the ror_display name and its language, the first location's country and subdivision.
+    """Facts from a ROR v2 record: the ror_display name and its language, the first location's country, subdivision,
+    city and coordinates.
 
     Raises OrgError for a record without a ror_display name.
     """
@@ -119,14 +120,34 @@ def ror_record(record: dict, fetched_at: datetime) -> tuple[OrgFacts, Source]:
     geo = "locations.0.geonames_details"
     fields: list[tuple[str, object]] = [
         ("id", record["id"]), (f"names.{i}.value", display["value"]), (f"names.{i}.lang", display.get("lang")),
-        (f"{geo}.name", where.get("name")), (f"{geo}.country_code", where.get("country_code")),
+        (f"{geo}.name", where.get("name")), (f"{geo}.lat", where.get("lat")), (f"{geo}.lng", where.get("lng")),
+        (f"{geo}.country_code", where.get("country_code")),
         (f"{geo}.country_subdivision_code", where.get("country_subdivision_code")), ("status", record.get("status")),
     ]
     modified = ((record.get("admin") or {}).get("last_modified") or {}).get("date")
     source, _ = record_source(record["id"], f"ROR record {display['value']}", fields, record, fetched_at, modified)
     return OrgFacts(id=f"ror:{record['id'].rsplit('/', 1)[-1]}", name=display["value"],
                     country_code=where.get("country_code"), region=where.get("country_subdivision_code"),
-                    name_lang=display.get("lang")), source
+                    name_lang=display.get("lang"), city=where.get("name"), lat=where.get("lat"),
+                    lon=where.get("lng")), source
+
+
+def backfill_places(store: Store) -> int:
+    """Fill the city and coordinates of stored orgs without a city from the stored OpenAlex institution records.
+
+    The org is the record's ROR id, else its OpenAlex id; a record whose org is not stored or has a city is
+    skipped. Makes no outside call. Returns the number of org rows filled.
+    """
+    filled = 0
+    with store.tx():
+        for text in store.record_texts("OpenAlex institution "):
+            lines = dict(line.split(": ", 1) for line in text.splitlines() if ": " in line)
+            ror, oa, city = lines.get("ror"), lines.get("id"), lines.get("geo.city")
+            org = f"ror:{ror.rsplit('/', 1)[-1]}" if ror else f"openalex:{oa.rsplit('/', 1)[-1]}" if oa else None
+            lat, lon = lines.get("geo.latitude"), lines.get("geo.longitude")
+            if org and city:
+                filled += store.fill_org_place(org, city, float(lat) if lat else None, float(lon) if lon else None)
+    return filled
 
 
 def _wikidata(http: HttpClient, params: dict[str, str]) -> dict:
