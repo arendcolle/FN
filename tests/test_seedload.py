@@ -34,9 +34,8 @@ class SeedLoadTest(unittest.TestCase):
         return found
 
     def test_every_seed_row_yields_a_dated_claim_quoted_at_its_offsets(self):
-        """Each of the 5,035 rows is one person whose claims carry a date, a known date method and a quote at its offsets."""
-        self.assertEqual(len(ROWS), 5035)
-        self.assertEqual(self.store.conn.execute("SELECT COUNT(*) FROM persons").fetchone()[0], 5035)
+        """Each local seed row is one person whose claims carry a date, a known date method and a quote at its offsets."""
+        self.assertEqual(self.store.conn.execute("SELECT COUNT(*) FROM persons").fetchone()[0], len(ROWS))
         by_person: dict[str, list] = {}
         persons = {r["row_key"]: self.person(r["row_key"]).id for r in ROWS}
         for claim in self.store.claims_of(list(persons.values())):
@@ -52,7 +51,7 @@ class SeedLoadTest(unittest.TestCase):
 
     def test_a_second_load_changes_nothing(self):
         before = self.store.conn.total_changes
-        self.assertEqual(seedload.load(self.store), 5035)
+        self.assertEqual(seedload.load(self.store), len(ROWS))
         self.assertEqual(self.store.conn.total_changes - before, 0)
 
     def test_a_rerun_rewrites_changed_org_ids_and_relations_and_a_second_rerun_changes_nothing(self):
@@ -161,6 +160,32 @@ class SeedPlacesAndTitlesTest(unittest.TestCase):
         (unplaced,) = [c for c in self.claims(row) if c.kind == "location"]
         self.assertEqual((unplaced.lat, unplaced.lon), (None, None))
         store.close()
+
+    def test_a_wikidata_row_gives_a_job_affiliations_and_a_place_without_a_list_claim(self):
+        """The role is a job on the view; employer and school are works_at and studied_at claims.
+
+        The place is a location claim without a relation, located with the state after its comma.
+        """
+        row = made_up_row("wikidata", "Ada Example", "Senior researcher", place="Portland, Oregon", jurisdiction=None,
+                          date_method="item modified", institutions=[
+                              {"name": "Example University", "relation": "employer"},
+                              {"name": "Example School Leuven", "relation": "student"}])
+        calls = []
+
+        def locate(city: str, states: list[str]):
+            calls.append((city, states))
+            return 45.5, -122.6
+
+        self.load([row], locate)
+        claims = self.claims(row)
+        self.assertEqual(self.view(row).role, "Senior researcher")
+        self.assertEqual([(c.relation, c.value) for c in claims if c.kind == "role"], [(None, "Senior researcher")])
+        self.assertEqual(sorted((c.relation, c.value) for c in claims if c.kind == "affiliation"),
+                         [("studied_at", "Example School Leuven"), ("works_at", "Example University")])
+        (place,) = [c for c in claims if c.kind == "location"]
+        self.assertEqual((place.relation, place.value, place.lat, place.date_method),
+                         (None, "Portland, Oregon", 45.5, "record_field"))
+        self.assertEqual(calls, [("Portland", ["Oregon"])])
 
     def test_loading_the_same_rows_twice_writes_nothing_the_second_time(self):
         rows = [made_up_row("climate", "Ada Example", "Senior researcher"),

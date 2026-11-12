@@ -5,6 +5,7 @@ import sys
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 from fn import geo, orgs
 from fn.config import ROOT, Settings
@@ -26,15 +27,29 @@ from fn.store import Store
 from fn.worker import Worker
 
 SEEDS = ROOT / "data" / "seeds"
-# Each list's organization by its name in data/org_aliases.csv.
-LISTS: dict[str, tuple[Relation, str]] = {
-    "baef": ("fellow_of", "Belgian American Educational Foundation"),
-    "francqui": ("fellow_of", "Francqui Foundation"),
-    "kvab": ("member_of", "KVAB"),
-    "climate": ("member_of", "Belgian Climate Centre"),
-    "consuls": ("consul_for", "Belgium"),
-    "fayat": ("fellow_of", "Flemish Government"),
+
+
+class ListSpec(NamedTuple):
+    """How a list's rows become claims: the list claim's relation and organization (by its name in
+    data/org_aliases.csv), whether role is a job title, whether place is a current place, and that claim's relation.
+    """
+    claim: tuple[Relation, str] | None
+    job: bool = False
+    place: bool = False
+    place_relation: Relation | None = None
+
+
+SPECS: dict[str, ListSpec] = {
+    "baef": ListSpec(("fellow_of", "Belgian American Educational Foundation")),
+    "francqui": ListSpec(("fellow_of", "Francqui Foundation")),
+    "kvab": ListSpec(("member_of", "KVAB")),
+    "climate": ListSpec(("member_of", "Belgian Climate Centre"), job=True),
+    "consuls": ListSpec(("consul_for", "Belgium"), job=True, place=True, place_relation="lives_in"),
+    "fayat": ListSpec(("fellow_of", "Flemish Government")),
+    "wikidata": ListSpec(None, job=True, place=True),
 }
+# The list claims by list; the other lists' rows carry no list claim.
+LISTS: dict[str, tuple[Relation, str]] = {name: spec.claim for name, spec in SPECS.items() if spec.claim}
 RELATIONS: dict[str, Relation] = {
     "home": "affiliated_with", "host": "hosted_by", "employer": "works_at", "member_of": "member_of",
     "student": "studied_at",
@@ -45,10 +60,9 @@ DATE_METHODS: dict[str, DateMethod | None] = {
     "document note (last modified September 2025)": "document_heading",
     "sitemap_lastmod": "sitemap",
     "page text": "page_date",
+    "item modified": "record_field",
 }
 PRECISION: dict[int, DatePrecision] = {4: "year", 7: "month", 10: "day"}
-# The lists whose role field is a job title; the other lists' roles are a fellowship type or an academy class.
-JOB_LISTS = ("climate", "consuls")
 Locate = Callable[[str, list[str]], tuple[float, float] | None]
 
 
@@ -66,8 +80,8 @@ def source_of(row: dict) -> Source:
 def drafts(row: dict, person_id: str, source: Source, locate: Locate | None = None) -> list[ClaimDraft]:
     """The list claim, one affiliation claim per institution and a topic claim, all quoting the row.
 
-    A climate or consul row with a role also gets it as a role claim without a relation; a consul row with a
-    place gets a location claim with the coordinates locate(place, jurisdiction) gives.
+    A row of a job list with a role also gets it as a role claim without a relation; a row of a place list with a
+    place gets a location claim with the coordinates locate(city, jurisdiction or the state after the comma) gives.
     A row's year dates its claims as a record field; without one they take the source's date.
     Raises KeyError for an unknown list, relation or date method, and ValueError when the quote is not in the source.
     """
@@ -82,15 +96,20 @@ def drafts(row: dict, person_id: str, source: Source, locate: Locate | None = No
     else:
         base |= {"claim_date": source.source_date, "date_precision": PRECISION[len(source.source_date)],
                  "date_method": source.date_method}
-    relation, list_org = LISTS[row["list"]]
-    found = [ClaimDraft(kind="role", relation=relation, org_id=orgs.org_id(list_org),
-                        value=row["role"] or row["source_title"], **base)]
-    if row["list"] in JOB_LISTS and row["role"]:
+    spec = SPECS[row["list"]]
+    found = []
+    if spec.claim:
+        relation, list_org = spec.claim
+        found.append(ClaimDraft(kind="role", relation=relation, org_id=orgs.org_id(list_org),
+                                value=row["role"] or row["source_title"], **base))
+    if spec.job and row["role"]:
         cut = max(quote.find(row["role"]), quote.find(" ") + 1)
         found.append(ClaimDraft(kind="role", value=row["role"], **base | {"quote": quote[cut:], "quote_start": start + cut}))
-    if row["list"] == "consuls" and row["place"]:
-        lat, lon = (locate and locate(row["place"], row["jurisdiction"])) or (None, None)
-        found.append(ClaimDraft(kind="location", relation="lives_in", value=row["place"], lat=lat, lon=lon, **base))
+    if spec.place and row["place"]:
+        city, *states = row["place"].split(", ") if row["jurisdiction"] is None else [row["place"], *row["jurisdiction"]]
+        lat, lon = (locate and locate(city, states)) or (None, None)
+        found.append(ClaimDraft(kind="location", relation=spec.place_relation, value=row["place"], lat=lat, lon=lon,
+                                **base))
     for inst in row["institutions"]:
         found.append(ClaimDraft(kind="affiliation", relation=RELATIONS[inst["relation"]],
                                 org_id=orgs.org_id(inst["name"]), value=inst["name"], **base))
@@ -102,7 +121,7 @@ def drafts(row: dict, person_id: str, source: Source, locate: Locate | None = No
 def load(store: Store, seeds: Path = SEEDS, locate: Locate | None = None) -> int:
     """Load every seed row in one transaction and return the row count; a second load writes nothing.
 
-    locate gives the coordinates of a consul's city; without it those claims have none.
+    locate gives the coordinates of a place list's city; without it those claims have none.
     """
     sources: dict[str, Source] = {}
     count = 0
@@ -138,7 +157,7 @@ def locator(http: HttpClient) -> Locate:
 
 
 def run(ctx: StepContext, _: SeedIn) -> SeedOut:
-    """Load the seed rows with consul cities located on GeoNames; raises RuntimeError without an HTTP client."""
+    """Load the seed rows with their cities located on GeoNames; raises RuntimeError without an HTTP client."""
     if ctx.http is None:
         raise RuntimeError("fn-seed needs an HTTP client")
     locate = locator(ctx.http)
