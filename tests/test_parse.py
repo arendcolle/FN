@@ -14,6 +14,22 @@ NL = ("Welke Vlaamse experten in telecom en 6G-onderzoek in de regio New York en
       "kunnen deelnemen aan een rondetafel?")
 
 
+class ContentWordsTest(unittest.TestCase):
+    def test_function_and_generic_words_are_dropped_and_ai_stays(self):
+        """Function words, generic words and one-letter words go; a two-letter word stays; a repeat comes back once."""
+        self.assertEqual(parse.content_words("AI in health care"), ["ai", "health", "care"])
+        self.assertEqual(parse.content_words("Research"), [])
+        self.assertEqual(parse.content_words("Who are the Belgian experts in the US?"), [])
+        self.assertEqual(parse.content_words("wind and Wind, and solar and wind"), ["wind", "solar"])
+
+    def test_dutch_and_french_questions_lose_their_function_words_and_accents(self):
+        """Welke and de/het (Dutch), quelles and les/de (French) are dropped; the rest is folded like a name key."""
+        self.assertEqual(parse.content_words("Welke experts in de windenergie en het elektriciteitsnet?"),
+                         ["windenergie", "elektriciteitsnet"])
+        self.assertEqual(parse.content_words("Quelles études sur l'énergie éolienne dans les Ardennes ?"),
+                         ["etudes", "energie", "eolienne", "ardennes"])
+
+
 class ParseTest(unittest.TestCase):
     def setUp(self):
         self.settings = make_settings(self)

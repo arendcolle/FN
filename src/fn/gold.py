@@ -2,7 +2,9 @@
 import csv
 import io
 import json
+import re
 import sys
+import unicodedata
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from urllib.parse import unquote, urlsplit
@@ -64,10 +66,18 @@ def load_cases(ids: list[str]) -> list[GoldCase]:
             known = reach.get((case["id"], person["name"]), {})
             picks.append(GoldPick(
                 case_id=case["id"], name=person["name"], gold_tie=person["tie"], openalex_id=known.get("openalex_id"),
-                reachable=known.get("reachable"), reach_evidence=known.get("evidence", ""),
+                reachable=known.get("reachable"), reach_evidence=known.get("evidence", ""), sources=person.get("sources", []),
             ))
         loaded.append(GoldCase(id=case["id"], question=case["question"], source_url=case.get("source"), picks=picks))
     return loaded
+
+
+# Frozen on purpose: a copy of today's name_key and group_key, so gold counts do not move when FN's matching does.
+def pick_key(name: str) -> str:
+    """A name folded and grouped for comparing gold picks with stored names."""
+    bare = "".join(c for c in unicodedata.normalize("NFKD", name) if not unicodedata.combining(c))
+    tokens = re.findall(r"[^\W_]+", bare.casefold())
+    return " ".join([tokens[0], *(t for t in tokens[1:-1] if len(t) > 1), tokens[-1]]) if len(tokens) > 2 else " ".join(tokens)
 
 
 def match(pick: GoldPick, candidates: list[Candidate], persons: dict[str, Person],
@@ -77,9 +87,9 @@ def match(pick: GoldPick, candidates: list[Candidate], persons: dict[str, Person
     pinned is the stored person for the pick's OpenAlex id; a pin the store does not hold falls back
     to the name. With several candidates the best one wins, section network first.
     """
-    key = group_key(name_key(pick.name))
+    key = pick_key(pick.name)
     found = [c for c in candidates if (pinned in c.person_ids if pinned
-                                       else any(group_key(persons[p].name_key) == key for p in c.person_ids))]
+                                       else any(pick_key(persons[p].name_key) == key for p in c.person_ids))]
     return min(found, key=lambda c: (c.section != "network", c.rank), default=None)
 
 

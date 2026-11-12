@@ -5,8 +5,9 @@ from types import SimpleNamespace
 from unittest import mock
 
 from fn.contracts import Chip, Chips, Identifier, LaneHit, LaneIn, LaneOut
+from fn import search
 from fn.steps import StepContext
-from fn.worker import Worker
+from fn.worker import Worker, new_id, now
 from tests.helpers import StubHttp, StubLLM, make_db, make_settings
 
 CHIPS = Chips(topics=[Chip(text="wind", origin="edited")])
@@ -94,6 +95,22 @@ class SearchStepsTest(unittest.TestCase):
             worker.execute(search_id)
         self.assertEqual([(s.step, s.status) for s in self.store.list_steps(search_id)], [("parse", "error")])
         self.assertEqual(self.store.search_progress(search_id).model_dump(), {"status": "failed", "people": 0, "version": 0})
+
+    def context(self, search_id: str) -> StepContext:
+        return StepContext(search_id=search_id, store=self.store, llm=None, http=None, now=now,
+                           new_id=new_id, log=mock.Mock(), settings=self.settings)
+
+    def test_refinish_gives_back_the_stored_candidates_and_a_search_without_lane_outputs_raises(self):
+        """Running the steps after the lanes on the stored outputs saves the same candidates; no lane output raises ValueError."""
+        search_id = self.execute([self.finds("seeds", "Ann Smith"), self.finds("web", "Pat Lee")])
+        stored = self.store.get_search(search_id)
+        before = self.store.list_candidates(search_id)
+        search.refinish(self.context(search_id), stored)
+        self.assertEqual(self.store.list_candidates(search_id), before)
+        self.assertEqual(len(before), 2)
+        empty = self.worker.create_search("Who knows solar?", CHIPS, "edited")
+        with self.assertRaisesRegex(ValueError, empty.id):
+            search.refinish(self.context(empty.id), empty)
 
     def test_progress_of_an_unknown_search_is_none(self):
         """search_progress returns None for an id with no search."""

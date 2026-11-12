@@ -11,10 +11,11 @@ import sys
 import tempfile
 from datetime import date
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from fn import config, geo, gold, net, present, search
+from fn import config, geo, gold, net, parse, present, search
 from fn.config import ROOT, Settings
-from fn.contracts import Chips, GeoArea, GoldCase, LaneOut, Search, group_key, name_key
+from fn.contracts import Candidate, Chips, GeoArea, GoldCase, GoldPick, Search, name_key
 from fn.llm import from_settings
 from fn.steps import StepContext
 from fn.store import Store
@@ -24,13 +25,18 @@ SCHEMA = 1
 TOP = 20
 FRESH_YEARS = 5
 COMPLETE = ("place", "role", "employer", "tie", "sources2")
-SUMS = ("gold_at_10", "gold_at_20", "gold_at_50", "gold_found", "doubles_top20", "doubles_top50")
-STOP = {"the", "and", "for", "with", "of", "in", "on", "at", "to", "a", "an", "us", "usa", "from", "their", "who", "has"}
+SUMS = ("gold_at_10", "gold_at_20", "gold_at_50", "gold_found", "gold_free_at_10", "gold_free_at_20", "gold_free_at_50",
+        "gold_free_found", "gold_by_construction", "doubles_top20", "doubles_top50", "pairs_wrong", "pairs_split",
+        "seed_noise_top20")
+PAIRS = ROOT / "data" / "gold" / "identity-pairs.jsonl"
+PAIR_LABELS = ("same", "different", "unclear")
+PAIR_WINDOW = 50
+WAYBACK = re.compile(r"^(?:https?://)?web\.archive\.org/web/\d+[a-z_]*/(.+)$", re.IGNORECASE)
 # The LinkedIn lane asks the cache only and notes "off" on a miss, so its miss is not a fault.
 OFF_BY_DESIGN = "lane:linkedin"
 MODES = ("rescore", "rerank", "replay")
 # A gate fails when the metric moves this way from A to B; complete may fall by 0.02.
-GATES = {"doubles_top20": 1, "gold_at_20": -1, "gold_found": -1, "complete": -1}
+GATES = {"doubles_top20": 1, "gold_free_at_20": -1, "gold_free_found": -1, "pairs_wrong": 1, "complete": -1}
 COMPLETE_SLACK = 0.02
 
 
@@ -72,7 +78,7 @@ def likely_same(a: str, b: str) -> bool:
     ta, tb = a.split(), b.split()
     if not ta or not tb:
         return False
-    if group_key(a) == group_key(b) or (ta[0], ta[-1]) == (tb[0], tb[-1]):
+    if gold.pick_key(a) == gold.pick_key(b) or (ta[0], ta[-1]) == (tb[0], tb[-1]):
         return True
     first, other = sorted((ta[0], tb[0]), key=len)
     return ta[-1] == tb[-1] and len(ta) > 1 and len(tb) > 1 and len(first) == 1 and other.startswith(first)
@@ -84,9 +90,8 @@ def doubles(cards: list[dict]) -> int:
 
 
 def topic_pattern(chips: Chips | None) -> re.Pattern | None:
-    """A pattern for the topic chip words (stop words and single letters dropped) at a word start, or None."""
-    found = {w for c in (chips.topics if chips else []) for w in re.findall(r"[^\W_]+", c.text.casefold())
-             if w not in STOP and len(w) > 1}
+    """A pattern for the content words of the topic chips at a word start, or None."""
+    found = {w for c in (chips.topics if chips else []) for w in parse.content_words(c.text)}
     return re.compile(r"\b(?:" + "|".join(map(re.escape, sorted(found))) + ")", re.IGNORECASE) if found else None
 
 
@@ -113,40 +118,114 @@ def place_class(claims: list, area: GeoArea) -> str:
     return "inside" if any(geo.distance_km(area.lat, area.lon, la, lo) <= geo.METRO_RADIUS_KM for la, lo in spots) else "outside"
 
 
+def card_ids(candidate: Candidate) -> list[str]:
+    """The records a kept candidate's card reads: the records a lane hit, else its first record."""
+    return present.hits_of(candidate)
+
+
+def site(url: str) -> str:
+    """The host of a URL without www., for the page a Wayback URL wraps; empty when there is none."""
+    wrapped = WAYBACK.match(url.strip())
+    url = wrapped.group(1) if wrapped else url.strip()
+    host = urlsplit(url if "//" in url else f"//{url}").hostname or ""
+    return host.casefold().removeprefix("www.")
+
+
+def by_construction(store: Store, case: GoldCase, pick: GoldPick, hit: Candidate) -> bool:
+    """Whether a record on the pick's card has a seed page from a site that the case source or the pick's sources name."""
+    named = {site(u) for u in (case.source_url, *pick.sources) if u} - {""}
+    sources = store.get_sources([c.source_id for c in store.claims_of(card_ids(hit))])
+    return bool(named & {site(s.url) for s in sources.values() if s.kind == "seed_page"})
+
+
+def within(picks: list[dict], k: int) -> int:
+    return sum(p["position"] is not None and p["position"] <= k for p in picks)
+
+
 def gold_metrics(store: Store, case: GoldCase, kept: list) -> dict:
-    """Where each pick of the case sits in the kept list, as ids like GS-02#1 and the counts at 10, 20 and 50."""
+    """Where each pick of the case sits in the kept list, as ids like GS-02#1, and the counts at 10, 20 and 50.
+
+    The gold_free counts leave out the picks a seed list of the case's own sites names by construction.
+    """
     persons = store.get_persons([p for c in kept for p in c.person_ids])
     pins = store.person_ids_by_identifier("openalex", [p.openalex_id for p in case.picks if p.openalex_id])
     found = []
     for n, pick in enumerate(case.picks, 1):
         hit = gold.match(pick, kept, persons, pins.get(pick.openalex_id or ""))
-        found.append({"id": f"{case.id}#{n}", "position": kept.index(hit) + 1 if hit else None})
-    at = {k: sum(f["position"] is not None and f["position"] <= k for f in found) for k in (10, 20, 50)}
-    return {"gold_picks": found, **{f"gold_at_{k}": n for k, n in at.items()},
-            "gold_found": sum(f["position"] is not None for f in found)}
+        found.append({"id": f"{case.id}#{n}", "position": kept.index(hit) + 1 if hit else None,
+                      "by_construction": bool(hit and by_construction(store, case, pick, hit))})
+    free = [f for f in found if not f["by_construction"]]
+    return {"gold_picks": found, **{f"gold_at_{k}": within(found, k) for k in (10, 20, 50)},
+            "gold_found": sum(f["position"] is not None for f in found),
+            **{f"gold_free_at_{k}": within(free, k) for k in (10, 20, 50)},
+            "gold_free_found": sum(f["position"] is not None for f in free),
+            "gold_by_construction": sum(f["by_construction"] for f in found)}
+
+
+def load_pairs(path: Path) -> list[dict] | None:
+    """The labelled pairs of the file, or None when it is absent; blank lines are skipped.
+
+    Raises ValueError naming the path and line for a line that is not an object with string a and b and a known label.
+    """
+    if not path.is_file():
+        return None
+    pairs = []
+    for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            pair = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{path}:{n}: not JSON ({exc.msg})") from exc
+        if not (isinstance(pair, dict) and all(isinstance(pair.get(k), str) for k in ("a", "b"))
+                and pair.get("label") in PAIR_LABELS):
+            raise ValueError(f"{path}:{n}: needs a and b as ids and label same, different or unclear")
+        pairs.append(pair)
+    return pairs
+
+
+def pair_metrics(store: Store, kept: list, pairs: list[dict]) -> dict:
+    """pairs_wrong: different pairs on one kept card. pairs_split: same pairs on two cards, both in the first 50.
+
+    A pair with an id the database does not hold is skipped, and so is an unclear one.
+    """
+    known = store.get_persons([i for p in pairs for i in (p["a"], p["b"])])
+    cards = [set(card_ids(c)) for c in kept]
+    wrong = split = 0
+    for pair in pairs:
+        if pair["label"] == "unclear" or not {pair["a"], pair["b"]} <= known.keys():
+            continue
+        at_a, at_b = ({i for i, card in enumerate(cards) if x in card} for x in (pair["a"], pair["b"]))
+        if pair["label"] == "different":
+            wrong += bool(at_a & at_b)
+        else:
+            split += bool(at_a and at_b and not at_a & at_b and min(at_a) < PAIR_WINDOW and min(at_b) < PAIR_WINDOW)
+    return {"pairs_wrong": wrong, "pairs_split": split}
 
 
 def card_metrics(store: Store, scored: Search, kept: list, created: date, area: GeoArea | None) -> dict:
     """The doubles counts, the card shares of the first TOP cards, and the place and lane shares."""
     top = kept[:50]
-    views = present.person_views(store, [present.hits_of(c) for c in top], created, [c.reason_claim_ids for c in top])
+    views = present.person_views(store, [card_ids(c) for c in top], created, [c.reason_claim_ids for c in top])
     by_person: dict[str, list] = {}
-    for claim in store.claims_of([p for c in top for p in present.hits_of(c)]):
+    for claim in store.claims_of([p for c in top for p in card_ids(c)]):
         by_person.setdefault(claim.person_id, []).append(claim)
     pattern = topic_pattern(scored.chips)
     cards = []
     for c, view in zip(top, views, strict=True):
-        claims = [x for p in present.hits_of(c) for x in by_person.get(p, [])]
+        claims = [x for p in card_ids(c) for x in by_person.get(p, [])]
         text = " ".join(f"{x.value} {x.quote}" for x in claims)
         card = {
             "key": name_key(view.name), "orgs": {x.org_id for x in claims if x.org_id}, "lanes": set(c.lane_ranks),
             "place": view.place is not None, "role": view.role is not None, "employer": view.employer is not None,
             "tie": view.evidence is not None or bool(view.orgs), "sources2": len({x.source_id for x in claims}) >= 2,
-            "fresh": fresh(claims, view.employer, created), "topic": bool(pattern and pattern.search(text)),
+            "fresh": fresh(claims, view.employer, created), "topic": bool(pattern and pattern.search(name_key(text))),
             "where": place_class(claims, area) if area else None,
         }
         cards.append(card | {"complete": all(card[f] for f in COMPLETE)})
     first, out = cards[:TOP], {"doubles_top20": doubles(cards[:20]), "doubles_top50": doubles(cards)}
+    out["seed_noise_top20"] = 0 if scored.chips and scored.chips.institutions else sum(
+        x["lanes"] == {"seeds"} and not x["topic"] for x in first)
     flags = {f: lambda x, f=f: x[f] for f in (*COMPLETE, "complete", "fresh")}
     flags |= {f"place_{w}": lambda x, w=w: x["where"] == w for w in ("inside", "outside", "unknown")} if area else {}
     flags |= {"topic": lambda x: x["topic"]} if pattern else {}
@@ -155,14 +234,23 @@ def card_metrics(store: Store, scored: Search, kept: list, created: date, area: 
     return out | {name: share(sum(bool(test(x)) for x in first), len(first)) for name, test in flags.items() if first}
 
 
-def score_search(store: Store, scored: Search, stored: Search, case: GoldCase | None, names: geo.Names | None) -> dict:
-    """The metrics of scored's kept candidates; stored supplies the date that freshness counts from."""
+def score_search(store: Store, scored: Search, stored: Search, case: GoldCase | None, names: geo.Names | None,
+                 pairs: list[dict] | None = None) -> dict:
+    """The metrics of scored's kept candidates; stored supplies the date that freshness counts from.
+
+    pairs are the labelled identity pairs; without them the pair metrics are left out.
+    """
     kept = store.list_candidates(scored.id, kept_only=True)
     place = scored.chips.place if scored.chips else None
     area = geo.locate(place.text, names) if place and names and place.kind in geo.METRO_KINDS else None
     row = {"question_sha256": hashlib.sha256(stored.question.encode()).hexdigest(), "gold_case": case.id if case else None,
            "kept": len(kept)} | (gold_metrics(store, case, kept) if case else {})
-    return row | (card_metrics(store, scored, kept, stored.created_at.date(), area) if kept else {})
+    if not kept:
+        return row
+    top20 = [{"id": c.person_id[:12], "rank": n, "lanes": sorted(c.lane_ranks), "parts": [p.feature for p in c.score_parts]}
+             for n, c in enumerate(kept[:TOP], 1)]
+    return (row | card_metrics(store, scored, kept, stored.created_at.date(), area)
+            | (pair_metrics(store, kept, pairs) if pairs is not None else {}) | {"top20": top20})
 
 
 def step_seconds(store: Store, stored: Search) -> dict[str, float]:
@@ -190,16 +278,12 @@ def degraded(store: Store, search_id: str, known: set[str]) -> bool:
 
 
 def rerank(store: Store, stored: Search, settings: Settings) -> bool:
-    """Run search.finish over the stored lane outputs and chips; True when the run is degraded."""
+    """Run search.refinish over the stored lane outputs and chips; True when the run is degraded."""
     known = {s.id for s in store.list_steps(stored.id)}
-    outs = []
     try:
-        for step in (s for s in store.list_steps(stored.id) if s.step.startswith("lane:")):
-            output = store.get_payload(step.id)[1] if step.status == "ok" else None
-            outs.append(LaneOut.model_validate_json(output) if output else LaneOut(lane=step.step[5:], query="", total_seen=0))
         ctx = StepContext(search_id=stored.id, store=store, llm=None, http=None, now=now, new_id=new_id,
                           log=logging.getLogger("fn.score"), settings=settings)
-        search.finish(ctx, outs, stored.chips)
+        search.refinish(ctx, stored)
     except Exception:  # noqa: BLE001 any failure marks the search degraded and the scorecard goes on
         return True
     return degraded(store, stored.id, known)
@@ -215,7 +299,9 @@ def run(snap: Path, mode: str, out: Path, allow_degraded: bool) -> int:
     """Score the snapshot's searches in a temporary copy of its database and write scorecard.json and scorecard.md.
 
     Returns 2 when a search is degraded and allow_degraded is not set, else 0. The snapshot is never written.
+    Raises ValueError naming the line of a malformed pair file.
     """
+    pairs = load_pairs(PAIRS)
     sha, dirty = code_state(ROOT)
     cases = {c.question: c for c in gold.load_cases([])}
     names = cities(snap / "cache")
@@ -241,7 +327,7 @@ def run(snap: Path, mode: str, out: Path, allow_degraded: bool) -> int:
                 is_bad = rerank(store, stored, settings)
             elif mode == "replay":
                 scored, is_bad = replay(worker, stored)
-            rows[key] = score_search(store, scored, stored, cases.get(stored.question), names)
+            rows[key] = score_search(store, scored, stored, cases.get(stored.question), names, pairs)
             if is_bad:
                 bad.append(key)
         client.http.close()
@@ -309,10 +395,49 @@ def compare(path_a: Path, path_b: Path) -> int:
     return 1 if failed else 0
 
 
-def main(argv: list[str] | None = None) -> int:
-    """fn-score snapshot DIR [--llm DIR ...] | run DIR --mode MODE --out DIR [--allow-degraded] | compare A.json B.json.
+def names_of(snap: Path, ids: set[str]) -> dict[str, str]:
+    """The display name of each 12-character id prefix the snapshot database holds, read-only."""
+    db = sqlite3.connect(f"file:{snap / 'fn.sqlite3'}?mode=ro", uri=True)
+    try:
+        rows = db.execute("SELECT substr(id, 1, 12), display_name FROM persons WHERE substr(id, 1, 12) IN "
+                          "(SELECT value FROM json_each(?))", (json.dumps(sorted(ids)),))
+        return dict(rows)
+    finally:
+        db.close()
 
-    Returns 0, 1 when a compare gate fails, 2 for a degraded run or a snapshot dir that is not empty.
+
+def diff(path_a: Path, path_b: Path, snap: Path | None) -> int:
+    """Print, per search both scorecards hold, who entered and who left the first 20, with rank, lanes and parts.
+
+    Names come from the snapshot at snap and go to the terminal only. Searches degraded in either file or
+    without a top20 list are skipped and named in one line.
+    """
+    a, b = (json.loads(p.read_text()) for p in (path_a, path_b))
+    skip = set(a["meta"]["degraded"]) | set(b["meta"]["degraded"])
+    keys = [k for k in sorted(a["searches"].keys() & b["searches"].keys() - skip)
+            if "top20" in a["searches"][k] and "top20" in b["searches"][k]]
+    tops = {k: ({p["id"]: p for p in a["searches"][k]["top20"]}, {p["id"]: p for p in b["searches"][k]["top20"]}) for k in keys}
+    names = names_of(snap, {i for old, new in tops.values() for i in old.keys() ^ new.keys()}) if snap else {}
+    if skipped := sorted((a["searches"].keys() & b["searches"].keys()) - set(keys)):
+        print(f"skipped, degraded or without a first-20 list: {', '.join(skipped)}")
+    if not keys:
+        print("no search with a top20 list in both files")
+    for key in keys:
+        old, new = tops[key]
+        print(f"search {key}: {len(new.keys() - old.keys())} entered, {len(old.keys() - new.keys())} left")
+        for label, ids in (("entered", new.keys() - old.keys()), ("left", old.keys() - new.keys())):
+            for i in sorted(ids, key=lambda i: (new.get(i) or old[i])["rank"]):
+                row = new.get(i) or old[i]
+                print(f"  {label} {i}{' ' + names[i] if i in names else ''}: rank A {old[i]['rank'] if i in old else '-'}, "
+                      f"B {new[i]['rank'] if i in new else '-'}, lanes {','.join(row['lanes'])}, parts {','.join(row['parts'])}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    """fn-score snapshot DIR [--llm DIR ...] | run DIR --mode MODE --out DIR [--allow-degraded] | compare A.json B.json
+    | diff A.json B.json [--names SNAPSHOT_DIR].
+
+    Returns 0, 1 when a compare gate fails, 2 for a degraded run, a snapshot dir that is not empty or a bad pair file.
     """
     parser = argparse.ArgumentParser(prog="fn-score")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -327,11 +452,21 @@ def main(argv: list[str] | None = None) -> int:
     cmp = sub.add_parser("compare")
     cmp.add_argument("a", type=Path)
     cmp.add_argument("b", type=Path)
+    dif = sub.add_parser("diff")
+    dif.add_argument("a", type=Path)
+    dif.add_argument("b", type=Path)
+    dif.add_argument("--names", type=Path)
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     if args.command == "compare":
         return compare(args.a, args.b)
+    if args.command == "diff":
+        return diff(args.a, args.b, args.names)
     if args.command == "run":
-        return run(args.dir, args.mode, args.out, args.allow_degraded)
+        try:
+            return run(args.dir, args.mode, args.out, args.allow_degraded)
+        except ValueError as exc:
+            print(exc, file=sys.stderr)
+            return 2
     if bad := next((p for p in args.llm if not p.is_dir()), None):
         print(f"{bad} is not a directory", file=sys.stderr)
         return 2
