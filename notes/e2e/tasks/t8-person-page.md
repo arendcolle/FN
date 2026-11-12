@@ -41,6 +41,9 @@ Follow the mockups and the Profile part.
 
 ### 4. Links to the page
 
+- When people in the network have new facts, the count line on the Network page and on Home ends with a link that turns the "New facts only" token on: "214 people · 12 not on the map · 3 with new facts". It is left out at 0.
+
+
 - The name on a result card and on a network row links to `/people/<id>` (with `?search=<id>` from a card).
 - The Source page shows an import or staff source by its label and file name, with no outside link, through `present.label_of`.
 
