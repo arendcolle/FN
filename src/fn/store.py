@@ -413,6 +413,17 @@ class Store:
                                    (city, lat, lon, org_id))
         return cursor.rowcount > 0
 
+    def unlocated_places(self) -> list[tuple[str, str]]:
+        """The id and place text of every lives_in claim without coordinates."""
+        rows = self.conn.execute("SELECT id, value FROM claims WHERE kind = 'location' AND relation = 'lives_in' "
+                                 "AND lat IS NULL ORDER BY id")
+        return [(r[0], r[1]) for r in rows]
+
+    def fill_claim_place(self, claim_id: str, lat: float, lon: float) -> bool:
+        """Give a claim without coordinates these; returns whether a row changed."""
+        cursor = self.conn.execute("UPDATE claims SET lat = ?, lon = ? WHERE id = ? AND lat IS NULL", (lat, lon, claim_id))
+        return cursor.rowcount > 0
+
     def get_orgs(self, org_ids: list[str]) -> dict[str, Org]:
         rows = self.conn.execute(
             f"SELECT {', '.join(ORG_COLUMNS)} FROM orgs WHERE id IN (SELECT value FROM json_each(?))",

@@ -6,8 +6,9 @@ from datetime import UTC, datetime
 import httpx
 from pydantic import BaseModel
 
-from fn import extract, llm, rank
+from fn import extract, geo, llm, rank
 from fn.contracts import (
+    ClaimDraft,
     Identifier,
     LLMResult,
     Located,
@@ -285,6 +286,22 @@ class ExtractTest(unittest.TestCase):
         (cambridge,) = [d for d in extract.drafts("p", source, found[0], ctx) if d.relation == "lives_in"]
         self.assertAlmostEqual(cambridge.lat, 42.38, places=1)
         self.assertAlmostEqual(cambridge.lon, -71.11, places=1)
+
+    def test_stored_lives_in_claims_without_coordinates_get_the_ones_geo_finds(self):
+        """A city is located, a place that names no city and a born_in claim are left, and a second run fills none."""
+        source = self.source("Wim Doe lives in Cambridge, Massachusetts, was born in Boston and stays in Nowhereville.")
+        person = self.store.resolve_person([Identifier(scheme="mention", value="m1")], "Wim Doe")
+        ids = {}
+        for relation_, place in (("lives_in", "Cambridge, Massachusetts"), ("lives_in", "Nowhereville"), ("born_in", "Boston")):
+            start = source.text.index(place)
+            ids[place] = self.store.upsert_claim(ClaimDraft(
+                person_id=person.id, kind="location", relation=relation_, value=place, quote=place, quote_start=start,
+                quote_end=start + len(place), source=source)).id
+        self.assertEqual(extract.locate_stored(self.store, geo.from_zip(cities_zip())), 1)
+        placed = {place: self.store.get_claim(i).lat for place, i in ids.items()}
+        self.assertAlmostEqual(placed.pop("Cambridge, Massachusetts"), 42.38, places=1)
+        self.assertEqual(placed, {"Nowhereville": None, "Boston": None})
+        self.assertEqual(extract.locate_stored(self.store, geo.from_zip(cities_zip())), 0)
 
     def test_a_role_falls_back_to_the_page_title_then_the_host(self):
         """Every mention gives a role claim, even without a role.

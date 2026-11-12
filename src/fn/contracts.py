@@ -726,6 +726,16 @@ class OrgsOut(Model):
     orgs: list[Org]
 
 
+# The one step of the fn-orgs --places job.
+class PlacesIn(Model):
+    pass
+
+
+class PlacesOut(Model):
+    orgs: int
+    claims: int
+
+
 # The one step of the fn-seed job.
 class SeedIn(Model):
     pass

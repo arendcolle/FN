@@ -21,6 +21,7 @@ from fn.contracts import (
 )
 from fn.llm import FixtureMissing, LLMCallError, TagError
 from fn.steps import StepContext, fan_out
+from fn.store import Store
 
 TASK = "extract"
 CHUNK_CHARS = 6_000
@@ -197,3 +198,16 @@ def drafts(person_id: str, source: Source, located: Located, ctx: StepContext | 
             found.append(ClaimDraft(kind="affiliation", relation=rel.relation, org_id=orgs.org_id(rel.org),
                                     value=normalize(rel.org), **base))
     return found
+
+
+def locate_stored(store: Store, names: geo.Names) -> int:
+    """Give stored lives_in claims without coordinates the ones geo finds for their place; returns how many it filled.
+
+    Claims written before places were located on write have none. A place that names no city stays as it is.
+    """
+    filled = 0
+    with store.tx():
+        for claim_id, place in store.unlocated_places():
+            if found := geo.locate(place, names):
+                filled += store.fill_claim_place(claim_id, found.lat, found.lon)
+    return filled
