@@ -94,10 +94,12 @@ class CardActionsTest(unittest.TestCase):
         self.assertIn("Added to your network", self.card(self.page("s1"), bob))
 
     def test_add_merges_the_hits_and_leaves_a_conflicting_hit_apart(self):
-        """Add on a two-record card merges a record without a strong identifier; a record with another seed id
-        stays apart and the card says '· 1 possible match', linking to the profile's matches."""
+        """Add on a two-record card merges a record without a veto; a record with another ORCID stays apart and
+        the card says '· 1 possible match', linking to the profile's matches."""
         ada, mention = self.person("Ada Example", "ada"), self.person("Ada Example", "ada page", scheme="mention")
         bob, other = self.person("Bob Example", "bob"), self.person("Bob Example", "bob-2")
+        self.store.add_identifier(bob, Identifier(scheme="orcid", value="0000-0001"))
+        self.store.add_identifier(other, Identifier(scheme="orcid", value="0000-0002"))
         self.search("s1", [([ada, mention], "new"), ([bob, other], "new")])
         self.act("s1", ada, "add")
         self.assertEqual(self.store.canonical_ids([mention])[mention], ada)

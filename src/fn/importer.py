@@ -8,7 +8,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import NamedTuple
 
-from fn import geo, network, orgs
+from fn import geo, identity, network, orgs
 from fn.contracts import (
     IMPORT_COLUMNS,
     ClaimDraft,
@@ -22,7 +22,6 @@ from fn.contracts import (
     ImportStepOut,
     Source,
     clean_name,
-    group_key,
     name_key,
     normalize,
     profile_url,
@@ -193,7 +192,7 @@ def rows_of(store: Store, record: ImportRecord, names: geo.Names | None) -> tupl
         outcome: ImportOutcome
         person_id = next(iter(owners), None)
         earlier = next((file_idents[(i.scheme, i.value)] for i in found if (i.scheme, i.value) in file_idents), None)
-        gkey = group_key(name_key(name))
+        gkey = identity.key(name)
         if person_id:
             outcome = "update"
         elif earlier:

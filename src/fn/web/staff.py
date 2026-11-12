@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
-from fn import exporter, importer, network
+from fn import exporter, identity, importer, network
 from fn.contracts import (
     IMPORT_COLUMNS,
     Candidate,
@@ -389,7 +389,7 @@ def candidate_of(store: Store, search_id: str, person_id: str) -> Candidate:
 
 def card_decision(store: Store, candidate: Candidate, action: str, match: str) -> None:
     """Add, skip, merge into the same-name network person, or add as new; a second press changes nothing."""
-    hits = candidate.hit_person_ids or candidate.person_ids[:1]
+    hits = identity.on_card(store, candidate)
     where = {"search_id": candidate.search_id, "rank": candidate.rank, "section": candidate.section}
     theirs = store.canonical_ids([match]).get(match) if match else None
     known = theirs in network.name_matches(store, hits) if theirs else False

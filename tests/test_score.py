@@ -296,9 +296,10 @@ class ScoreTest(unittest.TestCase):
 
     def test_pair_metrics_are_left_out_without_a_pair_file_and_counted_with_one(self):
         """With a pair file the aggregate sums pairs_wrong and pairs_split; a malformed line stops the run and names the line."""
-        self.assertNotIn("pairs_wrong", self.run_score()[1]["aggregate"])
-        ids = {n: self.store.resolve_person([Identifier(scheme="seed", value=f"{NAMES[n]}-x")], NAMES[n]).id for n in (1, 2)}
         pairs = self.work / "pairs.jsonl"
+        with mock.patch.object(score, "PAIRS", pairs):
+            self.assertNotIn("pairs_wrong", self.run_score()[1]["aggregate"])
+        ids = {n: self.store.resolve_person([Identifier(scheme="seed", value=f"{NAMES[n]}-x")], NAMES[n]).id for n in (1, 2)}
         pairs.write_text(json.dumps({"a": ids[1], "b": ids[2], "label": "same", "note": "n"}) + "\n")
         with mock.patch.object(score, "PAIRS", pairs):
             self.assertEqual(self.run_score()[1]["aggregate"]["pairs_split"], 0)

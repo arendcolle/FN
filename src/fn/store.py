@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fn import db
+from fn import db, identity
 from fn.contracts import (
     CONTRACTS_VERSION,
     Candidate,
@@ -36,7 +36,6 @@ from fn.contracts import (
     SourceKind,
     StepCall,
     StepRun,
-    group_key,
     name_key,
 )
 
@@ -462,12 +461,12 @@ class Store:
         return {r["id"]: Person.model_validate(dict(r)) for r in rows}
 
     def person_ids_by_group_key(self, keys: list[str]) -> dict[str, list[tuple[str, str]]]:
-        """Every (person id, name key) per group key, in id order."""
+        """Every (person id, name key) per identity key, in id order."""
         wanted: set[str] = set(keys)
         found: dict[str, list[tuple[str, str]]] = {}
-        # group_key is not stored, so every person is read; a few thousand rows on one laptop.
+        # The identity key is not stored, so every person is read; a few thousand rows on one laptop.
         for key, person_id in self.conn.execute("SELECT name_key, id FROM persons ORDER BY id"):
-            if (group := group_key(key)) in wanted:
+            if (group := identity.key(key)) in wanted:
                 found.setdefault(group, []).append((person_id, key))
         return found
 
@@ -540,11 +539,12 @@ class Store:
             conn.execute("DELETE FROM match_flags WHERE search_id = ?", (search_id,))
             conn.executemany(
                 "INSERT INTO candidates (search_id, person_id, person_ids_json, section, rank, score, lane_ranks_json, "
-                "reason_claim_ids_json, score_parts_json, hit_person_ids_json, cut_reason) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "reason_claim_ids_json, score_parts_json, hit_person_ids_json, cut_reason, card_person_ids_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [(search_id, c.person_id, json.dumps(c.person_ids), c.section, c.rank, c.score,
                   json.dumps(c.lane_ranks), json.dumps(c.reason_claim_ids),
-                  json.dumps([p.model_dump() for p in c.score_parts]), json.dumps(c.hit_person_ids), c.cut_reason)
+                  json.dumps([p.model_dump() for p in c.score_parts]), json.dumps(c.hit_person_ids), c.cut_reason,
+                  json.dumps(c.card_person_ids))
                  for c in candidates],
             )
             conn.executemany(
@@ -576,6 +576,7 @@ class Store:
                 reason_claim_ids=json.loads(r["reason_claim_ids_json"]),
                 score_parts=[ScorePart.model_validate(p) for p in json.loads(r["score_parts_json"])],
                 hit_person_ids=json.loads(r["hit_person_ids_json"]), cut_reason=r["cut_reason"],
+                card_person_ids=json.loads(r["card_person_ids_json"]),
             )
             for r in rows
         ]
@@ -598,6 +599,14 @@ class Store:
         """Each id to the id of the record it is merged into, else itself; unknown ids are left out."""
         rows = self.conn.execute(
             "SELECT id, COALESCE(merged_into, id) FROM persons WHERE id IN (SELECT value FROM json_each(?))",
+            (json.dumps(person_ids),),
+        )
+        return {r[0]: r[1] for r in rows}
+
+    def merged_records(self, person_ids: list[str]) -> dict[str, str]:
+        """Each record merged into one of the ids, to that id."""
+        rows = self.conn.execute(
+            "SELECT id, merged_into FROM persons WHERE merged_into IN (SELECT value FROM json_each(?))",
             (json.dumps(person_ids),),
         )
         return {r[0]: r[1] for r in rows}
@@ -664,12 +673,12 @@ class Store:
         return [_event(r) for r in rows]
 
     def network_by_group_key(self) -> dict[str, list[str]]:
-        """The canonical ids of the people in the network, by the group key of their name, in id order."""
+        """The canonical ids of the people in the network, by the identity key of their name, in id order."""
         found: dict[str, list[str]] = {}
         for key, person_id in self.conn.execute(
             "SELECT name_key, id FROM persons WHERE list_status = 'in_list' AND merged_into IS NULL ORDER BY id"
         ):
-            found.setdefault(group_key(key), []).append(person_id)
+            found.setdefault(identity.key(key), []).append(person_id)
         return found
 
     def list_network(self, flt: NetworkFilter, limit: int | None) -> tuple[list[str], int]:
@@ -726,6 +735,25 @@ class Store:
         for r in rows:
             found.setdefault(r[0], []).append(Identifier(scheme=r[1], value=r[2]))
         return found
+
+    def org_ids_of(self, person_ids: list[str]) -> dict[str, set[str]]:
+        """The organizations of each record's claims that are not rejected; a record with none is left out."""
+        rows = self.conn.execute(
+            "SELECT DISTINCT person_id, org_id FROM claims WHERE person_id IN (SELECT value FROM json_each(?)) "
+            "AND org_id IS NOT NULL AND rejected_at IS NULL", (json.dumps(person_ids),),
+        )
+        found: dict[str, set[str]] = {}
+        for r in rows:
+            found.setdefault(r[0], set()).add(r[1])
+        return found
+
+    def org_sizes(self, org_ids: list[str]) -> dict[str, int]:
+        """How many person records hold a claim that is not rejected at each organization; one nobody holds is left out."""
+        rows = self.conn.execute(
+            "SELECT org_id, count(DISTINCT person_id) FROM claims WHERE org_id IN (SELECT value FROM json_each(?)) "
+            "AND rejected_at IS NULL GROUP BY org_id", (json.dumps(org_ids),),
+        )
+        return {r[0]: r[1] for r in rows}
 
     def add_identifier(self, person_id: str, identifier: Identifier) -> bool:
         """Attach the identifier to the record; False when another record holds it."""

@@ -40,6 +40,7 @@ class ResolveTest(unittest.TestCase):
                                                        hits=[hit(ids[1], "jakob cassiman", 1)])]))
         (entry,) = out.entries
         self.assertEqual((entry.person_ids, entry.lane_ranks), ([ids[1], ids[0]], {"seeds": 1}))
+        self.assertEqual(entry.card_person_ids, [ids[1], ids[0]])
         self.assertEqual(entry.flag, "same name in 2 records, not merged")
         self.assertEqual([(f.person_id, f.other_person_id, f.reason) for f in out.flags],
                          [(ids[1], ids[0], resolve.SAME_NAME)])

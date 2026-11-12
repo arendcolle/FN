@@ -29,6 +29,18 @@ class NetworkTest(unittest.TestCase):
         return self.store.upsert_claim(ClaimDraft(person_id=person_id, kind="topic", value=value, quote=value,
                                                   quote_start=0, quote_end=len(value), source=source), at=when)
 
+    def same_org(self, *person_ids: str) -> list[Claim]:
+        """An affiliation at one small organization for each record."""
+        found = []
+        for person_id in person_ids:
+            text = f"Example Lab {person_id}"
+            source = Source(id=f"page-{person_id}", kind="page", url=f"https://example.org/lab/{person_id}", text=text,
+                            content_hash=hashlib.sha256(text.encode()).hexdigest())
+            found.append(self.store.upsert_claim(ClaimDraft(person_id=person_id, kind="affiliation", org_id="org:lab",
+                                                            value="Example Lab", quote=text, quote_start=0,
+                                                            quote_end=len(text), source=source), at=T0))
+        return found
+
     def status(self, person_id: str) -> str:
         return self.store.get_persons([person_id])[person_id].list_status
 
@@ -60,11 +72,12 @@ class AddTest(NetworkTest):
         ann = self.person("Ann Example", ("seed", "ann"))
         twin = self.person("Ann Example", ("openalex", "A1"))
         own, theirs = self.fact(ann, "wind energy"), self.fact(twin, "offshore grids")
+        labs = self.same_org(ann, twin)
         event = network.add(self.store, [ann, twin], via="search", now=at(1))
         self.assertEqual((event.detail["merged"], event.detail["left_apart"]), ([twin], []))
         self.assertEqual(self.merged_into(ann, twin), [None, ann])
         claims = self.store.claims_of([ann, twin])
-        self.assertCountEqual([c.id for c in claims], [own.id, theirs.id])
+        self.assertCountEqual([c.id for c in claims], [own.id, theirs.id, *(c.id for c in labs)])
         self.assertEqual({c.person_id for c in claims}, {ann})
         self.assertEqual([r.id for r in self.store.records_of(twin)], [ann, twin])
         network.undo(self.store, event.id, now=at(2))
@@ -96,14 +109,24 @@ class AddTest(NetworkTest):
         self.assertEqual((event.detail["merged"], event.detail["left_apart"]), ([], [other]))
         self.assertEqual(self.merged_into(other), [None])
 
-    def test_a_hit_with_another_openalex_id_stays_apart(self):
-        """Two hits with different values in a strong scheme are two people: the second is left apart, unmerged."""
-        ann = self.person("Ann Example", ("openalex", "A1"))
-        other = self.person("Ann Example", ("openalex", "A2"))
+    def test_a_hit_with_another_orcid_stays_apart(self):
+        """Two hits with one name and different ORCIDs are two people: the second is left apart, unmerged."""
+        ann = self.person("Ann Example", ("openalex", "A1"), ("orcid", "0000-0001"))
+        other = self.person("Ann Example", ("openalex", "A2"), ("orcid", "0000-0002"))
         event = network.add(self.store, [ann, other], via="search", now=at(1))
         self.assertEqual((event.detail["merged"], event.detail["left_apart"]), ([], [other]))
         self.assertEqual(self.merged_into(other), [None])
         self.assertEqual(self.status(other), "candidate")
+
+    def test_two_openalex_ids_with_a_rare_name_merge(self):
+        """Two OpenAlex ids are no veto: two hits with a name no other record holds at one organization merge into
+        the first."""
+        ann = self.person("Ann Example", ("openalex", "A1"))
+        other = self.person("Ann Example", ("openalex", "A2"))
+        self.same_org(ann, other)
+        event = network.add(self.store, [ann, other], via="search", now=at(1))
+        self.assertEqual((event.detail["merged"], event.detail["left_apart"]), ([other], []))
+        self.assertEqual(self.merged_into(other), [ann])
 
 
 class MergeTest(NetworkTest):
@@ -144,6 +167,7 @@ class MergeTest(NetworkTest):
         possible_matches and name_matches then leave that pair out, and undo merges the record back.
         """
         ann, twin = self.person("Ann Example", ("seed", "ann")), self.person("Ann Example", ("openalex", "A1"))
+        self.same_org(ann, twin)
         network.add(self.store, [ann, twin], via="search", now=at(1))
         self.assertEqual(network.possible_matches(self.store, ann), [])
         event = network.not_same(self.store, ann, twin, now=at(2))
@@ -289,6 +313,7 @@ class ClaimsTest(NetworkTest):
         A claim a lane writes on it shows under the canonical id, with first_seen_at the caller's time.
         """
         ann, twin = self.person("Ann Example", ("seed", "ann")), self.person("Ann Example", ("openalex", "A1"))
+        self.same_org(ann, twin)
         network.add(self.store, [ann, twin], via="search", now=at(1))
         found = self.store.resolve_person([Identifier(scheme="openalex", value="A1")], "Ann Example")
         self.assertEqual((found.id, found.merged_into, found.merged_at), (twin, ann, at(1)))
