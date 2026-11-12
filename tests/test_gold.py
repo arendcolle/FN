@@ -19,7 +19,7 @@ from fn.contracts import (
     PickResult,
     Source,
 )
-from fn.lanes import openalex
+from fn.lanes import openalex, web
 from fn.worker import Worker
 from tests.helpers import StubHttp, StubLLM, make_db, make_settings
 from tests.test_openalex import route
@@ -344,6 +344,15 @@ class RunCaseTest(unittest.TestCase):
         goemans = result.picks[0]
         self.assertEqual((goemans.verdict, goemans.lost_step, goemans.lost_reason),
                          ("missed", "parse", "RuntimeError: claude is logged out"))
+
+    def test_a_done_case_with_a_failed_lane_names_the_lane_in_its_line(self):
+        """A lane error does not fail the search; the case's status line in the report names the lane that failed."""
+        with mock.patch.object(web, "run", side_effect=ConnectionError("search vendor down")):
+            result = gold.run_case(self.worker(), self.case)
+        self.assertEqual((result.status, result.failed_lanes), ("done", ["lane:web"]))
+        self.assertEqual(gold.status_text(result), "done, lane error in lane:web")
+        text = gold.report([result], datetime(2026, 10, 30, tzinfo=UTC), "abc123", True, "replay", "live")
+        self.assertIn(f"search `{result.search_id}` done, lane error in lane:web, vendor calls", text)
 
     def test_report_and_top5_hold_the_header_the_pick_rows_and_blank_mark_columns(self):
         """The report names code state and modes and has one table row per pick; top5.csv has at most five cards a case."""

@@ -245,9 +245,14 @@ def run_case(worker: Worker, case: GoldCase) -> CaseResult:
         *([f"place {chips.place.text}"] if chips.place else []),
     ]) if chips else ""
     return CaseResult(case_id=case.id, group=group_of(case.id), question=case.question, chips=shown or "none",
-                      search_id=search.id, status=search.status,
+                      search_id=search.id, status=search.status, failed_lanes=store.failed_lanes(search.id),
                       http_cost_usd=sum(c.cost_usd or 0.0 for c in calls if c.kind == "http"),
                       llm_cost_usd=sum(c.cost_usd or 0.0 for c in calls if c.kind == "llm"), picks=picks, top=top)
+
+
+def status_text(r: CaseResult) -> str:
+    """The search's status, followed by the names of its lanes that failed, if any."""
+    return f"{r.status}, lane error in {', '.join(r.failed_lanes)}" if r.failed_lanes else r.status
 
 
 def pick_line(r: PickResult) -> str:
@@ -310,7 +315,7 @@ def report(results: list[CaseResult], started: datetime, code_sha: str | None, d
     for r in results:
         parts += [
             f"### {r.case_id} ({r.group})",
-            (f"{r.question}\n\nsearch `{r.search_id}` {r.status}, vendor calls ${r.http_cost_usd:.4f}; "
+            (f"{r.question}\n\nsearch `{r.search_id}` {status_text(r)}, vendor calls ${r.http_cost_usd:.4f}; "
              f"LLM ${r.llm_cost_usd:.4f} as the CLI reports it (subscription); chips: {r.chips}"),
             md_table(head, [[
                 p.name, p.verdict, p.section or "", p.rank or "", p.lanes, p.gold_tie, p.belgian, p.lost_step,
@@ -355,7 +360,7 @@ def main(argv: list[str] | None = None) -> int:
     results = []
     for case in cases:
         results.append(run_case(worker, case))
-        print(f"{case.id} search {results[-1].search_id} {results[-1].status}")
+        print(f"{case.id} search {results[-1].search_id} {status_text(results[-1])}")
         for pick in results[-1].picks:
             print(f"  {pick_line(pick)}")
     out = settings.var_dir / "gold" / started.strftime("%Y%m%d-%H%M%S")

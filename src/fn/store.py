@@ -27,6 +27,7 @@ from fn.contracts import (
     RequestError,
     ScorePart,
     Search,
+    SearchProgress,
     SearchStatus,
     Source,
     SourceKind,
@@ -248,6 +249,25 @@ class Store:
                     (_iso(now), search_id),
                 )
         return ids
+
+    def failed_lanes(self, search_id: str) -> list[str]:
+        """The names of the search's lane steps that ended in error, in step order."""
+        rows = self.conn.execute(
+            "SELECT step FROM step_runs WHERE search_id = ? AND step LIKE 'lane:%' AND status = 'error' ORDER BY seq",
+            (search_id,),
+        )
+        return [r[0] for r in rows]
+
+    def search_progress(self, search_id: str) -> SearchProgress | None:
+        """The search's status, its saved people with no cut reason, and how many publish or save steps ended ok."""
+        row = self.conn.execute(
+            "SELECT status, "
+            "(SELECT count(*) FROM candidates WHERE search_id = s.id AND cut_reason IS NULL) AS people, "
+            "(SELECT count(*) FROM step_runs WHERE search_id = s.id AND step IN ('publish', 'save') "
+            "AND status = 'ok') AS version FROM searches s WHERE id = ?",
+            (search_id,),
+        ).fetchone()
+        return SearchProgress.model_validate(dict(row)) if row else None
 
     def resolve_person(self, identifiers: list[Identifier], display_name: str) -> Person:
         """The person holding any of the identifiers, else a new candidate; every identifier is then attached to it.

@@ -469,8 +469,9 @@ class WebTest(unittest.TestCase):
                          [("wind", "edited", None), ("offshore wind", "edited", None)])
         self.assertEqual((found.chips.place.text, found.chips.place.origin, found.chips.ask), ("Boston", "edited", "talk"))
         self.assertEqual([(s.step, s.status) for s in self.store.list_steps(new_id)],
-                         [("parse", "skipped"), ("lane:seeds", "ok"), ("lane:openalex", "ok"), ("lane:web", "ok"),
-                          ("lane:linkedin", "ok"), ("resolve", "ok"), ("rank", "ok"), ("save", "ok")])
+                         [("parse", "skipped"), ("lane:seeds", "ok"), ("publish", "ok"), ("lane:openalex", "ok"),
+                          ("publish", "ok"), ("lane:web", "ok"), ("publish", "ok"), ("lane:linkedin", "ok"),
+                          ("resolve", "ok"), ("rank", "ok"), ("save", "ok")])
         self.assertIn(source_id, client.get(f"/debug/searches/{new_id}").text)
 
     def test_rerun_accepts_no_chips_and_refuses_bad_ones(self):
