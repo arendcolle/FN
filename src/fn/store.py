@@ -467,10 +467,14 @@ class Store:
             )
         return len(candidates)
 
-    def list_candidates(self, search_id: str) -> list[Candidate]:
-        """The search's candidates, section network first, then by rank."""
+    def list_candidates(self, search_id: str, kept_only: bool = False) -> list[Candidate]:
+        """The search's candidates, section network first, kept before cut within a section, then by rank.
+
+        kept_only leaves out the cut ones.
+        """
         rows = self.conn.execute(
-            "SELECT * FROM candidates WHERE search_id = ? ORDER BY section = 'new', rank", (search_id,)
+            "SELECT * FROM candidates WHERE search_id = ?" + (" AND cut_reason IS NULL" if kept_only else "")
+            + " ORDER BY section = 'new', cut_reason IS NOT NULL, rank", (search_id,)
         )
         return [
             Candidate(
@@ -484,10 +488,10 @@ class Store:
         ]
 
     def count_candidates(self, search_ids: list[str]) -> dict[str, int]:
-        """The number of candidates of each search that has any, by search id."""
+        """The number of kept candidates of each search that has any, by search id."""
         rows = self.conn.execute(
             "SELECT search_id, count(*) FROM candidates WHERE search_id IN (SELECT value FROM json_each(?)) "
-            "GROUP BY search_id", (json.dumps(search_ids),),
+            "AND cut_reason IS NULL GROUP BY search_id", (json.dumps(search_ids),),
         )
         return {r[0]: r[1] for r in rows}
 

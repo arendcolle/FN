@@ -215,7 +215,7 @@ def run_case(worker: Worker, case: GoldCase) -> CaseResult:
     """
     store = worker.store
     search = worker.execute(worker.create_search(case.question).id)
-    candidates = store.list_candidates(search.id) if search.status == "done" else []
+    candidates = store.list_candidates(search.id, kept_only=True) if search.status == "done" else []
     persons = store.get_persons([p for c in candidates for p in c.person_ids])
     pins = store.person_ids_by_identifier("openalex", [p.openalex_id for p in case.picks if p.openalex_id])
     picks = []

@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from fn import db
-from fn.contracts import Search
+from fn.contracts import Candidate, Search
 from fn.store import Store
 from fn.worker import now
 from tests.helpers import make_db, make_settings
@@ -74,10 +74,52 @@ class NetworkMigrationTest(unittest.TestCase):
             conn.execute("INSERT INTO candidates (search_id, person_id, person_ids_json, section, rank, score, "
                          "lane_ranks_json, reason_claim_ids_json, score_parts_json) "
                          "VALUES ('s1', ?, '[]', 'new', 1, 0.1, '{}', '[]', '[]')", (p,))
-        self.assertEqual(store.migrate(), [6])
+        self.assertEqual(store.migrate(), [6, 7])
         found = dict(conn.execute("SELECT person_id, hit_person_ids_json FROM candidates").fetchall())
         self.assertEqual({p: json.loads(v) for p, v in found.items()}, {"p1": ["p1", "p2"], "p3": [], "p4": []})
         self.assertEqual([c.hit_person_ids for c in store.list_candidates("s1")], [["p1", "p2"], [], []])
+
+    def test_007_cuts_a_stored_openalex_only_candidate_without_belgian_years_and_nothing_else(self):
+        """Migration 007 sets cut_reason by the ranker's rule over the stored columns; no rank changes, no row goes."""
+        store = Store(make_settings(self).db_path)
+        self.addCleanup(store.close)
+        old = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, old)
+        for path in sorted(db.MIGRATIONS.glob("00[1-6]_*.sql")):
+            shutil.copy(path, old / path.name)
+        with mock.patch.object(db, "MIGRATIONS", old):
+            store.migrate()
+        store.create_search(Search(id="s1", question="q", status="done", created_at=now(), code_sha=None,
+                                   dirty=False, llm_mode="replay", settings_json="{}", boot_id="b"))
+        belgian = json.dumps([{"feature": "belgian_years", "rank": 1, "points": 0.1, "claim_ids": [], "detail": "d"}])
+        rows = [("cut", "new", '{"openalex": 1}', "[]"), ("years", "new", '{"openalex": 2}', belgian),
+                ("two", "new", '{"openalex": 3, "web": 1}', "[]"), ("net", "network", '{"openalex": 4}', "[]")]
+        for i, (p, section, lanes, parts) in enumerate(rows, 1):
+            store.conn.execute("INSERT INTO persons (id, display_name, name_key, list_status) VALUES (?, ?, ?, 'candidate')",
+                               (p, p, p))
+            store.conn.execute("INSERT INTO candidates (search_id, person_id, person_ids_json, section, rank, score, "
+                               "lane_ranks_json, reason_claim_ids_json, score_parts_json) "
+                               "VALUES ('s1', ?, '[]', ?, ?, 0.1, ?, '[]', ?)", (p, section, i, lanes, parts))
+        self.assertEqual(store.migrate(), [7])
+        found = {c.person_id: (c.rank, c.cut_reason) for c in store.list_candidates("s1")}
+        self.assertEqual(found, {"cut": (1, "no_belgian_evidence"), "years": (2, None), "two": (3, None),
+                                 "net": (4, None)})
+
+    def test_kept_only_and_the_count_leave_out_cut_candidates_and_cut_ones_list_last(self):
+        """list_candidates puts kept before cut in a section, kept_only drops the cut, count_candidates counts kept."""
+        store = make_db(self)
+        store.create_search(Search(id="s1", question="q", status="done", created_at=now(), code_sha=None,
+                                   dirty=False, llm_mode="replay", settings_json="{}", boot_id="b"))
+        for p in ("a", "b", "c"):
+            store.conn.execute("INSERT INTO persons (id, display_name, name_key, list_status) VALUES (?, ?, ?, 'candidate')",
+                               (p, p, p))
+        store.save_candidates("s1", [
+            Candidate(search_id="s1", person_id=p, person_ids=[p], section="new", rank=r, score=0.1,
+                      lane_ranks={"openalex": 1}, cut_reason=reason)
+            for p, r, reason in (("a", 1, "no_belgian_evidence"), ("b", 1, None), ("c", 2, None))], [])
+        self.assertEqual([c.person_id for c in store.list_candidates("s1")], ["b", "c", "a"])
+        self.assertEqual([c.person_id for c in store.list_candidates("s1", kept_only=True)], ["b", "c"])
+        self.assertEqual(store.count_candidates(["s1"]), {"s1": 2})
 
 
 class ClaimsFtsTest(unittest.TestCase):

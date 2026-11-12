@@ -3,7 +3,7 @@ import unittest
 from datetime import UTC, datetime
 
 from fn import rank, resolve
-from fn.contracts import Chips, Claim, Entry, LaneHit, LaneOut, Org, RankIn, ResolveIn
+from fn.contracts import Chips, Claim, Entry, LaneHit, LaneOut, Org, RankIn, ResolveIn, ScorePart
 from fn.steps import StepContext
 from fn.worker import new_id, now
 from tests.helpers import make_seeded_db, make_settings
@@ -98,6 +98,22 @@ class RankTest(unittest.TestCase):
                           ("belgian_years", 1, ["c1"], "4 years at Belgian organizations; 1 / (60 + 1)")])
         self.assertEqual(out.score, sum(p.points for p in out.score_parts))
         self.assertAlmostEqual(out.score, 1 / 63 + 1 / 61)
+
+    def test_an_openalex_only_entry_without_belgian_years_is_cut_and_the_others_are_kept(self):
+        """Only a new-section entry that OpenAlex alone found and with no belgian_years part is cut."""
+        part = ScorePart(feature="belgian_years", rank=1, points=1 / 61, detail="d")
+        out = {c.person_id: c for c in rank.fuse(
+            "s", [entry("web", web=1), entry("oa", openalex=1), entry("net", openalex=2), entry("be", openalex=3)],
+            {"net": "in_list"}, {"be": part})}
+        self.assertEqual({p: c.cut_reason for p, c in out.items()},
+                         {"web": None, "oa": "no_belgian_evidence", "net": None, "be": None})
+
+    def test_kept_ranks_run_from_1_without_a_gap_and_cut_entries_number_apart(self):
+        """Cut entries do not take a kept rank, and each group keeps the order fuse gave it."""
+        entries = [entry("p1", openalex=1), entry("p2", seeds=2), entry("p3", openalex=3), entry("p4", seeds=4)]
+        out = rank.fuse("s", entries, {})
+        self.assertEqual([(c.person_id, c.rank, c.cut_reason is not None) for c in out],
+                         [("p1", 1, True), ("p2", 1, False), ("p3", 2, True), ("p4", 2, False)])
 
 
 class YearsTest(unittest.TestCase):

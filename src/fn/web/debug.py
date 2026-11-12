@@ -110,6 +110,7 @@ def card(search_id: str, candidate: Candidate, store_data: tuple) -> Safe:
     name = persons[candidate.person_id].display_name
     return h.fieldset(
         h.legend(f"{candidate.section} #{candidate.rank} {name}"),
+        h.p(f"cut: {candidate.cut_reason}") if candidate.cut_reason else None,
         h.p(f"Score {candidate.score:.4f} from {lanes}. ", h.a("trace", href=trace_url(search_id, name))),
         [h.p(f"Found by {lane}: {how}") for p in candidate.person_ids for lane, how in matched.get(p, [])],
         h.p(f"Same name in {len(candidate.person_ids)} records, not merged: "
@@ -146,7 +147,9 @@ def cards(store: Store, search: Search) -> Safe | None:
     data = (store.get_persons(person_ids), by_person, {c.id: c for c in own},
             store.get_sources(list({c.source_id for c in own})), store.list_flags(search.id),
             lane_matches(store, search.id), store.get_orgs(list({c.org_id for c in own if c.org_id})))
-    return Safe("".join(card(search.id, c, data) for c in candidates))
+    cut = sum(c.cut_reason is not None for c in candidates)
+    return Safe(str(h.p(f"kept: {len(candidates) - cut}, cut: {cut}"))
+                + "".join(card(search.id, c, data) for c in candidates))
 
 
 def chips_form(search: Search, message: str | None = None) -> list[Safe]:
@@ -277,7 +280,8 @@ def trace_rows(store: Store, search: Search, term: str) -> list[list[object]]:
                     reason = f"{count} record{'s' if count > 1 else ''}, lane ranks {entry.lane_ranks}"
                     found.append(["entry", "kept", f"{reason}; {entry.flag}" if entry.flag else reason])
         elif isinstance(out, RankOut):
-            found = [["rank", "kept", f"{c.section} #{c.rank}, score {c.score:.4f}"]
+            found = [["rank", "dropped" if c.cut_reason else "kept",
+                      c.cut_reason or f"{c.section} #{c.rank}, score {c.score:.4f}"]
                      for c in out.candidates if c.person_id in person_ids]
         rows += [[step.seq, step.step, *r] for r in found] or [[step.seq, step.step, "-", "-", missing]]
     return rows

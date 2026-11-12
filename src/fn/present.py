@@ -202,8 +202,8 @@ def person_views(store: Store, groups: list[list[str]], today: date,
 
 
 def results(store: Store, search: Search, today: date) -> ResultsView:
-    """The search's candidates as views by section, each from the records a lane hit, else from its first record."""
-    candidates = store.list_candidates(search.id)
+    """The search's kept candidates as views by section, each from the records a lane hit, else from its first record."""
+    candidates = store.list_candidates(search.id, kept_only=True)
     views = person_views(store, [c.hit_person_ids or c.person_ids[:1] for c in candidates], today,
                          [c.reason_claim_ids for c in candidates])
     return ResultsView(network=[v for c, v in zip(candidates, views) if c.section == "network"],
