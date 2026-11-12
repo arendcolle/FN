@@ -62,6 +62,8 @@ from fn.web.parts import (
     search_box,
     show_more,
     skipped_line,
+    status_line,
+    status_note,
     upload_form,
 )
 from fn.web.requests import first, form_of, store_of, worker_of
@@ -72,6 +74,8 @@ MAX_QUESTION = 1000
 UPLOAD_CAP = importer.MAX_BYTES + 64 * 1024
 NO_FILE = "Choose a CSV file to upload."
 SECTIONS = {"network": "In your network", "new": "New"}
+INCOMPLETE = "Some sources could not be read, so this list may be incomplete."
+STOPPED = "This search stopped before it finished."
 ORIGINS = ("card", "row", "popup", "import")
 CONTACT_KINDS = ("email", "phone")
 CARD_ACTIONS = ("add", "skip", "same", "new")
@@ -170,24 +174,47 @@ def person_cards(store: Store, search: Search, shown: int, show_skipped: bool, v
     return [count, sections, more, hidden], found.total > found.not_on_map, facts
 
 
+def results_list(store: Store, search: Search, view: str, shown: int,
+                 show_skipped: bool) -> tuple[Safe, bool, bool, dict]:
+    """The results list: the status line, note or notice, then the count line, the cards, Show more and the skipped line.
+
+    Also whether it has cards, whether anyone has a place on the map, and the request log facts. A running list names the status and
+    fragment URLs results.js polls; progress is read before the cards, so they are never older than it.
+    """
+    active, stopped = search.status in ("queued", "running"), search.status in ("failed", "interrupted")
+    progress = store.search_progress(search.id) if active else None
+    found, placed, facts = person_cards(store, search, shown, show_skipped, view, active)
+    if progress:
+        top = status_line(progress.people)
+    elif stopped:
+        top = status_note(STOPPED, "Run again", search.question) if found else notice(search, 0)
+    elif store.failed_lanes(search.id):
+        top = [status_note(INCOMPLETE, "Search again", search.question),
+               None if found else notice(search, sources_read(store, search))]
+    else:
+        top = None if found else notice(search, sources_read(store, search))
+    query = urlencode({k: v for k, v in (("shown", shown if shown != RESULTS_STEP else None),
+                                         ("skipped", 1 if show_skipped else None),
+                                         ("view", "map" if view == "map" else None)) if v})
+    poll = {"data_status": f"/searches/{search.id}/status", "data_progress": f"{progress.status} {progress.version}",
+            "data_cards": f"/searches/{search.id}/cards" + (f"?{query}" if query else "")} if progress else {}
+    return h.div(top, found, class_="fn-results__list", data_placed=placed, **poll), bool(found), placed, facts
+
+
 def search_page(store: Store, search: Search, view: str = "list", shown: int = RESULTS_STEP,
                 show_skipped: bool = False) -> tuple[str, dict]:
     """The results page: the question box, then the people's cards beside a map of where they are.
 
-    A running search shows the status line, and a stopped or empty one a notice with the map hidden. view picks
+    A running search shows the status line, and a page without people a notice with the map hidden. view picks
     the list or the map on narrow screens; each has its own URL, so the refresh while a search runs keeps it.
     """
-    active, stopped = search.status in ("queued", "running"), search.status in ("failed", "interrupted")
-    found, placed, facts = ([], False, {}) if stopped else person_cards(store, search, shown, show_skipped, view, active)
-    if active:
-        top = h.p(h.span("Searching…"), h.span(class_="fn-status__bar"), class_="fn-status text-strong")
-    else:
-        top = None if found else notice(search, sources_read(store, search))
+    active = search.status in ("queued", "running")
+    found, cards, placed, facts = results_list(store, search, view, shown, show_skipped)
     views = [h.a(name.title(), href=results_href(search.id, shown, show_skipped, name), data_view=name,
                  aria_current="page" if name == view else None) for name in ("list", "map")]
     results = h.div(
         h.nav(views, class_="fn-switch text-switch", aria_label="View"),
-        h.div(top, found, class_="fn-results__list"),
+        found,
         h.div(id="map", class_="fn-map", role="region", aria_label="Map of the people in this search",
               data_geo=f"/api/searches/{search.id}/geo"),
         class_="fn-results" if placed else "fn-results fn-results--no-map", data_view=view,
@@ -195,7 +222,7 @@ def search_page(store: Store, search: Search, view: str = "list", shown: int = R
     return page(
         "Search", search_box(search.question), results,
         refresh=2 if active else None, current="search", body_class="fn-app",
-        extra_head=RESULTS_HEAD if found else MAP_HEAD,
+        extra_head=RESULTS_HEAD if active or cards else MAP_HEAD,
     ), facts
 
 
@@ -307,12 +334,17 @@ def get_search(request: Request, search_id: str) -> Search:
     return found
 
 
-def results_page(request: Request, search_id: str, view: str) -> HTMLResponse:
-    """The results page with ?shown= (a positive number, else 50) and ?skipped=1."""
+def results_query(request: Request) -> tuple[int, bool]:
+    """?shown= (a positive number, else 50) and ?skipped=1 of a results request."""
     raw = request.query_params.get("shown", "")
     shown = int(raw) if raw.isascii() and raw.isdigit() and len(raw) <= 6 and int(raw) > 0 else RESULTS_STEP
-    text, request.state.facts = search_page(store_of(request), get_search(request, search_id), view, shown,
-                                            request.query_params.get("skipped") == "1")
+    return shown, request.query_params.get("skipped") == "1"
+
+
+def results_page(request: Request, search_id: str, view: str) -> HTMLResponse:
+    """The results page in the given view, with ?shown= and ?skipped=1, and its facts for the request log."""
+    text, request.state.facts = search_page(store_of(request), get_search(request, search_id), view,
+                                            *results_query(request))
     return HTMLResponse(text)
 
 
@@ -324,6 +356,25 @@ async def show(request: Request, search_id: str) -> HTMLResponse:
 @router.get("/searches/{search_id}/map")
 async def show_map(request: Request, search_id: str) -> HTMLResponse:
     return results_page(request, search_id, "map")
+
+
+@router.get("/searches/{search_id}/status")
+async def search_status(request: Request, search_id: str) -> JSONResponse:
+    """The search's status, people count and version, which goes up with each publish; results.js polls it."""
+    progress = store_of(request).search_progress(search_id)
+    if progress is None:
+        raise HTTPException(404, "No such search")
+    request.state.facts = {"version": progress.version, "people": progress.people}
+    return JSONResponse(progress.model_dump())
+
+
+@router.get("/searches/{search_id}/cards")
+async def search_cards(request: Request, search_id: str) -> HTMLResponse:
+    """The results list alone, as on the page, for results.js to swap in; ?view=map keeps the map view's links."""
+    view = "map" if request.query_params.get("view") == "map" else "list"
+    found, _, _, request.state.facts = results_list(store_of(request), get_search(request, search_id), view,
+                                                    *results_query(request))
+    return HTMLResponse(found)
 
 
 def candidate_of(store: Store, search_id: str, person_id: str) -> Candidate:

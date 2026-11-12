@@ -195,4 +195,12 @@ function start() {
   });
 }
 
-if (!results.classList.contains("fn-results--no-map")) start();
+// A running search's list may get its first placed people later; results.js then lifts --no-map and sends the event.
+let started = false;
+function startOnce() {
+  if (started || results.classList.contains("fn-results--no-map")) return;
+  started = true;
+  start();
+}
+startOnce();
+document.addEventListener("fn:people-changed", startOnce);

@@ -79,16 +79,16 @@ def statement(view: ClaimView) -> list[Safe]:
 
 
 def notice(search: Search, read: int) -> Safe:
-    """What the page says instead of people: that the search stopped, with Try again, or that it found nobody.
+    """What the page says instead of people: that the search stopped before it found anyone, with Try again, or that
+    it found nobody.
 
     read is the number of sources the search's lanes looked at.
     """
     if search.status in ("failed", "interrupted"):
-        why = "FN was restarted while this search ran" if search.status == "interrupted" else (
-            "FN ran into a problem during this search")
         return h.div(
             h.h2("This search stopped", class_="fn-notice__title text-title"),
-            h.p(f"{why}, so nothing it found is shown.", class_="text-body"),
+            h.p("FN ran into a problem before it found anyone. Your question is kept, so Try again runs it once more.",
+                class_="text-body"),
             h.form(h.input(type="hidden", name="question", value=search.question),
                    h.button("Try again", type="submit", class_="fn-btn fn-btn--dark text-control"),
                    method="post", action="/searches"),
@@ -98,6 +98,23 @@ def notice(search: Search, read: int) -> Safe:
             if read else "FN found no sources for this question.")
     return h.div(h.h2("No people found", class_="fn-notice__title text-title"),
                  h.p(what, " A broader topic or a wider area may find more.", class_="text-body"), class_="fn-notice")
+
+
+def status_line(people: int) -> Safe:
+    """The StatusLine while a search runs: 'Searching…', then how many people it found so far."""
+    words = f"Searching… {plural(people, 'person', 'people')} so far" if people else "Searching…"
+    return h.p(h.span(words), h.span(class_="fn-status__bar"), class_="fn-status text-strong")
+
+
+def status_note(text: str, button: str, question: str) -> Safe:
+    """The StatusLine note over the people of a search that ended with a problem; the button posts the question again."""
+    return h.div(
+        h.p(text, class_="text-strong"),
+        h.form(h.input(type="hidden", name="question", value=question),
+               h.button(button, type="submit", class_="fn-btn fn-btn--quiet text-control"),
+               method="post", action="/searches"),
+        class_="fn-status-note",
+    )
 
 
 def person_card(view: PersonView, search_id: str | None = None, acts: object = None, card_id: str | None = None) -> Safe:

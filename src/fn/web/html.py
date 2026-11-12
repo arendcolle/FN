@@ -91,7 +91,8 @@ def table(headers: list[object], rows: Iterable[list[object]]) -> Safe:
 
 def page(title: str, *body: object, refresh: int | None = None, extra_head: object = None, debug: bool = False,
          current: str | None = None, body_class: str | None = None) -> str:
-    """A full document with the FN header, or the debug nav when debug; refresh reloads every that many seconds.
+    """A full document with the FN header, or the debug nav when debug; refresh reloads every that many seconds
+    when JavaScript is off.
 
     extra_head adds head children before the site styles, current names the header link of this page ("search" or
     "network") and body_class goes on body. Only debug pages link to other debug pages.
@@ -100,7 +101,7 @@ def page(title: str, *body: object, refresh: int | None = None, extra_head: obje
         h.meta(charset="utf-8"),
         h.meta(name="viewport", content="width=device-width, initial-scale=1"),
         h.title(title),
-        h.meta(http_equiv="refresh", content=str(refresh)) if refresh else None,
+        h.noscript(h.meta(http_equiv="refresh", content=str(refresh))) if refresh else None,
         extra_head,
         h.link(rel="stylesheet", href="/static/tokens.css"),
         h.link(rel="stylesheet", href="/static/fn.css"),
