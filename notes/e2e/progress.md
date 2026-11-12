@@ -23,6 +23,12 @@ One line per finished step, newest last. The plan is in [plan.md](plan.md) and t
 - 2026-11-12 T9a merged: the import core (PR #15). 348 tests.
 - 2026-11-12 T7, the Network page, in progress.
 - 2026-11-12 T15 measured and not built: using a question's place in the ranker. A place cut loses a gold pick, and a place list improves nothing, because the only located places are the last institutions OpenAlex knows. Numbers in [research/place-ranking.md](research/place-ranking.md).
+- 2026-11-12 T7 merged: the Network page, the network on Home, All searches and the map popup (PR #16).
+- 2026-11-12 T8 merged: the Person page (PR #17). T9b merged: the import pages and the export (PR #18).
+- 2026-11-12 T10 merged: Add, Skip, Same person and Undo on result cards, 50 at a time (PR #19). The results page of the example search went from 913 KB to 78 KB.
+- 2026-11-12 T12b merged: the results page updates while a search runs (PR #20). 403 tests.
+- 2026-11-12 Browser walk on a copy of the owner's database: import of a made-up file, the people on the map, a profile, the export, Add, Undo and Skip on a stored search, and a replayed search that showed 12 cards at 5 s and the full list at 10 s without a reload.
+- 2026-11-12 A search with live calls could not be run: the Claude command-line login on this machine has expired ("OAuth session expired and could not be refreshed"), and the parse step needs it. The search failed at parse after its 60 s timeout, and the page showed "This search stopped" with Try again. The owner has to sign in again before new searches work.
 
 ## Review ledger
 
