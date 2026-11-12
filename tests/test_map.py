@@ -52,8 +52,11 @@ class GeoTest(unittest.TestCase):
                 date_precision="day" if date else None, date_method="read_date" if date else None, lat=lat, lon=lon))
         return person.id
 
-    def test_geo_has_one_point_per_person_with_a_dated_location_claim_and_its_quote(self):
-        """Persons without a location or without a dated one are left out, and the newest claim wins."""
+    def test_geo_has_one_point_per_card_from_its_hit_records(self):
+        """A card gets one point at its person's place: the newest dated one, else an undated one with coordinates.
+
+        A same-name record no lane hit adds no point, and a person without a located claim has none.
+        """
         ann = self.person("Ann Near", "ann-1", ("Leuven", "2020-01-01", 50.88, 4.7), ("Cambridge", "2024-05-01", 42.37, -71.1))
         ann_twin = self.person("Ann Near", "ann-2", ("Delft", "2023-02-02", 52.0, 4.36))
         bob = self.person("Bob Nowhere", "bob")
@@ -62,22 +65,20 @@ class GeoTest(unittest.TestCase):
                         llm_mode="replay", settings_json="{}", boot_id="b")
         self.store.create_search(search)
         self.store.save_candidates("s1", [
-            Candidate(search_id="s1", person_id=ann, person_ids=[ann, ann_twin], section="new", rank=1, score=1.0,
-                      lane_ranks={"openalex": 1}),
-            Candidate(search_id="s1", person_id=bob, person_ids=[bob], section="new", rank=2, score=0.5,
-                      lane_ranks={"seeds": 1}),
-            Candidate(search_id="s1", person_id=cy, person_ids=[cy], section="new", rank=3, score=0.4,
-                      lane_ranks={"seeds": 2}),
+            Candidate(search_id="s1", person_id=ann, person_ids=[ann, ann_twin], hit_person_ids=[ann], section="new",
+                      rank=1, score=1.0, lane_ranks={"openalex": 1}),
+            Candidate(search_id="s1", person_id=bob, person_ids=[bob], hit_person_ids=[bob], section="new", rank=2,
+                      score=0.5, lane_ranks={"seeds": 1}),
+            Candidate(search_id="s1", person_id=cy, person_ids=[cy], hit_person_ids=[cy], section="new", rank=3,
+                      score=0.4, lane_ranks={"seeds": 2}),
         ], [])
         response = self.client.get("/api/searches/s1/geo")
         self.assertEqual(response.status_code, 200)
         first, second = response.json()["features"]
-        self.assertEqual(len(response.json()["features"]), 2)
         self.assertEqual(first["geometry"]["coordinates"], [-71.1, 42.37])
-        self.assertEqual(first["properties"]["quote"], "geo.city: Cambridge")
-        self.assertEqual((first["properties"]["name"], first["properties"]["claim_date"]), ("Ann Near", "2024-05-01"))
-        self.assertTrue(first["properties"]["source_page"].startswith("/sources/src-ann-1-Cambridge?claim="))
-        self.assertEqual((second["properties"]["place"], second["properties"]["quote"]), ("Delft", "geo.city: Delft"))
+        self.assertEqual((first["properties"]["id"], first["properties"]["name"], first["properties"]["place"]),
+                         (ann, "Ann Near", "Cambridge"))
+        self.assertEqual((second["properties"]["name"], second["properties"]["place"]), ("Cy Undated", "Gent"))
         self.assertEqual(self.client.get("/api/searches/nope/geo").status_code, 404)
 
     def test_map_page_loads_vendored_scripts_with_no_inline_script_and_the_search_page_links_to_it(self):

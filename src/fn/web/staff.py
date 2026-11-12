@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from fn.contracts import Claim, Search, Source
-from fn.present import cut, employer_of, newest_places
+from fn.present import cut, results, sources_read
 from fn.store import Store
 from fn.web.html import Safe, h, page
 from fn.web.parts import notice, person_card, recent_meta, search_box
@@ -28,19 +28,10 @@ def home_page(searches: list[Search], counts: dict[str, int], message: str | Non
 
 def person_cards(store: Store, search: Search) -> tuple[list[Safe], bool]:
     """One card per candidate under its section heading, and whether any of them has a place on the map."""
-    candidates = store.list_candidates(search.id)
-    own = store.claims_of([p for c in candidates for p in c.person_ids])
-    by_person: dict[str, list[Claim]] = {}
-    for claim in own:
-        by_person.setdefault(claim.person_id, []).append(claim)
-    persons = store.get_persons([c.person_id for c in candidates])
-    sources = store.get_sources(list({c.source_id for c in own}))
-    facts = store.get_orgs(list({c.org_id for c in own if c.org_id}))
-    places = newest_places(own)
-
-    sections = [[h.h2(title, " ", h.span(f"{len(group):,}"), class_="fn-section text-label"), [person_card(c, persons, by_person, places, facts, sources) for c in group]]
-                for section, title in SECTIONS.items() if (group := [c for c in candidates if c.section == section])]
-    return sections, any(p in places for c in candidates for p in c.person_ids)
+    found = results(store, search, now().astimezone().date())
+    sections = [[h.h2(title, " ", h.span(f"{len(group):,}"), class_="fn-section text-label"), [person_card(v) for v in group]]
+                for section, title in SECTIONS.items() if (group := getattr(found, section))]
+    return sections, any(v.lat is not None for v in found.network + found.new)
 
 
 def search_page(store: Store, search: Search, view: str = "list") -> str:
@@ -54,7 +45,7 @@ def search_page(store: Store, search: Search, view: str = "list") -> str:
     if active:
         top = h.p(h.span("Searching…"), h.span(class_="fn-status__bar"), class_="fn-status text-strong")
     else:
-        top = None if found else notice(store, search)
+        top = None if found else notice(search, sources_read(store, search))
     views = [h.a(name.title(), href=f"/searches/{search.id}" + ("/map" if name == "map" else ""), data_view=name,
                  aria_current="page" if name == view else None) for name in ("list", "map")]
     results = h.div(
@@ -73,31 +64,14 @@ def search_page(store: Store, search: Search, view: str = "list") -> str:
 
 
 def geo_features(store: Store, search: Search) -> dict:
-    """GeoJSON of the search's people: one point per person from their newest dated location claim, with its quote.
-
-    Each point carries the id of the card it belongs to and that card's employer.
-    """
-    candidates = store.list_candidates(search.id)
-    ordered = [(c, p) for c in candidates for p in c.person_ids]
-    person_ids = [p for _, p in ordered]
-    own = store.claims_of(person_ids)
-    by_person: dict[str, list[Claim]] = {}
-    for claim in own:
-        by_person.setdefault(claim.person_id, []).append(claim)
-    newest = newest_places(own)
-    employers = {c.person_id: employer_of([x for p in c.person_ids for x in by_person.get(p, [])]) for c in candidates}
-    persons = store.get_persons(person_ids)
+    """GeoJSON of the search's people: one point per card whose person has a place with coordinates."""
+    found = results(store, search, now().astimezone().date())
     features = [{
         "type": "Feature",
-        "geometry": {"type": "Point", "coordinates": [claim.lon, claim.lat]},
-        "properties": {
-            "id": candidate.person_id, "name": persons[person_id].display_name,
-            "employer": employers[candidate.person_id], "place": claim.value, "quote": claim.quote,
-            "claim_date": claim.claim_date, "date_method": claim.date_method,
-            "section": candidate.section, "rank": candidate.rank,
-            "source_page": f"/sources/{claim.source_id}?claim={claim.id}#quote",
-        },
-    } for candidate, person_id in ordered if (claim := newest.get(person_id))]
+        "geometry": {"type": "Point", "coordinates": [view.lon, view.lat]},
+        "properties": {"id": view.person_id, "name": view.name, "employer": view.employer, "place": view.place,
+                       "section": section},
+    } for section in SECTIONS for view in getattr(found, section) if view.lat is not None and view.lon is not None]
     return {"type": "FeatureCollection", "features": features}
 
 
