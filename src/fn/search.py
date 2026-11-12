@@ -42,6 +42,22 @@ def finish(ctx: StepContext, outs: list[LaneOut], chips: Chips) -> None:
     run_step(ctx, "save", save, SaveIn(candidates=ranked.candidates, flags=resolved.flags))
 
 
+def refinish(ctx: StepContext, search: Search) -> None:
+    """Run finish over the stored outputs of the search's lane steps and its stored chips.
+
+    A lane step that did not end ok counts as an empty output. Raises ValueError with the search id when
+    no lane step has a stored output.
+    """
+    outs, stored = [], 0
+    for step in (s for s in ctx.store.list_steps(search.id) if s.step.startswith("lane:")):
+        output = ctx.store.get_payload(step.id)[1] if step.status == "ok" else None
+        stored += bool(output)
+        outs.append(LaneOut.model_validate_json(output) if output else LaneOut(lane=step.step[5:], query="", total_seen=0))
+    if not stored:
+        raise ValueError(f"search {search.id} has no stored lane outputs")
+    finish(ctx, outs, search.chips)
+
+
 def run(ctx: StepContext, search: Search) -> None:
     """Run the Quick steps in order: parse, each lane with a publish after all but the last, resolve, rank and save.
 
