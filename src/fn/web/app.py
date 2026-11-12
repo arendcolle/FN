@@ -1,6 +1,7 @@
 """The local web app: the factory, host and origin checks, security headers, error handler and fn-serve."""
 import logging
 import sys
+import time
 import traceback
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -24,6 +25,8 @@ from fn.web.parts import error_page
 from fn.worker import Worker, new_id, now
 
 log = logging.getLogger("fn.web")
+request_log = logging.getLogger("fn.request")
+SLOW_MS = 1000
 
 SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
 ALLOWED_HOSTS = ["127.0.0.1", "localhost", "[::1]"]
@@ -49,6 +52,22 @@ def refusal(request: Request) -> Response | None:
     if origin not in allowed or site not in (None, "same-origin", "none"):
         return HTMLResponse(error_page("Refused", "This request comes from another site."), 403)
     return None
+
+
+def server_error(path: str, error: str) -> tuple[str, str]:
+    """The title and text of a 500 page: the traceback on a /debug page, a plain sentence for staff."""
+    if path.startswith("/debug"):
+        return "Server error", error
+    return "Something went wrong", "FN could not show this page. Nothing was changed."
+
+
+def log_request(request: Request, response: Response, ms: float) -> None:
+    """One fn.request line: method, path, status, milliseconds and the handler's facts; WARNING when slow."""
+    if request.url.path.startswith("/static/"):
+        return
+    facts = "".join(f" {k}={v}" for k, v in getattr(request.state, "facts", {}).items())
+    request_log.log(logging.WARNING if ms > SLOW_MS else logging.INFO, "%s %s %d %dms%s",
+                    request.method, request.url.path, response.status_code, ms, facts)
 
 
 def create_app(settings: Settings, llm: StructuredLLM | None, http: HttpClient | None = None) -> FastAPI:
@@ -78,6 +97,7 @@ def create_app(settings: Settings, llm: StructuredLLM | None, http: HttpClient |
 
     @app.middleware("http")
     async def guard(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+        started = time.perf_counter()
         response = refusal(request)
         if response is None:
             try:
@@ -87,8 +107,9 @@ def create_app(settings: Settings, llm: StructuredLLM | None, http: HttpClient |
                 route = f"{request.method} {request.url.path}"
                 store.add_request_error(new_id(), route, error, now())
                 log.error("request %s failed\n%s", route, error)
-                response = HTMLResponse(error_page("Server error", error), 500)
+                response = HTMLResponse(error_page(*server_error(request.url.path, error)), 500)
         response.headers.update(SECURITY_HEADERS)
+        log_request(request, response, (time.perf_counter() - started) * 1000)
         return response
 
     return app

@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from pydantic import ValidationError
 
-from fn import orgs, rank
+from fn import orgs, rank, stats
 from fn.contracts import (
     CONTRACTS_VERSION,
     Ask,
@@ -417,3 +417,44 @@ async def request_errors(request: Request) -> HTMLResponse:
     errors = store_of(request).list_request_errors()
     body = [[h.h3(f"{e.route} at {e.at.isoformat()}"), h.pre(e.traceback)] for e in errors] or h.p("No request errors.")
     return HTMLResponse(page("Request errors", h.h1("Request errors"), body, debug=True))
+
+
+def seconds_text(value: float | None) -> str:
+    return "-" if value is None else f"{value:.1f}s"
+
+
+def stats_page(store: Store) -> str:
+    step_rows = [[s.step, s.runs, s.errors, seconds_text(s.median_seconds), seconds_text(s.slowest_seconds),
+                  f"${s.median_cost_usd:.4f}", f"{s.median_calls:g}"] for s in stats.steps(store)]
+    search_rows = [[h.a(s.question or "(empty)", href=f"/debug/searches/{s.search_id}"), s.status, seconds_text(s.seconds),
+                    f"${s.cost_usd:.4f}", s.people, seconds_text(s.first_person_seconds)] for s in stats.searches(store)]
+    return page(
+        "Stats", h.h1("Stats"), h.h2("Steps, last 20 searches"),
+        table(["Step", "Runs", "Errors", "Median", "Slowest", "Median cost", "Median calls"], step_rows),
+        h.h2("Searches"),
+        table(["Question", "Status", "Total", "Cost", "People saved", "To first person"], search_rows), debug=True)
+
+
+BANDS = (("1 to 10", 1, 10), ("11 to 50", 11, 50), ("51 to 100", 51, 100), ("Over 100", 101, 10**9))
+
+
+def feedback_page(store: Store) -> str:
+    found = stats.feedback(store)
+    rows = [[h.a(f.question or "(empty)", href=f"/debug/searches/{f.search_id}"), f.kept, f.cut, f.added, f.skipped,
+             ", ".join(f"{lane} {n}" for lane, n in f.added_by_lane.items()) or "-"] for f in found]
+    ranks = [r for f in found for r in f.added_ranks]
+    bands = [[name, sum(low <= r <= high for r in ranks)] for name, low, high in BANDS]
+    return page(
+        "Feedback", h.h1("Feedback"),
+        table(["Question", "Kept", "Cut", "Added", "Skipped", "Added people found by"], rows),
+        h.h2("Ranks of added people"), table(["Rank", "People"], bands), debug=True)
+
+
+@router.get("/debug/stats")
+async def debug_stats(request: Request) -> HTMLResponse:
+    return HTMLResponse(stats_page(store_of(request)))
+
+
+@router.get("/debug/feedback")
+async def debug_feedback(request: Request) -> HTMLResponse:
+    return HTMLResponse(feedback_page(store_of(request)))

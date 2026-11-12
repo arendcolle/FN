@@ -229,6 +229,41 @@ class Store:
         rows = self.conn.execute("SELECT id, route, traceback, at FROM request_errors ORDER BY at DESC")
         return [RequestError.model_validate(dict(r)) for r in rows]
 
+    def step_stat_rows(self, last: int) -> list[sqlite3.Row]:
+        """One row per step run of the newest searches of kind search: step, status, seconds, cost_usd, calls."""
+        return self.conn.execute(
+            "SELECT s.step, s.status, round((julianday(s.ended_at) - julianday(s.started_at)) * 86400, 3) AS seconds, "
+            "s.cost_usd, (SELECT count(*) FROM step_calls c WHERE c.step_run_id = s.id) AS calls "
+            "FROM step_runs s WHERE s.search_id IN "
+            "(SELECT id FROM searches WHERE kind = 'search' ORDER BY created_at DESC LIMIT ?)", (last,),
+        ).fetchall()
+
+    def search_stat_rows(self, last: int) -> list[sqlite3.Row]:
+        """One row per newest search of kind search: id, question, status, seconds, cost_usd, people, first_seconds.
+
+        first_seconds runs from the search's creation to the end of its first publish or save step with a count above 0.
+        """
+        return self.conn.execute(
+            "SELECT s.id, s.question, s.status, round((julianday(s.finished_at) - julianday(s.created_at)) * 86400, 3) AS seconds, "
+            "COALESCE((SELECT sum(cost_usd) FROM step_runs r WHERE r.search_id = s.id), 0) AS cost_usd, "
+            "(SELECT count(*) FROM candidates c WHERE c.search_id = s.id) AS people, "
+            "(SELECT round((julianday(min(r.ended_at)) - julianday(s.created_at)) * 86400, 3) FROM step_runs r "
+            "JOIN step_payloads p ON p.step_run_id = r.id WHERE r.search_id = s.id AND r.step IN ('publish', 'save') "
+            "AND json_extract(p.output_json, '$.count') > 0) AS first_seconds "
+            "FROM searches s WHERE s.kind = 'search' ORDER BY s.created_at DESC LIMIT ?", (last,),
+        ).fetchall()
+
+    def search_decisions(self, last: int) -> list[tuple[Event, bool]]:
+        """The add and skip events of the newest searches that have any, each with whether an undo reversed it."""
+        rows = self.conn.execute(
+            f"SELECT {', '.join('e.' + c for c in EVENT_COLUMNS)}, "
+            "EXISTS (SELECT 1 FROM events u WHERE u.undoes = e.id) AS undone FROM events e "
+            "WHERE e.kind IN ('add', 'skip') AND e.search_id IN "
+            "(SELECT s.id FROM searches s WHERE s.id IN (SELECT search_id FROM events WHERE kind IN ('add', 'skip')) "
+            "ORDER BY s.created_at DESC LIMIT ?) ORDER BY e.at, e.rowid", (last,),
+        )
+        return [(_event({k: r[k] for k in r.keys() if k != "undone"}), bool(r["undone"])) for r in rows]
+
     def sweep(self, boot_id: str, now: datetime) -> list[str]:
         """Mark queued or running searches from other boots, and their running steps, interrupted.
 

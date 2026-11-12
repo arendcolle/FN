@@ -106,7 +106,8 @@ def page(title: str, *body: object, refresh: int | None = None, extra_head: obje
         h.link(rel="stylesheet", href="/static/fn.css"),
     )
     if debug:
-        top = h.p(h.a("Debug", href="/debug"), " ", h.a("Request errors", href="/debug/errors"))
+        top = h.p(h.a("Debug", href="/debug"), " ", h.a("Request errors", href="/debug/errors"), " ",
+                  h.a("Stats", href="/debug/stats"), " ", h.a("Feedback", href="/debug/feedback"))
     else:
         top = h.header(
             h.a("FN", href="/", class_="fn-logo text-logo"),
