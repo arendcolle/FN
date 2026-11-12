@@ -418,6 +418,54 @@ class Event(Model):
     user_id: None = None
 
 
+# How a person reads on every staff page; present.py builds these and web/parts.py turns them into HTML.
+class QuoteView(Model):
+    text: str
+    label: str
+    href: str
+    date: str
+
+
+class ClaimView(Model):
+    claim_id: str
+    kind: ClaimKind
+    what: str
+    years: str = ""
+    quote: QuoteView | None = None
+    label: str
+    href: str
+    date: str
+    is_new: bool = False
+
+
+class OrgView(Model):
+    org: str
+    years: str = ""
+
+
+class PersonView(Model):
+    person_id: str
+    name: str
+    role: str | None = None
+    employer: str | None = None
+    place: str | None = None
+    lat: float | None = None
+    lon: float | None = None
+    orgs: list[OrgView] = []
+    more_orgs: int = 0
+    evidence: ClaimView | None = None
+    status: ListStatus = "candidate"
+    added: str | None = None
+    new_facts: int = 0
+    email: str | None = None
+    phone: str | None = None
+
+
+class ResultsView(Model):
+    network: list[PersonView] = []
+    new: list[PersonView] = []
+
+
 class StepRun(Model):
     id: str
     search_id: str

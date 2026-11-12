@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from fn import db, orgs
 from fn.contracts import (
+    Candidate,
     Chip,
     Chips,
     ClaimDraft,
@@ -272,6 +273,31 @@ class WebTest(unittest.TestCase):
         self.assertIn(">bob page</a>, date unknown</cite>", page)
         (point,) = client.get(f"/api/searches/{search_id}/geo").json()["features"]
         self.assertEqual((point["properties"]["id"], point["properties"]["employer"]), (anne, "Nokia Bell Labs"))
+
+    def test_a_card_from_a_record_states_the_fact_and_never_quotes_the_record(self):
+        """An OpenAlex record's claim shows as 'Studied at KU Leuven, 2012–2017' with the citation 'OpenAlex record'.
+
+        No line of the record's text reaches the page.
+        """
+        record = Source(id="org", kind="record", url="https://ror.org/x", text="id", content_hash="h0", fetched_at=now())
+        orgs.save(self.store, [OrgFacts(id="ror:05f950310", name="KU Leuven", country_code="BE")], record, replace=True)
+        text = "affiliations.0.institution.display_name: Katholieke Universiteit Leuven\naffiliations.0.years: 2017, 2012"
+        author = Source(id="src-oa", kind="record", url="https://openalex.org/A1", title="OpenAlex author Anne Example",
+                        text=text, content_hash="h1", source_date="2025", date_method="record_field")
+        anne = self.resolve("anne", "Anne Example")
+        self.store.upsert_claim(ClaimDraft(
+            person_id=anne, kind="affiliation", relation="studied_at", org_id="ror:05f950310",
+            value="Katholieke Universiteit Leuven", quote=text, quote_start=0, quote_end=len(text), source=author,
+            claim_date="2025", date_precision="year", valid_from="2012", valid_to="2017"))
+        self.store.create_search(Search(id="s1", question="q", status="done", created_at=now(), code_sha=None,
+                                        dirty=False, llm_mode="replay", settings_json="{}", boot_id="b"))
+        self.store.save_candidates("s1", [Candidate(search_id="s1", person_id=anne, person_ids=[anne], section="new",
+                                                    rank=1, score=1.0, lane_ranks={"openalex": 1}, hit_person_ids=[anne])], [])
+        page = self.client().get("/searches/s1").text
+        self.assertIn('<p class="fn-fact text-body">Studied at KU Leuven, <span class="text-year">2012–2017</span></p>', page)
+        self.assertIn('<p class="fn-cite text-small"><a href="/sources/src-oa?claim=', page)
+        self.assertIn(">OpenAlex record</a>, 2025</p>", page)
+        self.assertNotIn("display_name:", page)
 
     def resolve(self, key: str, name: str) -> str:
         return self.store.resolve_person([Identifier(scheme="seed", value=key)], name).id
