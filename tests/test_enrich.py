@@ -146,7 +146,8 @@ class EnrichTest(unittest.TestCase):
         for n in range(identity.BIG_ORG):
             self.seed(f"Filler Person{n}", BIG, scheme="import")
         seed = self.seed("Jan Gewoon", BIG)
-        self.store.resolve_person([Identifier(scheme="seed", value="other|Jan Gewoon|1990")], "Jan Gewoon")
+        for n in range(2):
+            self.store.resolve_person([Identifier(scheme="import", value=f"file|Jan Gewoon|{n}")], "Jan Gewoon")
         twins = [author("A9000003", "Jan Gewoon", BIG), author("A9000004", "Jan Gewoon", BIG)]
         found = self.enrich(Recorded({"Jan Gewoon": twins}), "openalex_author")
         self.assertEqual(found[seed][0], "ambiguous")

@@ -111,7 +111,7 @@ class LevelTest(StoreTest):
 
     def test_each_likely_backer(self):
         """A shared small organization, two rows of one seed list a year apart, or a rare name at a shared large
-        organization each make likely."""
+        organization when one of the two is a list row each make likely."""
         self.common()
         a, b = self.person("Ann Example"), self.person("Ann Example")
         self.claim(a, "org:lab"), self.claim(b, "org:lab")
@@ -119,10 +119,17 @@ class LevelTest(StoreTest):
         c = self.person("Ann Example", ("seed", "baef|ann-example|2018|"))
         d = self.person("Ann Example", ("seed", "baef|ann-example|2019|"))
         self.assertEqual(self.level(c, d), ("likely", "same_seed_row"))
-        e, f = self.person("Bea Example"), self.person("Bea Example")
+        e, f = self.person("Bea Example", ("seed", "kvab|bea-example||")), self.person("Bea Example")
         self.claim(e, "org:university"), self.claim(f, "org:university")
         with mock.patch.object(identity, "BIG_ORG", 2):
             self.assertEqual(self.level(e, f), ("likely", "rare_name_org"))
+
+    def test_two_full_profiles_with_a_rare_name_at_a_large_organization_are_possible(self):
+        """Two author profiles are each a person's own record: a rare name at one large organization does not join them."""
+        a, b = self.person("Bea Example"), self.person("Bea Example")
+        self.claim(a, "org:university"), self.claim(b, "org:university")
+        with mock.patch.object(identity, "BIG_ORG", 2):
+            self.assertEqual(self.level(a, b), ("possible", "name_only"))
 
     def test_a_rare_name_without_a_shared_organization_is_possible(self):
         """A name no other record holds backs nothing alone: without a shared organization the pair stays possible."""
@@ -176,14 +183,25 @@ class LevelTest(StoreTest):
         self.assertEqual(self.level(a, b), ("likely", "shared_org"))
 
     def test_web_mentions_do_not_count_toward_rarity(self):
-        """Records whose only identifier is a web mention leave a name rare; a fourth real record makes it common."""
-        a, b = self.person("Ann Example"), self.person("Ann Example")
+        """Records whose only identifier is a web mention leave a name rare; four real records make it common."""
+        a, b = self.person("Ann Example", ("seed", "kvab|ann-example||")), self.person("Ann Example")
         self.claim(a, "org:university"), self.claim(b, "org:university")
         for n in range(3):
             self.person("Ann Example", ("mention", f"https://example.org/{n}#ann"))
         with mock.patch.object(identity, "BIG_ORG", 2):
             self.assertEqual(self.level(a, b), ("likely", "rare_name_org"))
-            self.common(count=2)
+            self.common(count=3)
+            self.assertEqual(self.level(a, b), ("possible", "name_only"))
+
+    def test_seed_rows_do_not_count_toward_rarity(self):
+        """A person on four seed lists is still one rare name: seed rows prove no namesake."""
+        a, b = self.person("Ann Example", ("seed", "one|ann-example|2001|")), self.person("Ann Example", ("seed", "two|ann-example||"))
+        self.claim(a, "org:university"), self.claim(b, "org:university")
+        for n in range(3):
+            self.person("Ann Example", ("seed", f"list{n}|ann-example||"))
+        with mock.patch.object(identity, "BIG_ORG", 2):
+            self.assertEqual(self.level(a, b), ("likely", "rare_name_org"))
+            self.common(count=4)
             self.assertEqual(self.level(a, b), ("possible", "name_only"))
 
 
