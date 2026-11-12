@@ -5,6 +5,8 @@ from urllib.parse import urlencode
 from fn.contracts import (
     ClaimView,
     ContactView,
+    ImportPreview,
+    ImportRow,
     LastView,
     NetworkFilter,
     OrgView,
@@ -12,6 +14,7 @@ from fn.contracts import (
     ProfileView,
     QuoteView,
     Search,
+    name_key,
 )
 from fn.present import FIELDS, cut, days_ago, plural
 from fn.web.html import Safe, h, page
@@ -147,10 +150,26 @@ def network_row(view: PersonView, n: int) -> Safe:
     )
 
 
-def filter_bar(flt: NetworkFilter, total: int, not_on_map: int, action: str, import_name: str | None) -> list[Safe]:
+def joined(items: list[object], sep: str = " · ") -> list[object]:
+    return [part for n, item in enumerate(items) for part in ([sep] if n else []) + [item]]
+
+
+def count_links(flt: NetworkFilter, total: int, new_facts: int) -> list[Safe]:
+    """The count line's links: the people with new facts, which turns New facts only on, and the export."""
+    links = []
+    if new_facts and not flt.new_only:
+        links.append(h.a(f"{new_facts:,} with new facts", href=network_href(flt.model_copy(update={"new_only": True}))))
+    if total:
+        links.append(h.a(f"Export these {total:,}" if is_filtered(flt) else "Export",
+                         href=network_href(flt, path="/people/export.csv")))
+    return links
+
+
+def filter_bar(flt: NetworkFilter, total: int, not_on_map: int, action: str, import_name: str | None,
+               new_facts: int = 0) -> list[Safe]:
     """The filter form with its tokens, then the count line over the whole filtered set with Clear all when filtered.
 
-    import_name is the file name of the import the filter keeps.
+    import_name is the file name of the import the filter keeps; new_facts counts the people with a new fact.
     """
     tokens = [(f"From import {import_name}", flt.model_copy(update={"import_id": None}))] if flt.import_id else []
     tokens += [("New facts only", flt.model_copy(update={"new_only": False}))] if flt.new_only else []
@@ -170,8 +189,8 @@ def filter_bar(flt: NetworkFilter, total: int, not_on_map: int, action: str, imp
                  class_="fn-tokens", aria_label="Active filters") if tokens else None,
             class_="fn-filter", method="get", action=action, role="search",
         ),
-        h.p(h.span(" · ".join(count)), h.a("Clear all", href="/people") if is_filtered(flt) else None,
-            class_="fn-count text-meta"),
+        h.p(h.span(joined([" · ".join(count), *count_links(flt, total, new_facts)])),
+            h.a("Clear all", href="/people") if is_filtered(flt) else None, class_="fn-count text-meta"),
     ]
 
 
@@ -190,7 +209,9 @@ def empty_network(home: bool) -> Safe:
     how = "search above" if home else h.a("run a search", href="/")
     return h.div(h.h2("Your network is empty", class_="fn-notice__title text-title"),
                  h.p("Import a CSV file of people you already know, or ", how, " and add people from the results.",
-                     class_="text-body"), class_="fn-notice")
+                     class_="text-body"),
+                 h.div(h.a("Import", class_="fn-btn fn-btn--quiet text-control", href="/imports/new"),
+                       class_="fn-notice__acts"), class_="fn-notice")
 
 
 def nobody_matches(flt: NetworkFilter, import_name: str | None, everyone: int) -> Safe:
@@ -398,3 +419,148 @@ def possible_block(view: ProfileView, here: str) -> list[Safe] | None:
         return None
     return [h.h2("Possible matches", class_="fn-section text-label", id="matches"),
             h.p(MATCH_NOTE, class_="fn-note text-small"), h.div(rows, class_="fn-lines")]
+def banner(text: str, link: tuple[str, str] | None = None) -> Safe:
+    """One line on what an action changed elsewhere, with the next step as a link; link is (label, href)."""
+    return h.p(h.span(text), h.a(link[0], href=link[1]) if link else None, class_="fn-banner text-body", role="status")
+
+
+IMPORT_NOTES = {
+    "name": "The person's full name.",
+    "email": "A contact detail. FN also recognizes the person by it in a later import.",
+    "phone": "A contact detail.",
+    "organization": "Where the person works.",
+    "role": "The person's job title.",
+    "city": "With state and country, puts the person on the map.",
+    "state": "The US state, or the province or region elsewhere.",
+    "country": "The country of the city.",
+    "linkedin_url": "The address of their LinkedIn profile. FN recognizes the person by it in later imports and searches.",
+    "orcid": "Their ORCID iD. FN recognizes the person by it in later imports and searches.",
+}
+OUTCOME_WORDS = {"new": "New", "update": "In your network", "name_match": "Same name"}
+IMPORT_ROWS_SHOWN = 200
+
+
+def data_table(label: str, headers: list[str], rows: list[list[tuple[str, str | None]]]) -> Safe:
+    """A DataTable in its scrolling region; each cell is its text and an extra class, such as fn-table__failed."""
+    return h.div(
+        h.table(h.thead(h.tr([h.th(c, scope="col", class_="text-label") for c in headers])),
+                h.tbody([h.tr([h.td(text, class_=" ".join(filter(None, ["text-meta", extra]))) for text, extra in row])
+                         for row in rows]),
+                class_="fn-table"),
+        class_="fn-table-wrap", role="region", aria_label=label, tabindex="0",
+    )
+
+
+def upload_form(error: str | None) -> Safe:
+    """The CSV file Field with its hint and Upload; error is the sentence under the field."""
+    return h.form(
+        h.div(
+            h.label("CSV file", class_="fn-field__label text-strong", for_="file"),
+            h.p("The first row holds the column names. Commas and semicolons both work.", class_="fn-field__hint text-small",
+                id="file-hint"),
+            h.input(class_="fn-input text-body", id="file", name="file", type="file", accept=".csv,text/csv",
+                    aria_describedby="file-hint file-error" if error else "file-hint",
+                    aria_invalid="true" if error else None, autofocus=bool(error)),
+            h.p(error, class_="fn-error text-small", id="file-error") if error else None,
+            class_="fn-field",
+        ),
+        h.button("Upload", class_="fn-btn fn-btn--dark text-control"),
+        method="post", action="/imports", enctype="multipart/form-data",
+    )
+
+
+def import_columns(columns: tuple[str, ...]) -> list[Safe]:
+    """The heading, note and table of the columns FN reads."""
+    return [
+        h.h2("Columns FN reads", class_="fn-section text-label"),
+        h.p("Name your columns like this, in any order. FN ignores other columns, and a blank cell changes nothing for "
+            "someone already in your network.", class_="fn-note text-small"),
+        data_table("Columns FN reads", ["Column", "Required", "What FN does with it"],
+                   [[(c, None), ("Yes" if c == "name" else "No", None), (IMPORT_NOTES[c], "fn-table__text")]
+                    for c in columns]),
+    ]
+
+
+def importable(preview: ImportPreview) -> int:
+    return sum(preview.counts.get(k, 0) for k in OUTCOME_WORDS)
+
+
+def import_counts(preview: ImportPreview) -> Safe:
+    """The counts in words, a count of 0 left out."""
+    counts = preview.counts
+    lines = [plural(counts.get("new", 0), "new person", "new people"),
+             f"{counts.get('update', 0):,} already in your network",
+             f"{counts.get('name_match', 0):,} with the same name as someone in your network",
+             plural(counts.get("skipped", 0), "row skipped", "rows skipped")]
+    shown = [line for line, n in zip(lines, [counts.get(k, 0) for k in ("new", "update", "name_match", "skipped")]) if n]
+    return h.ul([h.li(line) for line in shown], class_="fn-summary__counts text-body")
+
+
+def import_notes(preview: ImportPreview) -> list[Safe]:
+    """What FN does with rows already in the network, why rows are skipped, the ignored columns and row notes."""
+    notes = []
+    if updates := preview.counts.get("update", 0):
+        notes.append(f"FN adds what is new in the {plural(updates, 'row', 'rows')} already in your network to their "
+                     "profiles.")
+    notes += [r.message for r in preview.rows if r.outcome == "skipped" and r.message]
+    if ignored := preview.ignored_columns:
+        notes.append(f"FN ignores {plural(len(ignored), 'column', 'columns')}: {', '.join(ignored)}.")
+    lines = [h.p(" ".join(notes), class_="fn-note text-small")] if notes else []
+    return lines + [h.p(r.message if r.message.startswith("Row ") else f"Row {r.n}. {r.message}", class_="fn-note text-small")
+                    for r in preview.rows if r.outcome != "skipped" and r.message]
+
+
+def facts_line(*parts: str | None) -> str:
+    return " · ".join(p for p in parts if p)
+
+
+def name_match(row: ImportRow, view: PersonView) -> Safe:
+    """One name match: the unticked box 'Row 7. Same as <name>?' and the file's facts beside the network person's."""
+    cells = row.cells
+    file_job = ", ".join(cells[c] for c in ("role", "organization") if c in cells)
+    place = ", ".join(cells[c] for c in ("city", "state", "country") if c in cells)
+    job = ", ".join(x for x in (view.role, view.employer) if x)
+    return h.div(h.div(
+        h.p(h.input(type="checkbox", id=f"m{row.n}", name="merge", value=str(row.n)),
+            h.label(f"Row {row.n}. Same as ", h.a(view.name, href=f"/people/{view.person_id}"), "?", class_="text-body",
+                    for_=f"m{row.n}"), class_="fn-check"),
+        h.p("In the file: ", facts_line(file_job, place, cells.get("email")),
+            class_="fn-check__detail fn-line__meta text-small"),
+        h.p("In your network: ", facts_line(job, view.place, f"added {view.added}" if view.added else None),
+            class_="fn-check__detail fn-line__meta text-small"),
+        class_="fn-line__main"), class_="fn-line")
+
+
+def name_matches(rows: list[ImportRow], views: dict[str, PersonView]) -> list[Safe]:
+    """The name matches under their heading, with the header box that ticks them all."""
+    shown = [name_match(r, views[r.person_id]) for r in rows if r.outcome == "name_match" and r.person_id in views]
+    if not shown:
+        return []
+    return [
+        h.h2("Same name as someone in your network", class_="fn-section text-label"),
+        h.p("Tick a row only if it is the same person. An unticked row becomes a new person, and you can still merge it "
+            "later from the profile.", class_="fn-note text-small"),
+        h.div(h.p(h.input(type="checkbox", id="all", name="same_all", value="1"),
+                  h.label("All of these are the same person", class_="text-strong", for_="all"), class_="fn-check"),
+              class_="fn-summary__all"),
+        h.div(shown, class_="fn-lines"),
+    ]
+
+
+def what_happens(row: ImportRow) -> tuple[str, str | None]:
+    if row.outcome != "skipped":
+        return OUTCOME_WORDS[row.outcome], None
+    return ("Skipped" if name_key(row.name) else "Skipped: no name"), "fn-table__failed"
+
+
+def import_rows(preview: ImportPreview, columns: tuple[str, ...]) -> list[Safe]:
+    """The heading and table of the file's rows with what happens to each, the first 200 and how many there are."""
+    label, rows = f"Rows in {preview.filename}", preview.rows
+    return [
+        h.h2(label, " ", h.span(f"{len(rows):,}"), class_="fn-section text-label"),
+        data_table(label, ["Row", "What happens", *columns],
+                   [[(str(r.n), None), what_happens(r), *[(r.cells.get(c, ""), None) for c in columns]]
+                    for r in rows[:IMPORT_ROWS_SHOWN]]),
+        h.div(h.span(f"{IMPORT_ROWS_SHOWN:,} of {len(rows):,} shown"), class_="fn-more text-meta")
+        if len(rows) > IMPORT_ROWS_SHOWN else None,
+    ]

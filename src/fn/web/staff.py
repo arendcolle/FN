@@ -1,24 +1,41 @@
 """The staff router: Home, All searches, the results page, the Network page with their map data, the Person page
-with its decisions, and the source page."""
+with its decisions, the import pages, the CSV export and the source page."""
+import email.policy
 import re
+from email.parser import BytesParser
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
-from fn import network
-from fn.contracts import Claim, NetworkFilter, Search, Source, normalize
-from fn.present import geo, label_of, network_view, profile, results, sources_read
+from fn import exporter, importer, network
+from fn.contracts import (
+    IMPORT_COLUMNS,
+    Claim,
+    ImportPreview,
+    NetworkFilter,
+    Search,
+    Source,
+    normalize,
+)
+from fn.present import geo, label_of, network_view, person_views, plural, profile, results, sources_read
 from fn.store import Store, fold
 from fn.web.html import Safe, h, page
 from fn.web.parts import (
     NETWORK_STEP,
+    banner,
     contact_block,
     empty_network,
     fact_groups,
     filter_bar,
     found_as_block,
+    import_columns,
+    import_counts,
+    import_notes,
+    import_rows,
+    importable,
     is_filtered,
+    name_matches,
     network_href,
     network_row,
     nobody_matches,
@@ -30,11 +47,15 @@ from fn.web.parts import (
     recent_list,
     search_box,
     show_more,
+    upload_form,
 )
 from fn.web.requests import first, form_of, store_of, worker_of
 from fn.worker import now
 
 MAX_QUESTION = 1000
+# Room for the multipart framing around a file of the importer's 5 MB.
+UPLOAD_CAP = importer.MAX_BYTES + 64 * 1024
+NO_FILE = "Choose a CSV file to upload."
 SECTIONS = {"network": "In your network", "new": "New"}
 ORIGINS = ("card", "row", "popup", "import")
 CONTACT_KINDS = ("email", "phone")
@@ -61,7 +82,7 @@ def network_block(store: Store, flt: NetworkFilter, limit: int, view: str, home:
     elif not found.total:
         rows = [filter_bar(flt, 0, 0, "/people", import_name), nobody_matches(flt, import_name, everyone)]
     else:
-        rows = [filter_bar(flt, found.total, found.not_on_map, "/people", import_name),
+        rows = [filter_bar(flt, found.total, found.not_on_map, "/people", import_name, found.new_facts),
                 [network_row(v, n) for n, v in enumerate(found.people, 1)],
                 show_more(found.shown, found.total, network_href(flt, limit + NETWORK_STEP, view))]
     views = [h.a(name.title(), href=network_href(flt, limit, name, path), data_view=name,
@@ -69,7 +90,9 @@ def network_block(store: Store, flt: NetworkFilter, limit: int, view: str, home:
     placed = found.total > found.not_on_map
     block = h.div(
         h.nav(views, class_="fn-switch text-switch", aria_label="View"),
-        h.div(h.div(h.h2("In your network", class_="fn-section text-label"), class_="fn-sectionbar"), rows,
+        h.div(h.div(h.h2("In your network", class_="fn-section text-label"),
+                    h.p(h.a("Import", href="/imports/new"), class_="fn-sectionbar__acts text-meta"), class_="fn-sectionbar"),
+              rows,
               class_="fn-results__list"),
         h.div(id="map", class_="fn-map", role="region", aria_label="Map of your network",
               data_geo=network_href(flt, path="/api/people/geo")),
@@ -101,9 +124,10 @@ def searches_page(store: Store) -> tuple[str, dict]:
             {"rows": len(searches), "total": len(searches), "filtered": False})
 
 
-def network_page(store: Store, flt: NetworkFilter, limit: int, view: str) -> tuple[str, dict]:
+def network_page(store: Store, flt: NetworkFilter, limit: int, view: str, top: Safe | None = None) -> tuple[str, dict]:
+    """The Network page; top is the Banner over it, if any."""
     block, facts = network_block(store, flt, limit, view, home=False)
-    return page("Network", block, current="network", body_class="fn-app", extra_head=MAP_HEAD), facts
+    return page("Network", top, block, current="network", body_class="fn-app", extra_head=MAP_HEAD), facts
 
 
 def person_cards(store: Store, search: Search) -> tuple[list[Safe], bool]:
@@ -189,11 +213,36 @@ def network_query(request: Request) -> tuple[NetworkFilter, int, str]:
     return flt, limit if limit > 0 and limit % NETWORK_STEP == 0 else NETWORK_STEP, params.get("view", "list")
 
 
+def import_banner(store: Store, request: Request) -> Safe | None:
+    """The Banner after a confirm (?imported=<id>) or a discard (?discarded=<id>), once the import has that status."""
+    params = request.query_params
+    if (found := importer.get(store, params.get("imported", ""))) and found.status == "confirmed":
+        return banner(f"{plural(importable(found), 'person', 'people')} imported from {found.filename}.",
+                      ("Show them", network_href(NetworkFilter(import_id=found.import_id))))
+    if (found := importer.get(store, params.get("discarded", ""))) and found.status == "discarded":
+        return banner(f"{found.filename} discarded. Nothing was imported.")
+    return None
+
+
 @router.get("/people")
 async def people(request: Request) -> HTMLResponse:
     flt, limit, view = network_query(request)
-    text, request.state.facts = network_page(store_of(request), flt, limit, "map" if view == "map" else "list")
+    store = store_of(request)
+    text, request.state.facts = network_page(store, flt, limit, "map" if view == "map" else "list",
+                                             import_banner(store, request))
     return HTMLResponse(text)
+
+
+@router.get("/people/export.csv")
+async def export_people(request: Request) -> Response:
+    """The filtered network as a CSV download, all of it, recorded as an export event."""
+    flt, store, today = network_query(request)[0], store_of(request), now().astimezone().date()
+    found = network_view(store, flt, None, today).people
+    text = exporter.csv_text(store, found, str(request.base_url).rstrip("/"))
+    network.record_export(store, now=now(), detail={"count": len(found), "filtered": is_filtered(flt)})
+    request.state.facts = {"people": len(found), "filtered": is_filtered(flt)}
+    return Response(text, media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="fn-network-{today.isoformat()}.csv"'})
 
 
 @router.get("/api/people/geo")
@@ -415,3 +464,134 @@ async def undo(request: Request, event_id: str) -> Response:
     except network.UndoRefused:
         return back_to(form, fallback, "undo=refused")
     return back_to(form, fallback)
+def upload_page(error: str | None = None) -> str:
+    """The Import page: the CSV file Field, error under it, and the columns FN reads."""
+    return page("Import people", h.main(h.div(
+        h.h1("Import people", class_="fn-page__title text-title"),
+        h.p("Upload a CSV file with one person per row. FN shows you what it will do before anything is imported.",
+            class_="fn-page__lead text-body"),
+        upload_form(error), import_columns(IMPORT_COLUMNS),
+        class_="fn-column"), class_="fn-page"), current="network")
+
+
+def import_summary(store: Store, preview: ImportPreview) -> Safe:
+    """The ImportSummary of an import in preview: counts, notes, name matches, Import and Discard.
+
+    A confirmed or discarded import shows what happened instead, without buttons.
+    """
+    title, count = h.h1(f"Check {preview.filename}", class_="fn-page__title text-title"), importable(preview)
+    if preview.status == "discarded":
+        return h.div(title, h.p(f"{preview.filename} discarded. Nothing was imported.", class_="fn-page__lead text-body"),
+                     class_="fn-summary")
+    if preview.status == "confirmed":
+        done = [f"{plural(count, 'person', 'people')} imported from {preview.filename}. ",
+                h.a("Show them", href=network_href(NetworkFilter(import_id=preview.import_id)))]
+        return h.div(title, h.p(done, class_="fn-page__lead text-body"), import_counts(preview), class_="fn-summary")
+    matched = [r for r in preview.rows if r.outcome == "name_match" and r.person_id]
+    views = dict(zip([r.person_id for r in matched],
+                     person_views(store, [[r.person_id] for r in matched], now().astimezone().date())))
+    discard = h.button("Discard", class_="fn-btn fn-btn--quiet text-control", formaction=f"/imports/{preview.import_id}/discard")
+    word = plural(count, "person", "people")
+    return h.form(
+        title, h.p(f"Nothing is imported until you press Import {word}.", class_="fn-page__lead text-body"),
+        import_counts(preview), import_notes(preview), name_matches(preview.rows, views),
+        h.div(h.button(f"Import {word}", class_="fn-btn fn-btn--dark text-control") if count else None, discard,
+              class_="fn-summary__acts"),
+        h.p("You can remove anyone later from their profile.", class_="fn-note text-small") if count else None,
+        class_="fn-summary", method="post", action=f"/imports/{preview.import_id}/confirm",
+    )
+
+
+def preview_page(store: Store, preview: ImportPreview) -> str:
+    return page(f"Check {preview.filename}", h.main(h.div(import_summary(store, preview), class_="fn-column"),
+                                                    import_rows(preview, IMPORT_COLUMNS), class_="fn-page"),
+                current="network")
+
+
+async def capped_body(request: Request) -> tuple[bytes, bool]:
+    """The request body up to UPLOAD_CAP bytes and whether it goes past them; reading stops there."""
+    body = bytearray()
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > UPLOAD_CAP:
+            return bytes(body[:UPLOAD_CAP]), True
+    return bytes(body), False
+
+
+def uploaded_file(content_type: str, body: bytes) -> tuple[str, bytes] | None:
+    """The file name and bytes of the multipart field 'file', or None when no file was chosen."""
+    if not content_type.startswith("multipart/form-data"):
+        return None
+    head = b"Content-Type: " + content_type.encode("latin-1", errors="replace") + b"\r\n\r\n"
+    message = BytesParser(policy=email.policy.HTTP).parsebytes(head + body)
+    for part in message.iter_parts():
+        if part.get_param("name", header="content-disposition") == "file" and (name := part.get_filename()):
+            return name.replace("\\", "/").rsplit("/", 1)[-1], part.get_payload(decode=True) or b""
+    return None
+
+
+def get_import(request: Request, import_id: str) -> ImportPreview:
+    found = importer.get(store_of(request), import_id)
+    if found is None:
+        raise HTTPException(404, "No such import")
+    return found
+
+
+@router.get("/imports/new")
+async def new_import() -> HTMLResponse:
+    return HTMLResponse(upload_page())
+
+
+@router.post("/imports")
+async def upload(request: Request) -> Response:
+    body, too_big = await capped_body(request)
+    found = uploaded_file(request.headers.get("content-type", ""), body)
+    if too_big:
+        error = importer.TOO_BIG.format(file=found[0] if found else "This file")
+    elif found is None:
+        error = NO_FILE
+    else:
+        try:
+            import_id = importer.upload(worker_of(request), *found, now())
+        except importer.ImportRefused as exc:
+            error = str(exc)
+        else:
+            preview = get_import(request, import_id)
+            request.state.facts = {"rows": len(preview.rows), **preview.counts}
+            return RedirectResponse(f"/imports/{import_id}", 303)
+    request.state.facts = {"refused": True}
+    return HTMLResponse(upload_page(error), 400)
+
+
+@router.get("/imports/{import_id}")
+async def show_import(request: Request, import_id: str) -> HTMLResponse:
+    preview = get_import(request, import_id)
+    request.state.facts = {"rows": len(preview.rows), **preview.counts}
+    return HTMLResponse(preview_page(store_of(request), preview))
+
+
+@router.post("/imports/{import_id}/confirm")
+async def confirm_import(request: Request, import_id: str) -> RedirectResponse:
+    """Import the rows, merging the ticked name matches, or every one when the header box is ticked."""
+    form, preview = await form_of(request), get_import(request, import_id)
+    if form.get("same_all"):
+        merge = {r.n for r in preview.rows if r.outcome == "name_match"}
+    else:
+        merge = {int(v) for v in form.get("merge", []) if v.isdigit() and len(v) <= 9}
+    try:
+        done = importer.confirm(worker_of(request), import_id, merge, now())
+    except importer.ImportRefused:
+        return RedirectResponse(f"/imports/{import_id}", 303)
+    request.state.facts = {"rows": len(done.rows), **done.counts}
+    return RedirectResponse(f"/people?imported={import_id}", 303)
+
+
+@router.post("/imports/{import_id}/discard")
+async def discard_import(request: Request, import_id: str) -> RedirectResponse:
+    preview = get_import(request, import_id)
+    try:
+        importer.discard(store_of(request), import_id)
+    except importer.ImportRefused:
+        return RedirectResponse(f"/imports/{import_id}", 303)
+    request.state.facts = {"rows": len(preview.rows)}
+    return RedirectResponse(f"/people?discarded={import_id}", 303)

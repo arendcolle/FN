@@ -46,7 +46,7 @@ class NetworkPageTest(unittest.TestCase):
         return re.findall(r'<h3 class="fn-row__name text-name"><a href="/people/[^"]+">([^<]+)</a>', html)
 
     def count_line(self, html: str) -> str:
-        return re.search(r'<p class="fn-count text-meta"><span>([^<]*)</span>', html).group(1)
+        return re.search(r'<p class="fn-count text-meta"><span>([^<]*?)(?: · <a|</span>)', html).group(1)
 
     def test_people_lists_the_network_newest_added_first_and_never_a_candidate(self):
         """Rows are network people only, ordered by their latest add, each a link to the Person page."""

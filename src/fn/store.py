@@ -654,12 +654,14 @@ class Store:
 
         The text matches, ignoring case, part of the name or of an affiliation, role, location or topic claim's value
         or organization name, over every record of the person; new_only keeps people with a fact first seen after
-        seen_at, and import_id the people an event of that import names.
+        seen_at, and import_id the people an event of that import names or a row of that confirmed import became.
         """
         rows = self.conn.execute(
             "SELECT p.id FROM persons p WHERE p.list_status = 'in_list' AND p.merged_into IS NULL "
             "AND (?1 IS NULL OR p.id IN (SELECT COALESCE(r.merged_into, r.id) FROM events e JOIN persons r "
-            "ON r.id IN (e.person_id, e.other_person_id) WHERE e.import_id = ?1)) "
+            "ON r.id IN (e.person_id, e.other_person_id) WHERE e.import_id = ?1 "
+            "UNION SELECT COALESCE(r.merged_into, r.id) FROM imports i, json_each(i.summary_json, '$.rows') j "
+            "JOIN persons r ON r.id = json_extract(j.value, '$.person_id') WHERE i.id = ?1 AND i.status = 'confirmed')) "
             "AND (NOT ?2 OR p.seen_at IS NOT NULL AND EXISTS (SELECT 1 FROM persons r JOIN claims c ON c.person_id = r.id "
             "WHERE (r.id = p.id OR r.merged_into = p.id) AND c.rejected_at IS NULL "
             "AND MAX(COALESCE(c.first_seen_at, ''), COALESCE(r.merged_at, '')) > p.seen_at)) "

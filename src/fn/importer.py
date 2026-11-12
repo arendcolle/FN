@@ -109,7 +109,8 @@ def table(filename: str, text: str) -> Table:
 
 def cells_of(columns: dict[str, int], row: list[str]) -> dict[str, str]:
     """The filled expected cells of a row, normalized; the name on one line without titles."""
-    found = {col: normalize(row[i]) for col, i in columns.items() if i < len(row)}
+    # Drop the apostrophe an FN export puts before =, +, - and @ so a re-import reads the value it exported.
+    found = {col: re.sub(r"^'(?=[=+\-@])", "", normalize(row[i])) for col, i in columns.items() if i < len(row)}
     if "name" in found:
         found["name"] = clean_name(found["name"])
     return {col: value for col, value in found.items() if value}

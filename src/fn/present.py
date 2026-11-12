@@ -222,12 +222,15 @@ def results(store: Store, search: Search, today: date) -> ResultsView:
 
 
 def network_view(store: Store, flt: NetworkFilter, limit: int | None, today: date) -> NetworkView:
-    """The filtered network: views of the first limit people, the total and how many of all of them have no place."""
+    """The filtered network: views of the first limit people, the total and how many of all of them have no place.
+
+    new_facts counts how many of all of them have a new fact.
+    """
     ids, total = store.list_network(flt, None)
     views = person_views(store, [[p] for p in ids], today)
     shown = views if limit is None else views[:limit]
     return NetworkView(people=shown, total=total, not_on_map=sum(1 for v in views if v.lat is None or v.lon is None),
-                       shown=len(shown))
+                       shown=len(shown), new_facts=sum(1 for v in views if v.new_facts))
 
 
 def geo(people: list[PersonView]) -> dict:
