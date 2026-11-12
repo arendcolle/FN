@@ -1,11 +1,15 @@
 """The Quick workflow: which steps run in which order."""
 import sys
+from collections.abc import Callable
 
 from fn import parse, rank, resolve
 from fn.contracts import (
     LaneIn,
+    LaneOut,
     ParseIn,
     ParseOut,
+    PublishIn,
+    PublishOut,
     RankIn,
     ResolveIn,
     SaveIn,
@@ -21,8 +25,20 @@ def save(ctx: StepContext, inp: SaveIn) -> SaveOut:
     return SaveOut(count=ctx.store.save_candidates(ctx.search_id, inp.candidates, inp.flags))
 
 
+def publish(outs: list[LaneOut]) -> Callable[[StepContext, PublishIn], PublishOut]:
+    """The publish step over the lane outputs so far: it resolves, ranks and saves them as the final steps do."""
+    def step(ctx: StepContext, inp: PublishIn) -> PublishOut:
+        resolved = resolve.run(ctx, ResolveIn(outs=outs))
+        ranked = rank.run(ctx, RankIn(entries=resolved.entries, chips=inp.chips))
+        return save(ctx, SaveIn(candidates=ranked.candidates, flags=resolved.flags))
+    return step
+
+
 def run(ctx: StepContext, search: Search) -> None:
-    """Run the Quick steps in order: parse, each lane, resolve, rank and save."""
+    """Run the Quick steps in order: parse, each lane with a publish after all but the last, resolve, rank and save.
+
+    A lane that raises keeps its error row and counts as an empty output; raises RuntimeError when every lane did.
+    """
     inp = ParseIn(question=search.question)
     if search.chips is not None:
         chips = skip_step(ctx, "parse", inp, ParseOut(chips=search.chips)).chips
@@ -30,7 +46,17 @@ def run(ctx: StepContext, search: Search) -> None:
         chips = run_step(ctx, "parse", parse.run, inp).chips
         ctx.store.set_search_chips(search.id, chips, "parsed")
     lane_in = LaneIn(search_id=search.id, chips=chips, depth=search.depth)
-    outs = [run_step(ctx, f"lane:{lane.name}", lane.run, lane_in) for lane in LANES]
+    outs, failed = [], 0
+    for i, lane in enumerate(LANES):
+        try:
+            outs.append(run_step(ctx, f"lane:{lane.name}", lane.run, lane_in))
+        except Exception:  # noqa: BLE001 any lane error is kept on its step row and the search goes on
+            failed += 1
+            outs.append(LaneOut(lane=lane.name, query="", total_seen=0))
+        if i < len(LANES) - 1:
+            run_step(ctx, "publish", publish(list(outs)), PublishIn(lanes=[o.lane for o in outs], chips=chips))
+    if failed == len(LANES):
+        raise RuntimeError("every lane failed")
     resolved = run_step(ctx, "resolve", resolve.run, ResolveIn(outs=outs))
     ranked = run_step(ctx, "rank", rank.run, RankIn(entries=resolved.entries, chips=chips))
     run_step(ctx, "save", save, SaveIn(candidates=ranked.candidates, flags=resolved.flags))

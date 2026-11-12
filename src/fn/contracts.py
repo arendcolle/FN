@@ -527,7 +527,7 @@ class LLMResult[T](Model):
     billing: str
 
 
-# Step models, in the order search.py runs them: parse, lane:<name> per lane, resolve, rank, save.
+# Step models, in the order search.py runs them: parse, lane:<name> per lane with publish between, resolve, rank, save.
 class ParseIn(Model):
     question: str
 
@@ -575,6 +575,23 @@ class SaveIn(Model):
 
 class SaveOut(Model):
     count: int
+
+
+# The publish step after each lane but the last, and how far a search is.
+class PublishIn(Model):
+    # The lanes whose outputs are published; the outputs themselves are on the lanes' own step rows.
+    lanes: list[LaneName]
+    chips: Chips
+
+
+class PublishOut(Model):
+    count: int
+
+
+class SearchProgress(Model):
+    status: SearchStatus
+    people: int
+    version: int
 
 
 # The one step of the fn-orgs job.
@@ -636,3 +653,4 @@ class CaseResult(Model):
     llm_cost_usd: float = 0.0
     picks: list[PickResult]
     top: list[TopCard]
+    failed_lanes: list[str] = []
