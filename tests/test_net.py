@@ -128,6 +128,19 @@ class NetTest(unittest.TestCase):
         self.assertIn("replay: no cached response for GET https://api.openalex.org/authors?q=wind", str(raised.exception))
         self.assertEqual(len(self.sent), 1)
 
+    def test_prefer_serves_what_is_cached_and_calls_out_on_a_miss(self):
+        """In prefer mode a cached URL costs no call, and an uncached one goes to the network and is cached."""
+        live = self.client([httpx.Response(200, json={"results": [1]})])
+        self.step(live, "https://api.openalex.org/works")
+        prefer = self.client([httpx.Response(200, json={"results": [2]})],
+                             self.settings.model_copy(update={"http_mode": "prefer"}))
+        self.assertEqual(self.step(prefer, "https://api.openalex.org/works").status, "ok")
+        self.assertIn('{"results":[1]}', self.store.list_steps(self.search_id)[-1].log)
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(self.step(prefer, "https://api.openalex.org/authors").status, "ok")
+        self.assertIn('{"results":[2]}', self.store.list_steps(self.search_id)[-1].log)
+        self.assertEqual(len(self.sent), 2)
+
     def test_oversized_body_and_other_schemes_are_refused(self):
         """A body over 5 MB fails the call; a non-http URL is refused before any request."""
         big = self.client([httpx.Response(200, content=b"x" * (net.MAX_BYTES + 1))])

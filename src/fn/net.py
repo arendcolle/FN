@@ -133,7 +133,7 @@ class Client:
         path = cache_file(self.cache, key)
         recorder = current_recorder()
         replay = self.settings.http_mode == "replay"
-        if replay or cache != "refresh":
+        if replay or cache != "refresh" or self.settings.http_mode == "prefer":
             served = "replay" if replay else "cache"
             if path.exists():
                 body = path.read_bytes()
