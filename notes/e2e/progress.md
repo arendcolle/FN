@@ -16,6 +16,12 @@ One line per finished step, newest last. The plan is in [plan.md](plan.md) and t
 - 2026-11-12 T4 merged: the network core (PR #9). Migration 006 ran in 0.6 s on a copy of the 509 MB database. 300 tests.
 - 2026-11-12 T5 done: seven new parts and new states published to the design system (version 8); `fn.css` is its byte copy (PR #10). The strings are in [design-system/STRINGS.md](design-system/STRINGS.md).
 - 2026-11-12 Started five tasks side by side: T6 person views, T11a ranker cut, T12a publish steps, T13a owner logging, T9a import core.
+- 2026-11-12 T6 merged: one person view and one claim format (PR #11). Raw record lines on cards went from 718 to 0 on the example search.
+- 2026-11-12 T11a merged: the ranker cut (PR #12). Median 1,098 to 518 people; no gold pick lost.
+- 2026-11-12 T12a merged: publish steps and lane failures that do not stop a search (PR #13).
+- 2026-11-12 T13a merged: request log, `/debug/stats`, `/debug/feedback` (PR #14).
+- 2026-11-12 T9a merged: the import core (PR #15). 348 tests.
+- 2026-11-12 T7, the Network page, in progress.
 
 ## Review ledger
 
