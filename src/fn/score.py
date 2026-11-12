@@ -13,7 +13,7 @@ from datetime import date
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from fn import config, geo, gold, net, parse, present, search
+from fn import config, geo, gold, identity, net, parse, present, search
 from fn.config import ROOT, Settings
 from fn.contracts import Candidate, Chips, GeoArea, GoldCase, GoldPick, Search, name_key
 from fn.llm import from_settings
@@ -118,9 +118,9 @@ def place_class(claims: list, area: GeoArea) -> str:
     return "inside" if any(geo.distance_km(area.lat, area.lon, la, lo) <= geo.METRO_RADIUS_KM for la, lo in spots) else "outside"
 
 
-def card_ids(candidate: Candidate) -> list[str]:
-    """The records a kept candidate's card reads: the records a lane hit, else its first record."""
-    return present.hits_of(candidate)
+def card_ids(store: Store, candidate: Candidate) -> list[str]:
+    """The records a kept candidate's card reads, as identity puts them on the card."""
+    return identity.on_card(store, candidate)
 
 
 def site(url: str) -> str:
@@ -134,7 +134,7 @@ def site(url: str) -> str:
 def by_construction(store: Store, case: GoldCase, pick: GoldPick, hit: Candidate) -> bool:
     """Whether a record on the pick's card has a seed page from a site that the case source or the pick's sources name."""
     named = {site(u) for u in (case.source_url, *pick.sources) if u} - {""}
-    sources = store.get_sources([c.source_id for c in store.claims_of(card_ids(hit))])
+    sources = store.get_sources([c.source_id for c in store.claims_of(card_ids(store, hit))])
     return bool(named & {site(s.url) for s in sources.values() if s.kind == "seed_page"})
 
 
@@ -190,7 +190,7 @@ def pair_metrics(store: Store, kept: list, pairs: list[dict]) -> dict:
     A pair with an id the database does not hold is skipped, and so is an unclear one.
     """
     known = store.get_persons([i for p in pairs for i in (p["a"], p["b"])])
-    cards = [set(card_ids(c)) for c in kept]
+    cards = [set(card_ids(store, c)) for c in kept]
     wrong = split = 0
     for pair in pairs:
         if pair["label"] == "unclear" or not {pair["a"], pair["b"]} <= known.keys():
@@ -206,14 +206,14 @@ def pair_metrics(store: Store, kept: list, pairs: list[dict]) -> dict:
 def card_metrics(store: Store, scored: Search, kept: list, created: date, area: GeoArea | None) -> dict:
     """The doubles counts, the card shares of the first TOP cards, and the place and lane shares."""
     top = kept[:50]
-    views = present.person_views(store, [card_ids(c) for c in top], created, [c.reason_claim_ids for c in top])
+    views = present.person_views(store, [card_ids(store, c) for c in top], created, [c.reason_claim_ids for c in top])
     by_person: dict[str, list] = {}
-    for claim in store.claims_of([p for c in top for p in card_ids(c)]):
+    for claim in store.claims_of([p for c in top for p in card_ids(store, c)]):
         by_person.setdefault(claim.person_id, []).append(claim)
     pattern = topic_pattern(scored.chips)
     cards = []
     for c, view in zip(top, views, strict=True):
-        claims = [x for p in card_ids(c) for x in by_person.get(p, [])]
+        claims = [x for p in card_ids(store, c) for x in by_person.get(p, [])]
         text = " ".join(f"{x.value} {x.quote}" for x in claims)
         card = {
             "key": name_key(view.name), "orgs": {x.org_id for x in claims if x.org_id}, "lanes": set(c.lane_ranks),

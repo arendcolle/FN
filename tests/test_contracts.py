@@ -2,7 +2,7 @@ import unittest
 
 from pydantic import ValidationError
 
-from fn.contracts import ClaimDraft, Source, group_key, name_key, normalize
+from fn.contracts import ClaimDraft, Source, name_key, normalize
 
 SOURCE = Source(id="s1", kind="page", url="https://example.org", text="Anne works at KU Leuven.", content_hash="h")
 
@@ -35,13 +35,6 @@ class NameKeyTest(unittest.TestCase):
         self.assertEqual(name_key("Grégoire Wallenborn"), "gregoire wallenborn")
         self.assertEqual(name_key("Marie-Astrid de Wit"), "marie astrid de wit")
         self.assertEqual(name_key("Łukasz Ćwik"), "łukasz cwik")
-
-    def test_group_key_drops_middle_initials_only(self):
-        """Single letters between the first and last token go; a first or last initial stays, so 'A. Kumar' keeps its A."""
-        for name, key in (("Nick M. Vandewiele", "nick vandewiele"), ("Pierre F.J. Lermusiaux", "pierre lermusiaux"),
-                          ("A. Kumar", "a kumar"), ("J. C. de Wit", "j de wit"), ("Kumar A", "kumar a"), ("", "")):
-            with self.subTest(name=name):
-                self.assertEqual(group_key(name_key(name)), key)
 
 
 if __name__ == "__main__":

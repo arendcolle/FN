@@ -126,7 +126,7 @@ def fuse(search_id: str, entries: list[Entry], statuses: dict[str, ListStatus],
             search_id=search_id, person_id=entry.person_ids[0], person_ids=entry.person_ids, section=section,
             rank=counts[section, reason is not None], score=score(entry_parts),
             lane_ranks=entry.lane_ranks, reason_claim_ids=entry.claim_ids, score_parts=entry_parts,
-            hit_person_ids=hits(entry), cut_reason=reason,
+            hit_person_ids=hits(entry), cut_reason=reason, card_person_ids=entry.card_person_ids,
         ))
     return found
 

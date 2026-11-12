@@ -654,7 +654,7 @@ class ContractsV1Test(unittest.TestCase):
             self.store.finish_step(run, json.dumps(output))
         self.store.conn.execute("INSERT INTO candidates VALUES ('old', ?, ?, 'new', 1, ?, ?, '[]', ?)",
                                 (person.id, json.dumps([person.id]), 1 / 61, '{"seeds": 1}', json.dumps(label)))
-        self.assertEqual(self.store.migrate(), [4, 5, 6, 7, 8])
+        self.assertEqual(self.store.migrate(), [4, 5, 6, 7, 8, 9])
         app = create_app(self.settings, StubLLM(error=AssertionError("no LLM")), StubHttp())
         self.client = TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=False)
         self.client.__enter__()
@@ -665,7 +665,7 @@ class ContractsV1Test(unittest.TestCase):
         columns = [r[1] for r in self.store.conn.execute("PRAGMA table_info(candidates)")]
         self.assertEqual(columns, ["search_id", "person_id", "person_ids_json", "section", "rank", "score",
                                    "lane_ranks_json", "reason_claim_ids_json", "score_parts_json",
-                                   "hit_person_ids_json", "cut_reason"])
+                                   "hit_person_ids_json", "cut_reason", "card_person_ids_json"])
         (candidate,) = self.store.list_candidates("old")
         self.assertEqual(candidate.score_parts, [])
         response = self.client.get("/debug/searches/old")

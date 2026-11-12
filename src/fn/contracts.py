@@ -71,12 +71,6 @@ def name_key(name: str) -> str:
     return " ".join(re.findall(r"[^\W_]+", bare.casefold()))
 
 
-def group_key(key: str) -> str:
-    """A name_key without its middle initials, so 'nick m vandewiele' and 'nick vandewiele' share one card."""
-    tokens = key.split()
-    return " ".join([tokens[0], *(t for t in tokens[1:-1] if len(t) > 1), tokens[-1]]) if len(tokens) > 2 else key
-
-
 TITLES = re.compile(r"^(?:(?:prof|dr|ir|mr|ms)(?:\.\s*|\s+))+", re.IGNORECASE)
 # PhD in any case, but MBA and MD only in one case, so surnames such as Mba stay.
 CREDENTIALS = re.compile(r"(?:[\s,]+(?:(?i:PhD|Ph\.D)|MBA|mba|MD|md)\.?)+$")
@@ -384,6 +378,8 @@ class Entry(Model):
     lane_ranks: dict[LaneName, int]
     claim_ids: list[str] = []
     flag: str | None = None
+    # The records identity puts on the card: the hit records and the stored records sure or likely with one of them.
+    card_person_ids: list[str] = []
 
 
 class ScorePart(Model):
@@ -406,6 +402,7 @@ class Candidate(Model):
     score_parts: list[ScorePart] = []
     hit_person_ids: list[str] = []
     cut_reason: CutReason | None = None
+    card_person_ids: list[str] = []
 
 
 # One staff decision; detail holds what undo needs, ids and never contact values.

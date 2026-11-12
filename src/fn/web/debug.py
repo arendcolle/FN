@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from pydantic import ValidationError
 
-from fn import orgs, rank, stats
+from fn import identity, orgs, rank, stats
 from fn.contracts import (
     CONTRACTS_VERSION,
     Ask,
@@ -23,8 +23,6 @@ from fn.contracts import (
     Search,
     Source,
     StepRun,
-    group_key,
-    name_key,
 )
 from fn.store import Store
 from fn.web.html import Safe, h, page, table
@@ -243,11 +241,11 @@ def calls_page(store: Store, step: StepRun) -> str:
 def trace_rows(store: Store, search: Search, term: str) -> list[list[object]]:
     """Where one person went in each lane, resolve and rank step: considered, kept, dropped and why.
 
-    term is a name, matched by group key, or a lane's person key or a person id. A row found by id adds
+    term is a name, matched by identity key, or a lane's person key or a person id. A row found by id adds
     that person's name, so the later steps follow it. A payload stored under another contracts version
     gets a note row instead of being parsed.
     """
-    keys = {k for k in [group_key(name_key(term))] if k}
+    keys = {k for k in [identity.key(term)] if k}
     rows: list[list[object]] = []
     person_ids: list[str] = []
     for step in store.list_steps(search.id):
@@ -262,14 +260,14 @@ def trace_rows(store: Store, search: Search, term: str) -> list[list[object]]:
         found: list[list[object]] = []
         missing = "not present"
         if isinstance(out, LaneOut):
-            keys |= {group_key(name_key(c.name)) for c in out.considered if c.person_key == term}
-            keys |= {group_key(hit.name_key) for hit in out.hits if hit.person_id == term}
+            keys |= {identity.key(c.name) for c in out.considered if c.person_key == term}
+            keys |= {identity.key(hit.name_key) for hit in out.hits if hit.person_id == term}
             keys.discard("")
             for c in out.considered:
-                if c.person_key == term or group_key(name_key(c.name)) in keys:
+                if c.person_key == term or identity.key(c.name) in keys:
                     found.append([c.stage, "kept" if c.kept else "dropped", c.reason])
             for hit in out.hits:
-                if (hit.person_id == term or group_key(hit.name_key) in keys) and hit.person_id not in person_ids:
+                if (hit.person_id == term or identity.key(hit.name_key) in keys) and hit.person_id not in person_ids:
                     person_ids.append(hit.person_id)
             missing = f"not present; query {out.query or '(none)'}"
         elif isinstance(out, ResolveOut):
@@ -289,7 +287,7 @@ def trace_rows(store: Store, search: Search, term: str) -> list[list[object]]:
 
 def trace_page(store: Store, search: Search, name: str) -> str:
     term = name.strip()
-    key = group_key(name_key(term))
+    key = identity.key(term)
     form = h.form(h.input(type="text", name="name", value=name), h.button("Trace", type="submit"),
                   method="get", action=f"/debug/searches/{search.id}/trace")
     rows = trace_rows(store, search, term) if key else []

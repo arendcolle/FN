@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from urllib.parse import unquote, urlsplit
 
-from fn import config, net, orgs, rank
+from fn import config, identity, net, orgs, rank
 from fn.config import ROOT
 from fn.contracts import (
     Candidate,
@@ -22,8 +22,6 @@ from fn.contracts import (
     Person,
     PickResult,
     TopCard,
-    group_key,
-    name_key,
 )
 from fn.llm import from_settings
 from fn.store import Store
@@ -146,11 +144,11 @@ def belgian_text(store: Store, candidate: Candidate) -> str:
 
 
 def stored_text(store: Store, name: str) -> str:
-    """For a pick no candidate carries: the Belgian claims of the stored records with its group key.
+    """For a pick no candidate carries: the Belgian claims of the stored records with its identity key.
 
     Returns 'no stored record' when the store holds none.
     """
-    key = group_key(name_key(name))
+    key = identity.key(name)
     person_ids = [p for p, _ in store.person_ids_by_group_key([key]).get(key, [])]
     if not person_ids:
         return "no stored record"

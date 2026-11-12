@@ -3,6 +3,7 @@ import hashlib
 import uuid
 from datetime import datetime
 
+from fn import identity
 from fn.contracts import (
     AddedVia,
     ClaimDraft,
@@ -11,13 +12,10 @@ from fn.contracts import (
     Identifier,
     Section,
     Source,
-    group_key,
     normalize,
 )
 from fn.store import Store
 
-# Two records that hold different values in one of these schemes are two people.
-STRONG = ("seed", "openalex", "orcid", "profile_url")
 CONTACT_KINDS = ("email", "phone")
 MAX_CONTACT = 200
 LATER = "Someone made a later decision about this person, so this one can no longer be undone."
@@ -51,21 +49,6 @@ def _pairs(store: Store, person_ids: list[str]) -> set[frozenset[str]]:
     return {pair for pair in pairs if len(pair) == 2}
 
 
-def _strong(store: Store, person_id: str) -> dict[str, set[str]]:
-    """The values each strong scheme holds over every record of the person."""
-    records = [r.id for r in store.records_of(person_id)]
-    held: dict[str, set[str]] = {}
-    for idents in store.identifiers_of(records).values():
-        for i in idents:
-            if i.scheme in STRONG:
-                held.setdefault(i.scheme, set()).add(i.value)
-    return held
-
-
-def _conflicts(held: dict[str, set[str]], other: dict[str, set[str]]) -> bool:
-    return any(scheme in held and not values & held[scheme] for scheme, values in other.items())
-
-
 def _event(store: Store, kind: EventKind, now: datetime, detail: dict, **fields) -> Event:
     event = Event(id=str(uuid.uuid4()), at=now, kind=kind, detail=detail, **fields)
     store.add_event(event)
@@ -75,25 +58,22 @@ def _event(store: Store, kind: EventKind, now: datetime, detail: dict, **fields)
 def add(store: Store, hit_person_ids: list[str], *, via: AddedVia, now: datetime, search_id: str | None = None,
         rank: int | None = None, section: Section | None = None, import_id: str | None = None,
         not_same_as: list[str] = ()) -> Event:
-    """Merge each later hit without a conflicting strong identifier into the first hit's person, and add that person.
+    """Merge each later record that identity finds sure or likely the first one's person into it, and add that person.
 
-    A hit declared not the same as the target stays apart too. When the person is in the network already and
-    nothing would merge, nothing is written and its latest add event comes back.
+    A record with a veto against one already merging stays apart too. When the person is in the network already
+    and nothing would merge, nothing is written and its latest add event comes back.
     """
     with store.tx():
         target, *others = _canonical(store, hit_person_ids)
         prior = store.get_persons([target])[target].list_status
-        held = _strong(store, target)
+        known = identity.load(store, [target, *others]) if others else identity.Known()
         apart_from = _pairs(store, [r.id for p in [target, *others] for r in store.records_of(p)])
         merging, left_apart = [], []
         for other in others:
-            theirs = _strong(store, other)
-            if _conflicts(held, theirs) or frozenset((target, other)) in apart_from:
+            if known.links(target, other) and not any(known.veto(other, m) for m in merging):
+                merging.append(other)
+            else:
                 left_apart.append(other)
-                continue
-            merging.append(other)
-            for scheme, values in theirs.items():
-                held.setdefault(scheme, set()).update(values)
         if prior == "in_list" and not merging:
             latest = next((e for e in store.events_of(target) if e.kind == "add" and e.person_id == target), None)
             if latest:
@@ -372,21 +352,21 @@ def undo(store: Store, event_id: str, *, now: datetime) -> Event:
 
 
 def name_matches(store: Store, hit_person_ids: list[str]) -> list[str]:
-    """Network people whose name has a hit's group key, who are no hit's person and not declared different from one."""
+    """Network people whose name has a hit's identity key, who are no hit's person and have a veto against none."""
     hits = _canonical(store, hit_person_ids)
-    keys = {group_key(p.name_key) for p in store.get_persons(hit_person_ids).values()}
+    keys = {identity.key(p.name_key) for p in store.get_persons(hit_person_ids).values()}
     network = store.network_by_group_key()
     found = [p for key in sorted(keys) for p in network.get(key, []) if p not in hits]
-    apart = _pairs(store, [*hit_person_ids, *hits, *found])
-    return list(dict.fromkeys(p for p in found if not any(frozenset((p, h)) in apart for h in hits)))
+    known = identity.load(store, [*hit_person_ids, *found], wide=False)
+    return list(dict.fromkeys(p for p in found if not any(known.veto(p, h) for h in hit_person_ids)))
 
 
 def possible_matches(store: Store, person_id: str) -> list[str]:
-    """Other persons whose name has this person's group key, minus those declared different."""
+    """Other persons whose name has this person's identity key, minus those with a veto against it."""
     (person,) = _canonical(store, [person_id])
-    key = group_key(store.get_persons([person])[person].name_key)
+    key = identity.key(store.get_persons([person])[person].name_key)
     records = [p for p, _ in store.person_ids_by_group_key([key]).get(key, [])]
     canonical = store.canonical_ids(records)
     others = list(dict.fromkeys(canonical[p] for p in records if canonical[p] != person))
-    apart = _pairs(store, [person, *others])
-    return [p for p in others if frozenset((person, p)) not in apart]
+    known = identity.load(store, [person, *others], wide=False)
+    return [p for p in others if not known.veto(person, p)]
