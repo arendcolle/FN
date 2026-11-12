@@ -57,7 +57,7 @@ class NetworkPageTest(unittest.TestCase):
         self.assertEqual(self.names(html), ["Bo Newer", "Ada Older"])
         self.assertIn(f'class="fn-row" id="person-1" data-person="{newer}" data-place>', html)
         self.assertIn("Example Labs · Gent", html)
-        self.assertIn("location not found", html)
+        self.assertIn(">Ada Older</a></h3></div>", html)
         self.assertEqual(self.count_line(html), "2 people · 1 not on the map")
 
     def test_the_filter_matches_name_organization_and_place_in_any_case_with_plain_wildcards(self):

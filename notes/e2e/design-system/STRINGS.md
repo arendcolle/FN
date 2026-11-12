@@ -6,10 +6,10 @@ This list holds every user-facing string the new and changed parts introduce, gr
 
 - Header links: "Search", "Network"
 - List/Map switch links: "List", "Map"
-- Map popup, one person: `{name}`, `{role}, {employer}`, `{place}`, "`{n}` new facts" or "1 new fact", "Open profile"
+- Map popup, one person: `{name}`, `{role}, {employer}`, `{place}`, "`{n}` new facts" or "1 new fact", "Open profile"; on results, a person not among the shown cards ends with "Show in list" instead
 - Map popup, shared dot: "`{n}` people here", then per person `{name}`, `{role}, {employer}`, "`{n}` new facts"
 - Undo refused (Banner, failed): "This could not be undone, because `{name}` changed since." with "Open profile"
-- A missing place: "location not found"
+- A missing place: no words. The role line ends after the employer
 
 ## Home
 
@@ -35,11 +35,14 @@ This list holds every user-facing string the new and changed parts introduce, gr
 - Stopped after finding people: "This search stopped before it finished." and the button "Run again"
 - Stopped before finding anyone (Notice): title "This search stopped", text "FN ran into a problem before it found anyone. Your question is kept, so Try again runs it once more.", button "Try again"
 - Card evidence from a record: "`{relation}` `{organization}`, `{years}`" with the citation "`{source label}`, `{date}`", for example "Studied at KU Leuven, 2012–2017" and "OpenAlex record, 2025"
+- Card evidence from a paper: "Paper: `{title}`, `{year}`" with the citation "OpenAlex work, `{year}`"
+- Why line: "Matches: `{words}`", then " · Place from the employer" when the place is the employer's city; "Based in `{city}`" for a person listed for their place alone
+- Combined line: "Combined from `{n}` records", a link to Possible matches on the profile
 - Same name: "Same name as `{name}` in your network", buttons "Same person", "Add as new", "Skip"
 - After Same person: "Added to your network", "· same person as `{name}`", "Undo"
 - After Add as new: "Added to your network", "· as a new person", "Undo"
 - After Add with a record kept apart: "Added to your network", "·", "1 possible match" (or "`{n}` possible matches"), "Undo"
-- Show more: "`{shown}` of `{count}` shown", "Show 50 more", "Show `{n}` more"
+- Show more: "`{shown}` of `{count}` shown", "Show 20 more", "Show `{n}` more"
 - Skipped people: "`{n}` skipped people hidden" with "Show", "`{n}` skipped people shown" with "Hide", "1 skipped person hidden"
 
 ## Network
@@ -63,13 +66,15 @@ This list holds every user-facing string the new and changed parts introduce, gr
 - Not in the network: "Add", "Skip". With a same-name network person: "Same name as `{name}` in your network", "Same person", "Add as new", "Skip"
 - After Add: "Added to your network", "Undo"
 - Group headings: "Contact", "Ties to Belgium", "Work", "Places", "Found as", "Possible matches"
+- Places without a place: "Not provided"
+- Fact from a paper: "Paper: `{title}`, `{year}`"
 - Contact kinds: "Email", "Phone". Empty value: "Not provided". Link: "Edit"
 - Contact citations: "From import `{file name}`, row `{n}`, `{d Month yyyy}`", "Entered in FN, `{d Month yyyy}`"
 - Contact edit: "Save", "Cancel". After Save: "Saved", "Undo"
 - Contact errors: "Enter an email address like name@example.org.", "Enter a phone number with at least 7 digits."
 - Fact: "New", "Remove". After Remove: "`{fact}`", "· Removed", "Undo"
 - Found as: "`{source label}`", "· `{n}` facts" or "· 1 fact", "Not this person". After: "`{source label}` · Separated", "Undo"
-- Source labels: "OpenAlex record", "LinkedIn record", "Import `{file name}`, row `{n}`", "Entered in FN", or the site's host name
+- Source labels: "OpenAlex record", "OpenAlex work", "LinkedIn record", "Import `{file name}`, row `{n}`", "Entered in FN", or the site's host name
 - Possible matches note: "These have the same name, but nothing in FN links them to this person for sure."
 - Possible match buttons: "Same person", "Different person". After: "Merged into this profile" or "Marked as a different person", with "Undo"
 

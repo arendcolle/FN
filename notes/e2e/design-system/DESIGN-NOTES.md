@@ -25,14 +25,14 @@ Banner
 - Left out: toasts, timers and a close button. Results shown in place (Add, Skip, Remove a fact, Save) keep their in-place confirmation and Undo ("Every action says what just happened and offers undo in the same place" in principles).
 
 ShowMore
-- Task: get past the first 50 people of a long search without losing your place.
-- Follows: Carbon "load more" in patterns, chosen by D6, and goal gradient in principles ("50 of 518 shown"). The link is a plain GET with an anchor, so Back works and the page opens at the first new card.
+- Task: get past the first 20 people of a long search without losing your place.
+- Follows: Carbon "load more" in patterns, chosen by D6, and goal gradient in principles ("20 of 518 shown"). The link is a plain GET with an anchor, so Back works and the page opens at the first new card.
 - Left out: page numbers, infinite scroll and any count of people the ranker cut.
 
 Profile
 - Task: read everything FN knows about one person, fix contact details, and repair a wrong merge (flows 4 and 5).
 - Follows: "A detail page of one person" in principles (most useful facts first, chunked into labelled groups, missing values marked "Not provided", main actions near the name, every fact with its source) and D5 rule 7 (Found as, Possible matches).
-- Left out: a map of the one place, a ties line in the head (the "Ties to Belgium" group right under it says it in full), contact details for people not in the network, "Not this person" when only one record exists, and empty groups.
+- Left out: a map of the one place, a ties line in the head (the "Ties to Belgium" group right under it says it in full), contact details for people not in the network, "Not this person" when only one record exists, and empty groups other than Places, which reads "Not provided".
 
 ImportSummary
 - Task: know what an import will do before it does it, and decide the name matches FN cannot decide.
@@ -41,11 +41,11 @@ ImportSummary
 
 ## Changed parts
 
-- PersonCard: the database statement replaces raw record lines that today show as quotes (design.md, "What works today"). Same person and Add as new are both quiet, because D5 says nothing is preselected. The match line stays after the choice, so the card keeps its height.
+- PersonCard: the database statement replaces raw record lines that today show as quotes (design.md, "What works today"). Same person and Add as new are both quiet, because D5 says nothing is preselected. The match line stays after the choice, so the card keeps its height. A card without a place says nothing about it, because the count line already gives the number (D15). The why line names the matching words and the evidence is the fact that holds them, so staff see why a person is listed ("Show where each fact came from" in principles). "Combined from 2 records" is the one record count a card shows, a link to where staff split a record off.
 - NetworkRow: the "new facts" mark is an outlined word, not a dot, because a dot that never clears teaches users to ignore it and colour alone fails (patterns, section 6). Rows align their text with the filter box's text.
 - SectionHeading: action links on the right. The Network heading carries Import only. It drops its count, because the count line one line below gives the filtered count.
 - Count line Export: Export ends the count line on Results and Network ("214 people · 12 not on the map · Export"), so it is one pattern next to the number it writes ("Use the same export pattern wherever an export is offered" in principles). The manager accepted this in place of D8's heading link. With a filter on, the link reads "Export these 9", the shortest wording that says the file holds the filtered people and not the whole network. Without a filter, "Export" next to the full count is enough.
-- MapMarker: a popup at every width (D8). A shared dot lists names as links and leaves out "Open profile" per person, so five people do not get five identical links.
+- MapMarker: a popup at every width (D8). A shared dot lists names as links and leaves out "Open profile" per person, so five people do not get five identical links. On results, people beyond the shown cards get a smaller `rule-strong` dot and "Show in list", so every accent dot has a card next to it (D15).
 - Notice: the empty network names both ways in and offers Import ("An empty state" in principles: say why it is empty, one action forward).
 - RecentSearches: capped at three with "All searches" under the list, where the eye ends after scanning.
 - StatusLine: the two D9 notes sit where the status line was, in `failed`, with a quiet retry. They name no source, because staff never see lanes.
@@ -62,7 +62,7 @@ ImportSummary
 - Network: Import on the heading, FilterBar, count line with Export, rows beside the map with one picked row and its popup. Left out: sort and clustering (D8).
 - Network, filtered to nobody: "0 people", Clear all and a Notice that names both active filters ("A filter that matches zero people names the filter that caused it" in principles).
 - Person: head, contact, grouped facts with two New marks, Found as, Possible matches.
-- Person, candidate: back link to the results, Add and Skip in the head, no contact section, no empty groups.
+- Person, candidate: back link to the results, Add and Skip in the head, no contact section, no empty groups other than Places.
 - Import: the upload field first, then the column table. A returning user wants the field; a first-time user reads the table, and the "no name column" error points at it.
 - Import preview: the summary in a reading column, the rows table at full width under it.
 - All searches: the recent-searches list without the cap.

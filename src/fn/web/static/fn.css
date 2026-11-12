@@ -104,6 +104,9 @@ input[type="file"].fn-input { padding: var(--space-2); cursor: pointer; }
 .fn-card__name a:hover { text-decoration: underline; }
 .fn-card__role { margin: 0; overflow-wrap: anywhere; }
 .fn-card__ties { margin: var(--space-1) 0 0; color: var(--muted); }
+.fn-card__why { margin: var(--space-1) 0 0; color: var(--muted); }
+.fn-card__combined { margin: var(--space-2) 0 0; color: var(--muted); }
+.fn-card__combined a { color: inherit; }
 .fn-card__acts { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; margin-top: var(--space-4); min-height: calc(1em + 2 * var(--space-2) + 2px); }
 .fn-card__match { margin: var(--space-4) 0 0; color: var(--muted); }
 .fn-card__match a { color: var(--ink); }
@@ -163,6 +166,7 @@ input[type="file"].fn-input { padding: var(--space-2); cursor: pointer; }
 .fn-map { position: relative; background: var(--map-ground); border-radius: var(--radius-lg); overflow: hidden; }
 .fn-marker { display: inline-block; width: 14px; height: 14px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--raised); }
 .fn-marker--big { width: 20px; height: 20px; }
+.fn-marker--quiet { width: 10px; height: 10px; background: var(--rule-strong); }
 .fn-marker--count { display: inline-flex; align-items: center; justify-content: center; width: auto; min-width: 22px; height: 22px; padding: 0 var(--space-2); border-radius: 11px; color: var(--on-accent); }
 .fn-map .fn-marker--count { cursor: pointer; }
 .fn-marker--count.is-hot { min-width: 28px; height: 28px; border-radius: 14px; }

@@ -45,7 +45,7 @@ How the build handles the facts it met:
 10. Add puts a person in the network in one click, Skip hides a person in this and later searches, "Same person" and "Add as new" settle a same-name match, and Undo reverses the latest decision about a person (flow 3).
 11. A CSV file uploads, shows a preview and imports its people into the network, and the network and a search export to CSV that imports again (flows 1 and 7).
 12. The Network page lists and filters the network beside a map. The Person page shows every fact with its source, marks facts that arrived since staff last looked, and removes a wrong fact (flows 4 and 5).
-13. The results page shows 50 people at a time, fills while the search runs, and says when a lane failed (flow 2).
+13. The results page shows 20 people at a time, fills while the search runs, and says when a lane failed (flow 2).
 
 **Success measure.** On the dev cases GS-02 and GS-10, at least 3 of the 4 picks that `data/gold/reach.json` marks reachable from the question's own chips (all four are GS-10; no GS-02 pick is reachable, see reach.json's note) rank in the top 10 of their section, and every miss has a step and reason in the gold report. The held-out cases (GS-15, GS-16, GS-23, GS-24, GS-28) are reported, not targeted. Picks that no slice lane can reach are labelled "no lane in slice", not "missed".
 
@@ -341,7 +341,7 @@ Staff pages are built from the design system's parts. `web/parts.py` has one fun
 | `GET /` | Home: the question box, the three newest searches with an "All searches" link when there are more, then the network as the Network page shows it. An empty network shows a notice that points to Import and to adding people from a search |
 | `GET /searches` | All searches, newest first |
 | `POST /searches` | creates and queues a search, redirects to it |
-| `GET /searches/{id}`, `GET /searches/{id}/map` | Results: the editable question, then cards under "In your network" (no buttons) and "New" (Add and Skip), beside a map. 50 people at a time, then "Show more" (`?shown=`). A line under the list counts skipped people that are hidden and shows them with `?skipped=1`. While the search runs a status line shows the people so far. `/map` is the same page with the map as the narrow-screen view |
+| `GET /searches/{id}`, `GET /searches/{id}/map` | Results: the editable question, then cards under "In your network" (no buttons) and "New" (Add and Skip), beside a map. 20 people at a time, then "Show more" (`?shown=`). A line under the list counts skipped people that are hidden and shows them with `?skipped=1`. While the search runs a status line shows the people so far. `/map` is the same page with the map as the narrow-screen view |
 | `GET /searches/{id}/status`, `GET /searches/{id}/cards` | the progress JSON and the list fragment that `results.js` uses |
 | `POST /searches/{id}/people/{person_id}/{add,skip,same,new}` | a card decision. A `fetch` request gets the card back; any other request is redirected to the results page at the card |
 | `GET /searches/{id}/export.csv` | the kept people of the search who are not skipped, as CSV |

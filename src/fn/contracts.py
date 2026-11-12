@@ -459,6 +459,8 @@ class PersonView(Model):
     place: str | None = None
     lat: float | None = None
     lon: float | None = None
+    # Whether the place is one the records state or the city of a recent employer.
+    place_basis: Literal["stated", "employer"] | None = None
     orgs: list[OrgView] = []
     more_orgs: int = 0
     evidence: ClaimView | None = None
@@ -467,6 +469,8 @@ class PersonView(Model):
     new_facts: int = 0
     email: str | None = None
     phone: str | None = None
+    # How many records not merged into one person the view combines.
+    records: int = 1
 
 
 # The person's latest decision while it can still be undone; claim_id names the fact or contact it concerns.
@@ -487,6 +491,7 @@ class CardView(Model):
     undo_event: LastView | None = None
     note: str | None = None
     note_href: str | None = None
+    why: str | None = None
 
 
 # network and new hold every kept person who is not skipped; cards are the ones the page shows, in order.
@@ -499,6 +504,8 @@ class ResultsView(Model):
     skipped_hidden: int = 0
     not_on_map: int = 0
     next_key: str | None = None
+    # The view person id and card key of each kept person who is not skipped, in list order.
+    order: list[tuple[str, str]] = []
 
 
 class NetworkFilter(Model):

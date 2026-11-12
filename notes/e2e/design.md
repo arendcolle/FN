@@ -109,7 +109,7 @@ One table, `imports`: id, file name, upload time, status (`preview`, `confirmed`
 - `rank.py` sets `cut_reason = no_belgian_evidence` on a candidate in section `new` whose only lane is OpenAlex and that has no `belgian_years` part. Everyone else is kept. On the stored searches this takes the median from 1,098 people to 518 and cuts none of the 12 gold picks that reach the ranker.
 - Kept people are numbered from 1, and cut ones apart from them. Cut rows stay in the table and show on the debug page with their reason.
 - A skipped person is not a cut. `store.list_candidates` leaves out a candidate whose hit records are all skipped, so Undo brings the card back without a new rank run.
-- The results page shows 50 people and adds 50 per "Show more".
+- The results page shows 20 people and adds 20 per "Show more".
 
 ## What staff decisions do
 
@@ -171,7 +171,7 @@ Boundaries:
 | --- | --- | --- |
 | Home | `/` | The search box, the three newest searches with an "All searches" link, then the network as on the Network page. An empty network shows a notice that points to Import and to adding people from a search |
 | All searches | `/searches` | Every search, newest first |
-| Results | `/searches/{id}` | People for one question as cards beside the map, with Add and Skip, 50 at a time, and Export |
+| Results | `/searches/{id}` | People for one question as cards beside the map, with Add and Skip, 20 at a time, and Export |
 | Network | `/people` | Everyone in the network as rows beside the map, newest added first. One text box filters on name, place and organization, with a Filter button. Two links narrow the list further: "From import contacts.csv" after an import, and "New facts only" when someone has new facts. The count line reads "214 people · 12 not on the map". 200 rows, then "Show more". Import and Export sit on the heading |
 | Person | `/people/{id}` | One person: contact details, every fact with its source, what is new, "Found as" and "Possible matches" |
 | Import | `/imports/new`, `/imports/{id}` | Upload with the expected columns listed, then the preview with Confirm |

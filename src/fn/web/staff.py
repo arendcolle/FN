@@ -216,7 +216,7 @@ def search_page(store: Store, search: Search, view: str = "list", shown: int = R
         h.nav(views, class_="fn-switch text-switch", aria_label="View"),
         found,
         h.div(id="map", class_="fn-map", role="region", aria_label="Map of the people in this search",
-              data_geo=f"/api/searches/{search.id}/geo"),
+              data_geo=f"/api/searches/{search.id}/geo" + (f"?shown={shown}" if shown != RESULTS_STEP else "")),
         class_="fn-results" if placed else "fn-results fn-results--no-map", data_view=view,
     )
     return page(
@@ -226,10 +226,18 @@ def search_page(store: Store, search: Search, view: str = "list", shown: int = R
     ), facts
 
 
-def geo_features(store: Store, search: Search) -> dict:
-    """GeoJSON of the search's people who are not skipped: one point per person with a place with coordinates."""
+def geo_features(store: Store, search: Search, shown: int = RESULTS_STEP) -> dict:
+    """GeoJSON of the search's people who are not skipped: one point per person with a place with coordinates.
+
+    It also says, per person, whether the first shown cards hold them and the list link that opens at their card.
+    """
     found = results(store, search, now().astimezone().date(), shown=0)
-    return geo(found.network + found.new)
+    listed: dict[str, dict] = {}
+    # A person behind two cards links to the first of them.
+    for n, (person, key) in enumerate(found.order):
+        listed.setdefault(person, {"shown": n < shown,
+                                   "href": f"/searches/{search.id}?shown={(n // RESULTS_STEP + 1) * RESULTS_STEP}#card-{key}"})
+    return geo(found.network + found.new, listed)
 
 
 def source_page(source: Source, claim: Claim | None) -> str:
@@ -335,7 +343,7 @@ def get_search(request: Request, search_id: str) -> Search:
 
 
 def results_query(request: Request) -> tuple[int, bool]:
-    """?shown= (a positive number, else 50) and ?skipped=1 of a results request."""
+    """?shown= (a positive number, else 20) and ?skipped=1 of a results request."""
     raw = request.query_params.get("shown", "")
     shown = int(raw) if raw.isascii() and raw.isdigit() and len(raw) <= 6 and int(raw) > 0 else RESULTS_STEP
     return shown, request.query_params.get("skipped") == "1"
@@ -438,7 +446,7 @@ async def export_search(request: Request, search_id: str) -> Response:
 
 @router.get("/api/searches/{search_id}/geo")
 async def geo_json(request: Request, search_id: str) -> JSONResponse:
-    return JSONResponse(geo_features(store_of(request), get_search(request, search_id)))
+    return JSONResponse(geo_features(store_of(request), get_search(request, search_id), results_query(request)[0]))
 
 
 def get_source(request: Request, source_id: str, claim: str) -> tuple[Source, Claim | None]:
