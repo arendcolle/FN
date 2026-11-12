@@ -36,6 +36,13 @@ class StepContext:
     settings: Settings
 
 
+def as_of(ctx: StepContext) -> datetime:
+    """When the search was made, or the search it reruns, so a replay of a snapshot gives the same answer every day."""
+    search = ctx.store.get_search(ctx.search_id)
+    origin = ctx.store.get_search(search.rerun_of) if search and search.rerun_of else search
+    return origin.created_at if origin else ctx.now()
+
+
 def redact(text: str, secrets: Iterable[str]) -> str:
     """Replace every secret value in text with ***."""
     for secret in secrets:
