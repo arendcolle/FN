@@ -20,7 +20,7 @@ from fn.contracts import (
     normalize,
 )
 from fn.llm import FixtureMissing, LLMCallError, TagError
-from fn.steps import StepContext
+from fn.steps import StepContext, fan_out
 
 TASK = "extract"
 CHUNK_CHARS = 6_000
@@ -121,29 +121,45 @@ def check(source: Source, start: int, end: int, mention: PageMention) -> tuple[L
     return located, dropped
 
 
+def read_all(ctx: StepContext, sources: list[Source]) -> list[tuple[list[Located], list[Considered]]]:
+    """Every person each page names, in page order, from one extract call per chunk, ctx.settings.llm_workers at once.
+
+    The answers are checked on the calling thread, page by page and chunk by chunk. A chunk whose call fails gives a
+    row with the error and a warning; any other exception is raised once every call is logged.
+    """
+    spans = [chunks(source.text) for source in sources]
+    parts = [(source, start, end) for source, cuts in zip(sources, spans) for start, end in cuts]
+    answers = iter(fan_out(lambda part: ctx.llm.structured(TASK, {"page": part[0].text[part[1]:part[2]]},
+                                                           PagePeople).value.people,
+                           parts, ctx.settings.llm_workers))
+    pages = []
+    for source, cuts in zip(sources, spans):
+        found: list[Located] = []
+        considered: list[Considered] = []
+        for i, (start, end) in enumerate(cuts, 1):
+            people, where = next(answers), f"chunk {i} of {len(cuts)} [{start}:{end}]"
+            if isinstance(people, (TagError, LLMCallError, ValidationError, FixtureMissing)):
+                ctx.log.warning("extract on %s, %s: %s: %s", source.url, where, type(people).__name__, people)
+                considered.append(Considered(person_key=source.url, name="", stage="chunk", kept=False,
+                                             reason=f"{where}: {type(people).__name__}: {people}"))
+                continue
+            if isinstance(people, Exception):
+                raise people
+            for mention in people:
+                located, dropped = check(source, start, end, mention)
+                found += [located] if located else []
+                considered += dropped
+        pages.append((found, considered))
+    return pages
+
+
 def mentions(ctx: StepContext, source: Source) -> tuple[list[Located], list[Considered]]:
     """Every person the page names, from one extract call per chunk of at most CHUNK_CHARS characters.
 
     A chunk whose call fails gives a row with the error and a warning, and the next chunk goes on. A mention or
     relation whose quote fails a check is dropped with a row naming the reason.
     """
-    found: list[Located] = []
-    considered: list[Considered] = []
-    parts = chunks(source.text)
-    for i, (start, end) in enumerate(parts, 1):
-        where = f"chunk {i} of {len(parts)} [{start}:{end}]"
-        try:
-            people = ctx.llm.structured(TASK, {"page": source.text[start:end]}, PagePeople).value.people
-        except (TagError, LLMCallError, ValidationError, FixtureMissing) as exc:
-            ctx.log.warning("extract on %s, %s: %s: %s", source.url, where, type(exc).__name__, exc)
-            considered.append(Considered(person_key=source.url, name="", stage="chunk", kept=False,
-                                         reason=f"{where}: {type(exc).__name__}: {exc}"))
-            continue
-        for mention in people:
-            located, dropped = check(source, start, end, mention)
-            found += [located] if located else []
-            considered += dropped
-    return found, considered
+    return read_all(ctx, [source])[0]
 
 
 def stated(year: int | None, quote: str) -> str | None:

@@ -2,8 +2,9 @@
 import logging
 import logging.handlers
 import traceback
-from collections.abc import Callable, Iterable
-from contextvars import ContextVar
+from collections.abc import Callable, Iterable, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import ContextVar, copy_context
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -76,10 +77,67 @@ class CallRecorder:
         return call
 
 
-_recorder: ContextVar[CallRecorder | None] = ContextVar("fn_step_recorder", default=None)
+@dataclass
+class CallBuffer:
+    """The calls of one fan_out task, kept in memory until the step thread writes them to the parent recorder."""
+    parent: CallRecorder
+    calls: list[tuple[tuple, dict]] = field(default_factory=list)
+
+    @property
+    def secrets(self) -> list[str]:
+        return self.parent.secrets
+
+    @property
+    def search_id(self) -> str:
+        return self.parent.search_id
+
+    @property
+    def step(self) -> str:
+        return self.parent.step
+
+    def record(self, *args, **kwargs) -> None:
+        self.calls.append((args, kwargs))
+
+    def flush(self) -> None:
+        """Write every kept call to the parent recorder, in the order the task made them."""
+        for args, kwargs in self.calls:
+            self.parent.record(*args, **kwargs)
+        self.calls = []
 
 
-def current_recorder() -> CallRecorder:
+_recorder: ContextVar[CallRecorder | CallBuffer | None] = ContextVar("fn_step_recorder", default=None)
+
+
+def fan_out[T, R](fn: Callable[[T], R], items: Sequence[T], workers: int) -> list[R | Exception]:
+    """fn(item) for each item on a pool of `workers` threads: its return value or exception, in item order.
+
+    Each task records its calls in its own CallBuffer. Once every task has ended, the calling thread writes the
+    buffers to its recorder in item order, also when a task raised, so seq follows item order.
+    """
+    if not items:
+        return []
+    parent = _recorder.get()
+    buffers = [CallBuffer(parent) if parent else None for _ in items]
+    results: list[R | Exception] = []
+    try:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="fn-fan-out") as pool:
+            futures = []
+            for item, buffer in zip(items, buffers):
+                context = copy_context()
+                context.run(_recorder.set, buffer)
+                futures.append(pool.submit(context.run, fn, item))
+            for future in futures:
+                try:
+                    results.append(future.result())
+                except Exception as exc:  # noqa: BLE001 the caller gets every task's exception in item order
+                    results.append(exc)
+    finally:
+        for buffer in filter(None, buffers):
+            buffer.flush()
+    return results
+
+
+def current_recorder() -> CallRecorder | CallBuffer:
     """The call recorder of the step running in this context; raises RuntimeError outside a step."""
     recorder = _recorder.get()
     if recorder is None:
@@ -130,7 +188,8 @@ class _LogCapture(logging.Handler):
         self.setFormatter(logging.Formatter(LOG_FORMAT))
 
     def emit(self, record: logging.LogRecord) -> None:
-        if _recorder.get() is self.recorder:
+        recorder = _recorder.get()
+        if recorder is self.recorder or getattr(recorder, "parent", None) is self.recorder:
             self.lines.append(redact(self.format(record), self.recorder.secrets))
 
 

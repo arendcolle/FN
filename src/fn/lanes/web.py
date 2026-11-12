@@ -89,8 +89,8 @@ def people(ctx: StepContext, pages: list[tuple[int, Source]], considered: list[C
     mention, relation or chunk dropped, is added to considered.
     """
     hits: dict[str, LaneHit] = {}
-    for rank, source in pages:
-        found, dropped = extract.mentions(ctx, source)
+    read = extract.read_all(ctx, [source for _, source in pages])
+    for (rank, source), (found, dropped) in zip(pages, read):
         considered += dropped
         page = f"page {rank}, {source.title}, {source.url}" if source.title else f"page {rank}, {source.url}"
         with ctx.store.tx():
