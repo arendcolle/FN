@@ -58,11 +58,16 @@ def index(text: str) -> Names:
     return {key: [c for *_, c in sorted(rows, key=lambda r: r[:2], reverse=True)] for key, rows in ranked.items()}
 
 
+def from_zip(data: bytes) -> Names:
+    """The city index of a downloaded cities15000.zip."""
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        return index(archive.read(CITIES_FILE).decode("utf-8"))
+
+
 def cities(http: HttpClient) -> Names:
     """The city index, fetched and unzipped once per HTTP client."""
     if http not in _loaded:
-        with zipfile.ZipFile(io.BytesIO(http.get(CITIES_URL).content)) as archive:
-            _loaded[http] = index(archive.read(CITIES_FILE).decode("utf-8"))
+        _loaded[http] = from_zip(http.get(CITIES_URL).content)
     return _loaded[http]
 
 
