@@ -156,6 +156,22 @@ class WhereTest(unittest.TestCase):
         undated = of([lives("c3", "Boston", 42.36, -71.06), new], fresh).place
         self.assertEqual(undated.nearest.claim_id, "c2")
 
+    def test_the_ranker_reads_the_place_the_card_shows(self):
+        """Two stated places in one year, and one with only an end year: the page layer and the ranker pick the same one."""
+        from fn import present
+        cases = [
+            [lives("c1", "Boston", 42.36, -71.06).model_copy(update={"claim_date": "2026-01-05"}),
+             lives("c2", "New York", 40.71, -74.0).model_copy(update={"claim_date": "2026-10-01"})],
+            [lives("c1", "Boston", 42.36, -71.06).model_copy(update={"valid_to": "2025"}),
+             lives("c2", "New York", 40.71, -74.0).model_copy(update={"claim_date": "2022"})],
+        ]
+        ask = question(area=BOSTON, country="US")
+        fresh = Question(chips=ask.chips.model_copy(update={"version": 2}), area=BOSTON, country="US")
+        for claims in cases:
+            card_place = present.located(claims, FACTS, TODAY.date())[0]
+            self.assertEqual(of(claims, fresh).place.nearest.text, card_place)
+            self.assertEqual(card_place, "New York")
+
     def test_the_countries_of_a_person_with_a_belgian_and_a_us_place(self):
         """A stated place in Leuven and a recent employer in Cambridge give BE and US."""
         found = of([lives("c1", "Leuven", 50.88, 4.7), job("c2", MIT, "2024")])

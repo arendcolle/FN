@@ -226,6 +226,15 @@ class ScoutLaneTest(unittest.TestCase):
         self.assertEqual(self.employer_claims(far, "Cafe Test")[1], [])
         self.assertEqual(self.employer_claims("Jan Peeters is head chef.\nThe head baker left.", "Baker LLP")[1], [])
 
+    def test_a_page_that_never_writes_the_leads_name_gives_no_place_or_employer(self):
+        """The page reader matched 'J. Peeters'; the family name stands on the page, so the lines count. A page
+        without the family name at all gives nothing from the lead."""
+        from fn import extract
+        from fn.contracts import page_source
+        source = page_source(JAN, "Team", "Our chef runs Cafe Test in Fairfield.", {}, now(), None, kind="page", plain=True)
+        self.assertIsNone(extract.stated_employer("p", source, "Jan Peeters", "Cafe Test"))
+        self.assertIsNone(extract.stated_place("p", source, "Jan Peeters", "Fairfield, Connecticut", None))
+
     def test_claims_carry_the_pages_own_date_or_the_day_it_was_read(self):
         """An undated page dates its claims by the day FN read it; a page with a date of its own by that date."""
         out = self.run_lane([lead("Jan Peeters", JAN)], {JAN: JAN_TEXT}, {"Jan Peeters is": [head("Jan Peeters", "Jan Peeters is head chef at Cafe Test.")]})

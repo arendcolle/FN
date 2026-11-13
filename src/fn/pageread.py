@@ -1,5 +1,7 @@
 """Reads a web page itself: robots.txt first, a fetch through net.Client, then the page's text with the standard library."""
+import ipaddress
 import re
+import socket
 import threading
 import time
 from dataclasses import dataclass
@@ -117,7 +119,8 @@ def _robots(ctx: StepContext, root: str) -> RobotFileParser:
             return ROBOTS[root]
         parser = RobotFileParser()
         try:
-            parser.parse(ctx.http.get(f"{root}/robots.txt", redirects=MAX_REDIRECTS, agent=USER_AGENT).text.splitlines())
+            parser.parse(ctx.http.get(f"{root}/robots.txt", redirects=MAX_REDIRECTS, agent=USER_AGENT,
+                                      check=lambda hop: _public_hop(ctx, hop)).text.splitlines())
         except HttpError as exc:
             if exc.status in (401, 403):
                 parser.parse(["User-agent: *", "Disallow: /"])
@@ -130,8 +133,43 @@ def _robots(ctx: StepContext, root: str) -> RobotFileParser:
         return parser
 
 
+def addresses(host: str) -> list[str]:
+    """The IP addresses the host name resolves to; empty when it does not resolve."""
+    try:
+        return sorted({info[4][0] for info in socket.getaddrinfo(host, None)})
+    except OSError:
+        return []
+
+
+def public(url: str, resolve: bool = True) -> bool:
+    """Whether the address points at the public internet: no loopback, private, link-local or reserved host.
+
+    An IP literal is judged as written and a name by every address it resolves to; localhost and a name without
+    a dot never pass. A name that does not resolve passes, as the fetch itself then fails. Without resolve
+    (a replay, which sends nothing) a name is not looked up.
+    """
+    host = (urlsplit(url).hostname or "").strip("[]").lower()
+    if not host:
+        return False
+    try:
+        found = [ipaddress.ip_address(host)]
+    except ValueError:
+        if host == "localhost" or host.endswith(".localhost") or "." not in host:
+            return False
+        found = [ipaddress.ip_address(a.split("%")[0]) for a in addresses(host)] if resolve else []
+    return all(a.is_global for a in found)
+
+
+def _public_hop(ctx: StepContext, url: str) -> None:
+    """Refuse a redirect of robots.txt to a local or private address."""
+    if not public(url, ctx.settings.http_mode != "replay"):
+        raise HttpError(f"redirected to {url}: a local or private address")
+
+
 def allowed(ctx: StepContext, url: str) -> str | None:
-    """None when robots.txt lets FN fetch url, else the reason it may not."""
+    """None when FN may fetch url, else the reason: a local or private address, or what robots.txt says."""
+    if not public(url, ctx.settings.http_mode != "replay"):
+        return "a local or private address"
     parts = urlsplit(url)
     try:
         parser = _robots(ctx, f"{parts.scheme}://{parts.netloc}")
@@ -172,12 +210,18 @@ def page_date(html: str) -> str | None:
     return next((parser.found[key] for key in DATE_KEYS if key in parser.found), None)
 
 
+def _guard(ctx: StepContext, url: str) -> None:
+    """Refuse a redirect hop FN may not fetch, as allowed() refuses a first address."""
+    if reason := allowed(ctx, url):
+        raise HttpError(f"redirected to {url}: {reason}")
+
+
 def read(ctx: StepContext, url: str) -> Read:
     """Fetch url after the robots.txt check and return its text, or the reason it could not be read."""
     if reason := allowed(ctx, url):
         return Read(url, None, None, reason)
     try:
-        body = ctx.http.get(url, redirects=MAX_REDIRECTS, agent=USER_AGENT).content
+        body = ctx.http.get(url, redirects=MAX_REDIRECTS, agent=USER_AGENT, check=lambda hop: _guard(ctx, hop)).content
     except HttpError as exc:
         return Read(url, None, None, str(exc))
     if body.startswith(b"%PDF-"):
