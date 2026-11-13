@@ -22,17 +22,20 @@ from fn.contracts import (
     normalize,
 )
 from fn.present import (
+    PROSE,
     RESULTS_STEP,
     card,
     cut,
     geo,
     label_of,
     network_view,
+    passage,
     person_views,
     plural,
     profile,
     results,
     shown_for,
+    source_sentence,
     sources_read,
     walk,
 )
@@ -250,20 +253,34 @@ def geo_features(store: Store, search: Search, shown: int = RESULTS_STEP) -> dic
     return geo(found.network + found.new, listed)
 
 
-def source_page(source: Source, claim: Claim | None, back: BackLink | None = None) -> str:
-    """The source's text with the claim's quote marked; an import or staff source shows its label and no link.
+def source_page(store: Store, source: Source, claim: Claim | None, back: BackLink | None = None) -> str:
+    """A source in words staff can read: the person, the fact as a sentence, the passage, the link and the stored text.
 
-    back is the link to the page it was opened from, shown above the title.
+    Without a claim the page shows the source label and the stored text. back is the link to the page it was
+    opened from. id="quote" is on the passage, or on the sentence when there is no passage, so #quote never opens the record.
     """
-    text, own = source.text, source.kind in ("import", "staff")
-    body = [text[:claim.quote_start], h.mark(claim.quote, id="quote"), text[claim.quote_end:]] if claim else text
+    person = org = None
+    if claim:
+        found = store.get_persons([store.canonical_ids([claim.person_id]).get(claim.person_id, claim.person_id)])
+        person = next(iter(found.values()), None)
+        org = store.get_orgs([claim.org_id]).get(claim.org_id) if claim.org_id else None
+    title = person.display_name if person else label_of(source)
+    shown = bool(claim) and source.kind in PROSE
+    text = source.text
+    stored = [text[:claim.quote_start], h.mark(claim.quote),
+              text[claim.quote_end:]] if claim else text
+    before, quote, after = passage(source, claim) if shown else ("", "", "")
     return page(
-        "Source",
-        h.div(
+        title if person else "Source",
+        h.main(
             back_line(back, None),
-            h.h1(label_of(source) if own else source.title or source.url, class_="fn-source__title text-title"),
-            None if own else h.p(h.a(source.url, href=source.url), class_="fn-source__url text-small"),
-            h.pre(body, class_="fn-source__text text-body"),
+            h.h1(title, class_="fn-source__title text-title"),
+            h.p(source_sentence(claim, source, org), id=None if shown else "quote", class_="fn-source__lead text-body") if claim else None,
+            h.p(before, h.mark(quote, id="quote"), after, class_="fn-source__passage text-body") if shown else None,
+            None if source.url.startswith("fn:") else h.p(h.a("Open the original page", href=source.url),
+                                                          class_="fn-source__url text-small"),
+            h.details(h.summary("Show the stored record", class_="text-meta"),
+                      h.pre(stored, class_="fn-source__text text-body"), class_="fn-source__stored"),
             class_="fn-source",
         ),
         current="search" if leads_to_search(back) else None,
@@ -480,7 +497,8 @@ def get_source(request: Request, source_id: str, claim: str) -> tuple[Source, Cl
 
 @router.get("/sources/{source_id}")
 async def show_source(request: Request, source_id: str, claim: str = "", back: str = "") -> HTMLResponse:
-    return HTMLResponse(source_page(*get_source(request, source_id, claim), back_link(store_of(request), back)))
+    store = store_of(request)
+    return HTMLResponse(source_page(store, *get_source(request, source_id, claim), back_link(store, back)))
 
 
 def local_path(value: str) -> str | None:

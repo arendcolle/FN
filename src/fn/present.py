@@ -198,6 +198,34 @@ def quote_words(claim: Claim, cut_quote: bool) -> str:
     return f"“{cut(text, 240) if cut_quote else text}”"
 
 
+def source_sentence(claim: Claim, source: Source, org: Org | None) -> str:
+    """The one sentence a source page opens with: the stored fact, said as the page or the record says it."""
+    view = claim_view(claim, source, org)
+    fact = f"{view.what}, {view.years}" if view.years else view.what
+    return f"{'The page says' if source.kind in PROSE else 'The record lists'}: {fact}."
+
+
+def passage(source: Source, claim: Claim, words: int = 60) -> tuple[str, str, str]:
+    """The text before the quote, the quote and the text after it, each side cut to words words with '…'.
+
+    White space is collapsed. A side with no space in the 400 characters next to a cut is cut at 400 characters.
+    """
+    def side(text: str, before: bool) -> str:
+        parts = " ".join(text.split()).split(" ")
+        kept = " ".join(parts[-words:] if before else parts[:words])
+        cut_here = len(parts) > words
+        if len(kept) > 400 and " " not in (kept[-400:] if before else kept[:400]):
+            kept, cut_here = (kept[-400:] if before else kept[:400]), True
+        if not kept:
+            return ""
+        if before:
+            return ("… " if cut_here else "") + kept + (" " if text[-1:].isspace() else "")
+        return (" " if text[:1].isspace() else "") + kept + (" …" if cut_here else "")
+    text = source.text
+    return (side(text[:claim.quote_start], True), " ".join(text[claim.quote_start:claim.quote_end].split()),
+            side(text[claim.quote_end:], False))
+
+
 def claim_view(claim: Claim, source: Source, org: Org | None, seen_at: datetime | None = None,
                cut_quote: bool = True) -> ClaimView:
     """The claim as every page words it: the fact, its years, the quote when the source is prose, and the citation.
