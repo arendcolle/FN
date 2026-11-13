@@ -1,6 +1,7 @@
 """How a person reads on every staff page: the view models of people and claims, and plain-words helpers."""
 import re
 from calendar import month_name
+from collections import Counter
 from collections.abc import Sequence
 from datetime import date, datetime
 from html import unescape
@@ -26,6 +27,7 @@ from fn.contracts import (
     ProfileView,
     QuoteView,
     RecordView,
+    ResultsHeading,
     ResultsView,
     Search,
     Source,
@@ -50,6 +52,7 @@ GROUPS = ("Work", "Education", TIES, "Places")
 DONE = {"add": "Added to your network", "skip": "Skipped", "edit_contact": "Saved", "merge": "Merged into this profile",
         "not_same": "Marked as a different person"}
 RESULTS_STEP = 20
+HEADINGS = {1: "Topic and a tie to Flanders", 2: "Topic, no known tie", 3: "Tie, topic not confirmed", 4: "Other people found"}
 WORK = "OpenAlex work "
 PUNCTUATION = ".,;:()[]{}\"'“”‘’…*"
 UNKNOWN_DATE = "date unknown"
@@ -353,6 +356,28 @@ def person_views(store: Store, groups: list[list[str]], today: date, matched: li
             for g, claims, s in zip(groups, owned, shown)]
 
 
+def heading_of(candidate: Candidate) -> str:
+    """The heading the candidate's tier stands under in the new section; the candidate must have a tier."""
+    return HEADINGS[rank.heading(candidate.tier, candidate.fit.tie_grade if candidate.fit else "none")]
+
+
+def results_headings(candidates: list[Candidate], skipped: list[bool], shown: list[str]) -> list[ResultsHeading]:
+    """The new section's headings with the people not skipped under each and the first shown card under it.
+
+    shown holds the keys of the shown cards. Empty when a person of the section has no tier.
+    """
+    new = [(c, s) for c, s in zip(candidates, skipped) if c.section == "new"]
+    if any(c.tier is None for c, _ in new):
+        return []
+    titles = {c.person_id: heading_of(c) for c, _ in new}
+    counts = Counter(titles[c.person_id] for c, s in new if not s)
+    firsts = {}
+    for key in shown:
+        if key in titles:
+            firsts.setdefault(titles[key], key)
+    return [ResultsHeading(title=title, count=counts[title], first_key=key) for title, key in firsts.items()]
+
+
 def skipped_here(store: Store, person_id: str, search_id: str) -> bool:
     """Whether the person's latest skip was made on this search."""
     skip = next((e for e in store.events_of(person_id) if e.kind == "skip"), None)
@@ -451,7 +476,8 @@ def results(store: Store, search: Search, today: date, shown: int = RESULTS_STEP
     return ResultsView(network=[v for c, v in kept if c.section == "network"],
                        new=[v for c, v in kept if c.section == "new"], cards=cards, total=len(kept), shown=counted,
                        skipped_hidden=hidden, not_on_map=sum(1 for v in people if v.lat is None or v.lon is None),
-                       next_key=next_key, order=[(v.person_id, c.person_id) for c, v in kept])
+                       next_key=next_key, order=[(v.person_id, c.person_id) for c, v in kept],
+                       headings=results_headings(candidates, skipped, [c.key for c in cards]))
 
 
 def shown_for(position: int, shown: int) -> int:

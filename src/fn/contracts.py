@@ -530,6 +530,13 @@ class CardView(Model):
     why: str | None = None
 
 
+# One heading of the new section: how many people stand under it and the key of the first shown card under it.
+class ResultsHeading(Model):
+    title: str
+    count: int
+    first_key: str
+
+
 # network and new hold every kept person who is not skipped; cards are the ones the page shows, in order.
 class ResultsView(Model):
     network: list[PersonView] = []
@@ -542,6 +549,8 @@ class ResultsView(Model):
     next_key: str | None = None
     # The view person id and card key of each kept person who is not skipped, in list order.
     order: list[tuple[str, str]] = []
+    # The new section's headings in list order; empty when a person of the section has no tier.
+    headings: list[ResultsHeading] = []
 
 
 class NetworkFilter(Model):
