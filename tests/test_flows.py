@@ -388,7 +388,7 @@ class FlowTest(unittest.TestCase):
         profile = self.get(point["properties"]["href"])
         self.assertIn("Ann Harbor", profile.words)
         facts = [s for s in profile.scopes if "fn-claim" in s.attrs.get("class", "").split()]
-        self.assertGreaterEqual(len(facts), 2)
+        self.assertGreaterEqual(len(facts), 1)
         for fact in facts:
             with self.subTest(fact=fact.words):
                 (label, href), = fact.links

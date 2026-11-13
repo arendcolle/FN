@@ -23,11 +23,11 @@ from fn.contracts import (
     normalize,
 )
 from fn.present import (
-    PROSE,
     RESULTS_STEP,
     card,
     card_candidate,
     cut,
+    fit_tie,
     geo,
     label_of,
     network_view,
@@ -35,8 +35,10 @@ from fn.present import (
     person_views,
     plural,
     profile,
+    prose,
     results,
     shown_for,
+    source_cite,
     source_sentence,
     sources_read,
     walk,
@@ -276,7 +278,7 @@ def source_page(store: Store, source: Source, claim: Claim | None, back: BackLin
         person = next(iter(found.values()), None)
         org = store.get_orgs([claim.org_id]).get(claim.org_id) if claim.org_id else None
     title = person.display_name if person else label_of(source)
-    shown = bool(claim) and source.kind in PROSE
+    shown = bool(claim) and prose(source)
     text = source.text
     stored = [text[:claim.quote_start], h.mark(claim.quote),
               text[claim.quote_end:]] if claim else text
@@ -286,7 +288,9 @@ def source_page(store: Store, source: Source, claim: Claim | None, back: BackLin
         h.main(
             back_line(back, None),
             h.h1(title, class_="fn-source__title text-title"),
-            h.p(source_sentence(claim, source, org), id=None if shown else "quote", class_="fn-source__lead text-body") if claim else None,
+            h.p(source_sentence(claim, source, org, person.display_name if person else ""), id=None if shown else "quote",
+                class_="fn-source__lead text-body") if claim else None,
+            h.p(source_cite(claim, source, org), class_="fn-source__cite text-small") if claim else None,
             h.p(before, h.mark(quote, id="quote"), after, class_="fn-source__passage text-body") if shown else None,
             None if source.url.startswith("fn:") else h.p(h.a("Open the original page", href=source.url),
                                                           class_="fn-source__url text-small"),
@@ -593,7 +597,7 @@ def person_page(store: Store, person_id: str, params: dict[str, str], error: str
     candidate = card_candidate(store, search.id, person_id, key) if search and key else None
     topic = next((p.detail for p in candidate.score_parts if p.feature == "topic"), "") if candidate else ""
     view = profile(store, person_id, now().astimezone().date(), identity.on_card(store, candidate) if candidate else None,
-                   topic.split(", ") if topic else [])
+                   topic.split(", ") if topic else [], fit_tie(candidate.fit) if candidate else None)
     here = person_here(person_id, params)
     route = f"/searches/{search.id}/people/{candidate.person_id}" if candidate else None
     back = search_back(search, shown, key) if search else back_link(store, params.get("back", ""))
@@ -717,7 +721,7 @@ async def reject(request: Request, claim_id: str) -> Response:
     if claim is None:
         raise HTTPException(404, "No such fact")
     if claim.rejected_at is None:
-        network.reject_claim(store, claim_id, now=now())
+        network.reject_claim(store, claim_id, now=now(), also=form.get("also", []))
     return back_to(form, f"/people/{canonical_of(store, claim.person_id)}#claim-{claim_id}")
 
 

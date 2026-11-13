@@ -1,6 +1,7 @@
 """Who is in the network: the staff decisions, each one event that undo can reverse."""
 import hashlib
 import uuid
+from collections.abc import Sequence
 from datetime import datetime
 
 from fn import identity
@@ -170,16 +171,23 @@ def not_same(store: Store, person_id: str, other_id: str, *, now: datetime) -> E
         return _event(store, "not_same", now, detail, person_id=a, other_person_id=b)
 
 
-def reject_claim(store: Store, claim_id: str, *, now: datetime) -> Event:
-    """Mark the claim rejected, which hides it and its same-value claims of that person."""
+def reject_claim(store: Store, claim_id: str, *, now: datetime, also: Sequence[str] = ()) -> Event:
+    """Mark the claim rejected, which hides it and its same-value claims of that person.
+
+    also names the claims of the same person that go with it, such as the role of a joined line; an id of another
+    person or of no claim is left alone. Undo restores them all.
+    """
     with store.tx():
         claim = store.get_claim(claim_id)
         if claim is None:
             raise ValueError("That fact no longer exists.")
         (person,) = _canonical(store, [claim.person_id])
-        store.set_claim_rejected(claim_id, now)
-        return _event(store, "reject_claim", now, {"prior_rejected_at": _iso(claim.rejected_at)}, person_id=person,
-                      claim_id=claim_id)
+        extra = {c.id: _iso(c.rejected_at) for i in dict.fromkeys(also) if i != claim_id and (c := store.get_claim(i))
+                 and _canonical(store, [c.person_id]) == [person]}
+        for rejected in (claim_id, *extra):
+            store.set_claim_rejected(rejected, now)
+        return _event(store, "reject_claim", now, {"prior_rejected_at": _iso(claim.rejected_at), "also": extra},
+                      person_id=person, claim_id=claim_id)
 
 
 def _checked(kind: str, value: str) -> str:
@@ -310,6 +318,8 @@ def _undo_remove(store: Store, event: Event, now: datetime) -> None:
 
 def _undo_reject(store: Store, event: Event, now: datetime) -> None:
     store.set_claim_rejected(event.claim_id, _at(event.detail["prior_rejected_at"]))
+    for claim_id, prior in event.detail.get("also", {}).items():
+        store.set_claim_rejected(claim_id, _at(prior))
 
 
 UNDO = {"add": _undo_add, "skip": _undo_skip, "remove": _undo_remove, "merge": _undo_merge,

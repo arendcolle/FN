@@ -70,10 +70,27 @@ This list holds every user-facing string the new and changed parts introduce, gr
 - Not in the network: "Add", "Skip". With a same-name network person: "Same name as `{name}` in your network", "Same person", "Add as new", "Skip"
 - After Add: "Added to your network", "Undo"
 - Why block heading: "Why for this search". Lines: the card's reason line, the tie in words or "No known tie to Flanders", the place words ("In `{city}`", "Elsewhere in the US", "Place unknown")
-- Summary keys: "Studied", "Tie to Flanders", "Contact". Contact value: "`{email}` · `{phone}`", or "Not found"
+- Summary keys: "Studied", "Tie to Flanders" (the tie's organization or place lies in Flanders) or "Tie to Belgium" (any other tie, Brussels and an unknown region included), "Contact". The tie value is the tie in the words of a fact. "Studied" is left out when the tie is that study. Contact value: "`{email}` · `{phone}`", or "Not found"
 - Section headings: "Work", "Education", "Ties to Flanders and Belgium", "Places", "Contact", "Sources", "Possible matches"
 - Under a section of more than three facts: "Show `{n}` more"
-- Fact: "`{relation}` `{organization or place}`, `{years}`", then the source's short name. Relations: "Works at", "Worked at", "Studied at", "Member of", "Fellow of", "Lives in", "Born in". A fact from a paper: "Paper: `{title}`, `{year}`"
+- Fact: "`{relation}` `{organization or place}`, `{years}`", then the source's short name. Years are the fact's own, one span ("2009–2026") or one year ("2015"). Relations, each with an example:
+  - "Works at": "Works at Fictional Robotics, 2019–2026"
+  - "Worked at": "Worked at Example Health, 2012–2016"
+  - "Studied at": "Studied at KU Leuven, 2008–2013"
+  - "Fellow of": "Fellow of Belgian American Educational Foundation, 2015"
+  - "Member of": "Member of Koninklijke Vlaamse Academie van België voor Wetenschappen en Kunsten, 2021"
+  - "Honorary consul for": "Honorary consul for Belgium"
+  - "Hosted by": "Hosted by Massachusetts Institute of Technology, 2015"
+  - "Named at", for an affiliation a record or a list gives without a job: "Named at Chalmers University of Technology, 2009–2026"
+  - "Lives in": "Lives in Boston, MA"
+  - "Born in": "Born in Namur, Belgium"
+  - "Origin:": "Origin: Belgian"
+  - "Topic:": "Topic: AI in health care"
+  - "Paper:" with the title and its year: "Paper: Deep learning for sepsis alerts, 2023"
+- Joined role: "`{Role}`, `{organization}`, `{years}`", such as "Head of gynecology, UZ Leuven, 2014–2026". A role whose organization comes from another source stands alone: "Chief scientist, 2024"
+- List entry: the relation and the list's organization, never the list's title: "Fellow of Belgian American Educational Foundation, 2015"
+- Years with gaps, in the proof before the cite: "Years: 2009, 2011–2012, 2019, 2021–2026"
+- Folded line, last in Work: "Also named at `{n}` other organizations", source name "OpenAlex record", proof "`{organization}`, `{year}` · `{organization}`, `{year}` · …". No Not correct
 - Source name, accessible name: "Source for `{fact}`: `{source short name}`"
 - Opened proof: the quote, at most 25 words, then "`{page title}`, `{Month yyyy}` · Original page". No date: "`{page title}` · Original page". A record: "`{source label}`, `{year}` · Original page"; a url that starts with `fn:`: "`{source label}`, `{d Month yyyy}`"
 - Fact: "New", "Not correct". After Not correct: "`{fact}`", "· Removed", "Undo"
@@ -81,8 +98,8 @@ This list holds every user-facing string the new and changed parts introduce, gr
 - Contact citations: "From import `{file name}`, row `{n}`, `{d Month yyyy}`", "Entered in FN, `{d Month yyyy}`"
 - Contact edit: "Save", "Cancel". After Save: "Saved", "Undo"
 - Contact errors: "Enter an email address like name@example.org.", "Enter a phone number with at least 7 digits."
-- Sources: "`{source label}`", "· `{n}` facts" or "· 1 fact", "Not this person" on every record but the page's own. After: "`{source label}` · Separated", "Undo"
-- Source labels: "OpenAlex record", "OpenAlex work", "LinkedIn record", "Import `{file name}`, row `{n}`", "Entered in FN", or the site's host name
+- Sources: "`{source label}`" (two rows with one name add ", `{organization of that record's first Work line}`"), "· `{n}` facts", "· 1 fact" or "· no facts", "Not this person" on every record but the page's own, which comes first. After: "`{source label}` · Separated", "Undo"
+- Source labels: a page by its host ("columbia.edu"), a list by its name ("BAEF Belgian Fellows"), a record by its kind ("OpenAlex record", "OpenAlex work", "LinkedIn record", "Import `{file name}`, row `{n}`", "Entered in FN")
 - Possible matches note: "These have the same name, but nothing in FN links them to this person for sure."
 - Possible match buttons: "Same person", "Different person". After: "Merged into this profile" or "Marked as a different person", with "Undo"
 
@@ -90,7 +107,8 @@ This list holds every user-facing string the new and changed parts introduce, gr
 
 - Back link: "Back to `{person name}`"
 - Title: `{person name}`; opened without a fact: `{source label}`
-- Sentence: "The page says: `{fact}`." for a web page; "The record lists: `{fact}`." for a record, an import or an entry in FN
+- Sentence: "The page says: `{fact}`." for a web page; "The page names `{name}`." for a page that only names the person; "The record lists: `{fact}`." for a record, an import or an entry in FN
+- Cite line under the sentence: "`{source label}`, `{date}`", the date left out when unknown: "BAEF Belgian Fellows, 2015", "columbia.edu, May 2024", "OpenAlex record, 2025"
 - Passage: about 60 words each side of the quote, "…" at a cut end
 - Link: "Open the original page", left out for `fn:` urls
 - Disclosure: "Show the stored record"

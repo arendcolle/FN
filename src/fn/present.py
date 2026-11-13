@@ -3,19 +3,23 @@ import re
 from calendar import month_name
 from collections import Counter
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import date, datetime
 from html import unescape
 from urllib.parse import urlsplit
 
+from fn import evidence as ev
 from fn import identity, network, orgs, rank
 from fn.contracts import (
     Candidate,
+    CardFit,
     CardView,
     Claim,
     ClaimView,
     ContactView,
     Event,
     FactGroup,
+    FoldView,
     LaneOut,
     LastView,
     NetworkFilter,
@@ -32,21 +36,24 @@ from fn.contracts import (
     Search,
     Source,
     SummaryRow,
-    name_key,
 )
-from fn.evidence import BELGIAN_TEXT, EMPLOYER, places
+from fn.evidence import places
 from fn.store import Store, fold
 
 EMPLOYED = ("works_at", "worked_at", "affiliated_with")
 RELATIONS = {
-    "studied_at": "Studied at", "works_at": "Works at", "worked_at": "Worked at", "affiliated_with": "Affiliated with",
+    "studied_at": "Studied at", "works_at": "Works at", "worked_at": "Worked at", "affiliated_with": "Named at",
     "hosted_by": "Hosted by", "member_of": "Member of", "fellow_of": "Fellow of", "consul_for": "Honorary consul for",
 }
 # Seed list roles name a list, not a job.
 LIST_ROLES = ("fellow_of", "member_of", "consul_for")
+JOINING = ("works_at", "affiliated_with", "worked_at")
 PROSE = ("page", "seed_page", "vendor_page")
-FIELDS = {"topic": "Field", "email": "Email", "phone": "Phone"}
+FIELDS = {"topic": "Topic", "email": "Email", "phone": "Phone"}
 RECORD_LABELS = {"record": "OpenAlex record", "vendor_record": "LinkedIn record", "staff": "Entered in FN"}
+# Dates of the day a record was read or changed, which never are a fact's own year.
+RECORD_DATES = ("page_date", "sitemap", "wayback_first_seen", "document_heading", "read_date", "sheet_date", "staff_edit")
+FOLD_SHOWN = 20
 TIES = "Ties to Flanders and Belgium"
 GROUPS = ("Work", "Education", TIES, "Places")
 DONE = {"add": "Added to your network", "skip": "Skipped", "edit_contact": "Saved", "merge": "Merged into this profile",
@@ -54,24 +61,12 @@ DONE = {"add": "Added to your network", "skip": "Skipped", "edit_contact": "Save
 RESULTS_STEP = 20
 HEADINGS = {1: "Topic and a tie to Flanders", 2: "Topic, no known tie", 3: "Tie, topic not confirmed", 4: "Other people found"}
 WORK = "OpenAlex work "
-PUNCTUATION = ".,;:()[]{}\"'“”‘’…*"
 UNKNOWN_DATE = "date unknown"
 QUOTE_WORDS = 25
-KEY_VALUE = re.compile(r"[*•-]?\s*(?:[^\W_]| ){1,30}:")
-
-
-def employer_of(claims: list[Claim], facts: dict[str, Org] | None = None, place: str | None = None) -> str | None:
-    """The organization of the newest works_at or affiliated_with claim, or None; a worked_at claim is past.
-
-    Of the jobs that share the newest date, one at an organization in the city of place comes first.
-    """
-    jobs = [c for c in claims if c.relation in EMPLOYER]
-    if not jobs:
-        return None
-    top = max(jobs, key=job_date)
-    local = [c for c in jobs if job_date(c)[0] == job_date(top)[0]
-             and in_city(facts.get(c.org_id or "") if facts else None, place)]
-    return max(local or [top], key=job_date).value
+FIELD_LABEL = re.compile(r"[*•-]\s*(?:[^\W_]| ){1,30}:")
+ENTITY = re.compile(r"&#?\w+;")
+IMAGE_TOKENS = ("orcid image", "author orcid", "![", "[image")
+MIN_QUOTE_WORDS = 4
 
 
 def job_date(claim: Claim) -> tuple[str, str]:
@@ -166,28 +161,69 @@ def located(claims: list[Claim], facts: dict[str, Org], today: date) -> tuple[st
     return (text.value, None, None, "stated") if text else (None, None, None, None)
 
 
-def is_job(claim: Claim, source: Source) -> bool:
-    """Whether a role claim names a job: not a seed list role, nor a page title or host standing in for a role."""
-    return claim.relation not in LIST_ROLES and claim.value not in (source.title, urlsplit(source.url).hostname, source.url)
+def linkedin(source: Source) -> bool:
+    """Whether the source's page is on linkedin.com, whose profiles are records and not pages."""
+    host = urlsplit(source.url).hostname or ""
+    return host == "linkedin.com" or host.endswith(".linkedin.com")
 
 
-def years_words(claim: Claim) -> str:
-    """The years the claim covers as runs, such as '2008–2013' or '2001, 2008', or empty when it has none."""
-    return rank.years_text(rank.units(claim) - {rank.UNDATED}).replace("-", "–")
+def prose(source: Source) -> bool:
+    """Whether the source is a page with text a quote can come from; a LinkedIn profile is a record."""
+    return source.kind in PROSE and not linkedin(source)
+
+
+def own_years(claim: Claim, source: Source) -> frozenset[int]:
+    """The years that belong to the fact: the ranker's units, without the year of a claim_date that is the day the
+    source's record was read or changed.
+    """
+    stamped = claim.date_method in RECORD_DATES or claim.claim_date == source.source_date
+    found = rank.units(claim.model_copy(update={"claim_date": None}) if stamped else claim)
+    return frozenset(int(u) for u in found if u != rank.UNDATED)
+
+
+def span_words(years: frozenset[int]) -> str:
+    """The years as one span, '2009–2026', as one year, '2015', or empty."""
+    if not years:
+        return ""
+    first, last = min(years), max(years)
+    return str(first) if first == last else f"{first}–{last}"
+
+
+def gap_words(years: frozenset[int]) -> str:
+    """The years as runs, '2009, 2011–2012', when they have gaps, else empty."""
+    if not years or max(years) - min(years) + 1 == len(years):
+        return ""
+    return rank.years_text(frozenset(map(str, years))).replace("-", "–")
 
 
 def what_of(claim: Claim, org: Org | None) -> str:
-    """The fact in plain words, such as 'Studied at KU Leuven', 'Field: 6G', 'Born in Leuven' or 'Origin: Belgian'."""
-    if claim.kind in ("role", "availability"):
+    """The fact in plain words, such as 'Studied at KU Leuven', 'Topic: 6G', 'Born in Leuven' or 'Origin: Belgian'.
+
+    A role starts with a capital letter; a list role at an organization reads as its relation.
+    """
+    if claim.kind == "availability":
         return claim.value
+    if claim.kind == "role":
+        if claim.relation in LIST_ROLES and org:
+            return f"{RELATIONS[claim.relation]} {org.name}"
+        return claim.value[:1].upper() + claim.value[1:]
     if claim.kind == "location" and claim.relation == "origin":
         return f"Origin: {claim.value}"
     if claim.kind == "location":
-        return f"{'Born in' if claim.relation == 'born_in' else 'Based in'} {claim.value}"
+        return f"{'Born in' if claim.relation == 'born_in' else 'Lives in'} {claim.value}"
     if claim.kind in FIELDS:
         return f"{FIELDS[claim.kind]}: {claim.value}"
     name = org.name if org else claim.value
     return f"{RELATIONS[claim.relation]} {name}" if claim.relation in RELATIONS else name
+
+
+def is_fact(claim: Claim, source: Source) -> bool:
+    """Whether a claim is a fact the page shows: not a role the source does not state, such as its title, and not a
+    place a record gives for an institution.
+    """
+    if claim.kind == "role" and claim.relation is None:
+        return ev.stated_role(claim, source)
+    return claim.kind != "location" or claim.relation is not None or prose(source)
 
 
 def is_work(source: Source) -> bool:
@@ -200,6 +236,8 @@ def label_of(source: Source) -> str:
         return WORK.strip()
     if source.kind in RECORD_LABELS:
         return RECORD_LABELS[source.kind]
+    if linkedin(source):
+        return RECORD_LABELS["vendor_record"]
     if source.kind == "import":
         return f"Import {source.title}"
     return source.title or urlsplit(source.url).hostname or source.url
@@ -208,7 +246,12 @@ def label_of(source: Source) -> str:
 def source_name(source: Source) -> str:
     """The source's short name: the host of a page without a leading www., else its label."""
     host = (urlsplit(source.url).hostname or "").removeprefix("www.")
-    return host if source.kind in PROSE and host else label_of(source)
+    return host if prose(source) and host else label_of(source)
+
+
+def record_label(source: Source) -> str:
+    """The name a row of Sources or a cite gives the source: a list by its title, else the source's short name."""
+    return source.title if source.kind == "seed_page" and source.title else source_name(source)
 
 
 def quoted(text: str) -> str:
@@ -223,19 +266,13 @@ def quote_words(claim: Claim, cut_quote: bool) -> str:
     return quoted(cut(text, 240) if cut_quote else text)
 
 
-def debris(quote: str, name: str) -> bool:
-    """Whether a quote is page debris: it starts with a 'key: value' line, has under 6 words besides the name and
-    numbers, or holds no word of the name's last part.
+def debris(quote: str) -> bool:
+    """Whether a quote is page furniture: it starts with a field label after a list mark, holds image or author-list
+    tokens or a markup entity, or has fewer than 4 words.
     """
-    parts = [fold(p) for p in name.split()]
-    last = re.compile(rf"\b{re.escape(parts[-1])}\b") if parts else None
-    rest = [w for w in quote.split() if fold(w.strip(PUNCTUATION)) not in parts and not number(w)]
-    return bool(KEY_VALUE.match(quote.lstrip())) or len(rest) < 6 or bool(last and not last.search(fold(quote)))
-
-
-def number(word: str) -> bool:
-    """Whether the word has a digit and no letter, such as '2012–2017' or '3.5'."""
-    return any(c.isdigit() for c in word) and not any(c.isalpha() for c in word)
+    text = " ".join(unescape(quote).split())
+    return bool(FIELD_LABEL.match(text) or ENTITY.search(text) or any(t in fold(text) for t in IMAGE_TOKENS)
+                or len(text.split()) < MIN_QUOTE_WORDS)
 
 
 def proof_quote(claim: Claim, source: Source, name: str, words: list[str]) -> str | None:
@@ -243,11 +280,9 @@ def proof_quote(claim: Claim, source: Source, name: str, words: list[str]) -> st
 
     It is at most 25 words centred on the first of words the quote holds (else from its start), with '…' at a cut end.
     """
-    if source.kind not in PROSE:
+    if not prose(source) or debris(claim.quote):
         return None
     text = " ".join(unescape(claim.quote).split())
-    if debris(text, name):
-        return None
     found, held = text.split(" "), fold(text)
     word = next((w for w in words if fold(w) in held), None)
     at = next((n for n, w in enumerate(found) if word and fold(word) in fold(w)), 0)
@@ -256,11 +291,21 @@ def proof_quote(claim: Claim, source: Source, name: str, words: list[str]) -> st
     return quoted(f"{'…' if start else ''}{' '.join(found[start:end])}{'…' if end < len(found) else ''}")
 
 
-def source_sentence(claim: Claim, source: Source, org: Org | None) -> str:
-    """The one sentence a source page opens with: the stored fact, said as the page or the record says it."""
+def source_sentence(claim: Claim, source: Source, org: Org | None, name: str) -> str:
+    """The one sentence a source page opens with: the stored fact, said as the page or the record says it, or only
+    that the page names the person when the claim is no fact.
+    """
+    if not is_fact(claim, source):
+        return f"The page names {name}."
     view = claim_view(claim, source, org)
     fact = f"{view.what}, {view.years}" if view.years else view.what
-    return f"{'The page says' if source.kind in PROSE else 'The record lists'}: {fact}."
+    return f"{'The page says' if prose(source) else 'The record lists'}: {fact}."
+
+
+def source_cite(claim: Claim, source: Source, org: Org | None) -> str:
+    """The proof's '{source name}, {date}' as the source page shows it, the date left out when unknown."""
+    when = claim_view(claim, source, org).date
+    return record_label(source) if when == UNKNOWN_DATE else f"{record_label(source)}, {when}"
 
 
 def passage(source: Source, claim: Claim, words: int = 60) -> tuple[str, str, str]:
@@ -292,10 +337,11 @@ def claim_view(claim: Claim, source: Source, org: Org | None, seen_at: datetime 
     claim from an OpenAlex work reads 'Paper: ' and the title, cut like a quote when cut_quote.
     """
     label, href, when = label_of(source), f"/sources/{claim.source_id}?claim={claim.id}#quote", date_words(claim)
-    quote = QuoteView(text=quote_words(claim, cut_quote), label=label, href=href, date=when) if source.kind in PROSE else None
+    quote = QuoteView(text=quote_words(claim, cut_quote), label=label, href=href, date=when) if prose(source) else None
+    own = own_years(claim, source)
     paper = claim.kind == "topic" and is_work(source)
     what = f"Paper: {cut(claim.value, 240) if cut_quote else claim.value}" if paper else what_of(claim, org)
-    return ClaimView(claim_id=claim.id, kind=claim.kind, what=what, years=years_words(claim),
+    return ClaimView(claim_id=claim.id, kind=claim.kind, what=what, years=span_words(own), all_years=gap_words(own),
                      quote=quote, label=label, href=href, date=when,
                      is_new=bool(seen_at and claim.first_seen_at and claim.first_seen_at > seen_at),
                      source=source_name(source), url=None if source.url.startswith("fn:") else source.url)
@@ -307,20 +353,137 @@ def added_on(store: Store, person_id: str) -> str | None:
     return f"{at.day} {at:%B %Y}" if at else None
 
 
+@dataclass(eq=False)
+class Line:
+    """One fact line: the claims that stand in it, the newest of them, the role it names, and where it sorts."""
+    claims: list[Claim]
+    shown: Claim
+    role: Claim | None
+    org: Org | None
+    what: str
+    own: frozenset[int]
+    last: int
+    tier: int = 3
+    folded: bool = False
+
+    @property
+    def span(self) -> int:
+        return max(self.own) - min(self.own) + 1 if self.own else 0
+
+    @property
+    def joined(self) -> bool:
+        return self.role is not None and self.role is not self.shown
+
+    @property
+    def belgian(self) -> bool:
+        return bool(self.org and self.org.country_code == "BE")
+
+
+def joined_roles(claims: list[Claim], sources: dict[str, Source]) -> dict[str, Claim]:
+    """Each employer claim id with the stated role of its source that joins it.
+
+    A role joins the works_at, affiliated_with or worked_at claim of its source whose quote overlaps its own, in that
+    order of relation, else the only such claim when the source holds one stated role and one such claim. A
+    rejected claim joins only a rejected one.
+    """
+    roles = [c for c in claims if ev.stated_role(c, sources[c.source_id])]
+    jobs = [c for c in claims if c.relation in JOINING]
+    joined: dict[str, Claim] = {}
+    for role in roles:
+        here = [j for j in jobs if j.source_id == role.source_id]
+        free = [j for j in here if j.id not in joined and bool(j.rejected_at) == bool(role.rejected_at)]
+        near = [j for j in free if j.quote_start < role.quote_end and role.quote_start < j.quote_end]
+        alone = free if len(here) == 1 and sum(r.source_id == role.source_id for r in roles) == 1 else []
+        if pick := min(near or alone, key=lambda j: JOINING.index(j.relation), default=None):
+            joined[pick.id] = role
+    return joined
+
+
+def lines_of(claims: list[Claim], facts: dict[str, Org], sources: dict[str, Source]) -> list[Line]:
+    """One line per fact: claims with one kind, relation and organization or value are one line, cited by the newest.
+
+    A stated role joined to an employer claim is one line with it. A rejected claim is a line of its own.
+    """
+    joins = joined_roles(claims, sources)
+    taken = {r.id for r in joins.values()}
+    same: dict[tuple, list[Claim]] = {}
+    for claim in claims:
+        if claim.id in taken:
+            continue
+        if claim.rejected_at:
+            key = (claim.id,)
+        elif claim.id in joins:
+            key = ("joined", fold(joins[claim.id].value), claim.org_id or fold(claim.value))
+        else:
+            key = line_key(claim)
+        same.setdefault(key, []).append(claim)
+    return [line_of(found, joins, facts, sources) for found in same.values()]
+
+
+def line_of(found: list[Claim], joins: dict[str, Claim], facts: dict[str, Org], sources: dict[str, Source]) -> Line:
+    shown = newest(found)
+    org = facts.get(shown.org_id or "")
+    role = joins.get(shown.id) or (shown if shown.kind == "role" and shown.relation is None else None)
+    parts = [*found, *(joins[c.id] for c in found if c.id in joins)]
+    own = frozenset().union(*(own_years(c, sources[c.source_id]) for c in parts))
+    last = max((int(u) for c in parts for u in rank.units(c) if u != rank.UNDATED), default=0)
+    what = what_of(shown, org)
+    if role is not None and role is not shown:
+        what = f"{what_of(role, None)}, {org.name if org else shown.value}"
+    return Line(claims=found, shown=shown, role=role, org=org, what=what, own=own, last=last)
+
+
+def work_lines(claims: list[Claim], facts: dict[str, Org], sources: dict[str, Source], today: date,
+               place: str | None = None) -> list[Line]:
+    """The Work lines in order, the folded ones last.
+
+    The head is the current line with the longest span; then lines with a stated role, lines at a Belgian
+    organization and the rest, each longest span first. A line a record lists for one year at a non-Belgian
+    organization folds, unless it is the head.
+    """
+    lines = lines_of(claims, facts, sources)
+    current = [line for line in lines if any(
+        c.relation == "works_at" or (c.relation == "affiliated_with" and line.last >= today.year - 1)
+        for c in line.claims)]
+    head = min(current, key=lambda s: (-s.span, not s.joined, not in_city(s.org, place), -s.last, s.what.casefold()),
+               default=None)
+    for line in lines:
+        line.tier = 0 if line is head else 1 if line.role else 2 if line.belgian else 3
+        line.folded = (line is not head and line.shown.relation == "affiliated_with" and not line.shown.rejected_at
+                       and not prose(sources[line.shown.source_id]) and len(line.own) == 1 and not line.belgian)
+    lines.sort(key=lambda s: (s.folded, s.tier, -s.span, -s.last, s.what.casefold()))
+    return lines
+
+
+def head_line(lines: list[Line]) -> Line | None:
+    """The line that names the person's job: the current job, else the first line with a stated role, else None."""
+    return lines[0] if lines and lines[0].tier < 2 else None
+
+
+def job_claims(claims: list[Claim], sources: dict[str, Source]) -> list[Claim]:
+    """The claims that can make a head line: stated roles and employer claims."""
+    return [c for c in claims if ((c.kind == "role" and c.relation is None) or c.relation in JOINING)
+            and is_fact(c, sources[c.source_id])]
+
+
 def person_view(store: Store, person: Person, claims: list[Claim], facts: dict[str, Org], sources: dict[str, Source],
                 shown: Claim | None, today: date, records: int = 1) -> PersonView:
     """The view of one person from the claims of its records; shown is the claim the card gives as evidence.
 
-    records is how many records not merged into one person the claims come from.
+    records is how many records not merged into one person the claims come from. The role and employer are the
+    head line's.
     """
     member = person.list_status == "in_list"
     seen_at = person.seen_at if member else None
-    job = newest([c for c in claims if c.kind == "role" and is_job(c, sources[c.source_id])])
     (place, lat, lon, basis), found = located(claims, facts, today), belgian_orgs(claims, facts)
+    lines = work_lines(job_claims(claims, sources), facts, sources, today, place)
+    head = head_line(lines)
+    role = head.role if head else None
+    employer = (head.org.name if head.org else head.shown.value) if head and head.shown.relation in JOINING else None
     contact = {kind: newest([c for c in claims if c.kind == kind]) for kind in ("email", "phone")}
     return PersonView(
-        person_id=person.id, name=person.display_name, role=job.value if job else None,
-        employer=employer_of(claims, facts, place), place=place, lat=lat, lon=lon, place_basis=basis, records=records,
+        person_id=person.id, name=person.display_name, role=what_of(role, None) if role else None,
+        employer=employer, place=place, lat=lat, lon=lon, place_basis=basis, records=records,
         orgs=[OrgView(org=name, years=f"{y[0]}–{y[-1]}" if len(y) > 1 else "".join(map(str, y))) for name, y in found[:3]],
         more_orgs=max(len(found) - 3, 0),
         evidence=claim_view(shown, sources[shown.source_id], facts.get(shown.org_id or ""), seen_at) if shown else None,
@@ -350,8 +513,8 @@ def person_views(store: Store, groups: list[list[str]], today: date, matched: li
     owned = [[c for p in g for c in by_person.get(p, [])] for g in groups]
     shown = [evidence(claims, facts, m, t) for claims, m, t in
              zip(owned, matched or [[] for _ in groups], topics or [None for _ in groups])]
-    needed = {c.source_id for claims in owned for c in claims if c.kind == "role"} | {c.source_id for c in shown if c}
-    sources = store.get_sources(list(needed))
+    needed = {c.source_id for claims in owned for c in claims if c.kind == "role" or c.relation in JOINING}
+    sources = store.get_sources(list(needed | {c.source_id for c in shown if c}))
     return [person_view(store, persons[g[0]], claims, facts, sources, s, today, len(g))
             for g, claims, s in zip(groups, owned, shown)]
 
@@ -541,24 +704,24 @@ def sources_read(store: Store, search: Search) -> int:
 
 
 def group_of(claim: Claim, facts: dict[str, Org], source: Source) -> str | None:
-    """The profile section a claim shows under, one only; None for a contact.
+    """The profile section a claim shows under, one only; None for a contact or a claim that is no fact.
 
-    Study is Education, a job Work, a birthplace in Belgium or an origin a tie, any other place Places, and a list
-    role at a Belgian organization or any claim from a seed list a tie; the rest is Work.
+    Study is Education and a job Work. A birthplace or origin that shows a tie is a tie, any other place Places. A
+    fellowship, membership or consul's post is a tie when its source is a seed list or it shows one, else Work, as
+    are topics, papers and roles.
     """
-    belgian = claim.org_id in facts and facts[claim.org_id].country_code == "BE"
-    if claim.kind in ("email", "phone"):
+    if claim.kind in ("email", "phone") or not is_fact(claim, source):
         return None
     if claim.relation == "studied_at":
         return "Education"
     if claim.relation in ("works_at", "worked_at", "affiliated_with", "hosted_by"):
         return "Work"
-    if claim.relation == "origin" or (claim.relation == "born_in" and BELGIAN_TEXT.search(name_key(claim.value))):
-        return TIES
+    if claim.relation in ("born_in", "origin"):
+        return TIES if ev.shows_tie(claim, facts) else "Places"
     if claim.kind == "location":
         return "Places"
-    if (claim.relation in LIST_ROLES and belgian) or source.kind == "seed_page":
-        return TIES
+    if claim.relation in LIST_ROLES:
+        return TIES if source.kind == "seed_page" or ev.shows_tie(claim, facts) else "Work"
     return "Work"
 
 
@@ -567,39 +730,61 @@ def line_key(claim: Claim) -> tuple:
     return claim.kind, claim.relation, claim.org_id or fold(claim.value)
 
 
+def line_view(line: Line, sources: dict[str, Source], seen_at: datetime | None, name: str,
+              words: Sequence[str]) -> ClaimView:
+    """The line as the page shows it: its newest claim's view with the line's own years, its proof quote and, for a
+    joined role, the role's id and both in the words.
+    """
+    shown = line.shown
+    source = sources[shown.source_id]
+    view = claim_view(shown, source, line.org, seen_at, cut_quote=False)
+    text = proof_quote(shown, source, name, words)
+    update = {"years": span_words(line.own), "all_years": gap_words(line.own),
+              "is_new": any(seen_at and c.first_seen_at and c.first_seen_at > seen_at for c in (*line.claims, line.role) if c),
+              "quote": QuoteView(text=text, label=view.label, href=view.href, date=view.date) if text else None}
+    if line.joined:
+        update |= {"what": line.what, "joined_claim_id": line.role.id}
+    return view.model_copy(update=update)
+
+
 def fact_lines(claims: list[Claim], facts: dict[str, Org], sources: dict[str, Source], seen_at: datetime | None,
                name: str = "", words: Sequence[str] = ()) -> list[ClaimView]:
-    """One line per fact: claims with one kind, relation and organization or value, cited by the newest of them.
+    """One line per fact, as lines_of builds them, with the years of all its claims.
 
-    A line has the years of all its claims and is new when any of them is; new lines come first, then newest first,
-    equal dates by claim id. A rejected claim is a line of its own. A line's quote is the proof_quote of its source.
+    A line is new when any of its claims is; new lines come first, then newest first, equal dates by claim id.
     """
-    same: dict[tuple, list[Claim]] = {}
-    for claim in claims:
-        same.setdefault((claim.id,) if claim.rejected_at else line_key(claim), []).append(claim)
-    lines = []
-    for found in same.values():
-        shown = newest(found)
-        source = sources[shown.source_id]
-        years = frozenset().union(*(rank.units(c) for c in found)) - {rank.UNDATED}
-        fresh = any(seen_at and c.first_seen_at and c.first_seen_at > seen_at for c in found)
-        view = claim_view(shown, source, facts.get(shown.org_id or ""), seen_at, cut_quote=False)
-        text = proof_quote(shown, source, name, words)
-        proof = QuoteView(text=text, label=view.label, href=view.href, date=view.date) if text else None
-        lines.append(((shown.claim_date or "", shown.id), view.model_copy(
-            update={"years": rank.years_text(years).replace("-", "–"), "is_new": fresh, "quote": proof})))
-    lines.sort(key=lambda t: t[0], reverse=True)
-    return [view for _, view in sorted(lines, key=lambda t: not t[1].is_new)]
+    lines = sorted(lines_of(claims, facts, sources), key=lambda s: (s.shown.claim_date or "", s.shown.id), reverse=True)
+    views = [line_view(line, sources, seen_at, name, words) for line in lines]
+    return sorted(views, key=lambda v: not v.is_new)
 
 
-def tie_claim(claims: list[Claim], facts: dict[str, Org], ids: Sequence[str] = ()) -> Claim | None:
-    """The tie to show in the summary: the first of ids among the claims, else the newest study at a Belgian
-    organization, else the newest claim at one, else None.
-    """
-    if found := next((c for i in ids for c in claims if c.id == i), None):
-        return found
-    belgian = [c for c, _ in orgs.belgian_claims(claims, facts)]
-    return newest([c for c in belgian if c.relation == "studied_at"]) or newest(belgian)
+def fold_of(lines: list[Line], sources: dict[str, Source]) -> FoldView | None:
+    """The folded line of the Work lines: how many, the source named most often, and each '{organization}, {year}'."""
+    folded = [line for line in lines if line.folded]
+    if not folded:
+        return None
+    names = Counter(source_name(sources[line.shown.source_id]) for line in folded)
+    return FoldView(count=len(folded), source=names.most_common(1)[0][0],
+                    orgs=[f"{line.org.name if line.org else line.shown.value}, {min(line.own)}" for line in folded])
+
+
+def tie_claim(claims: list[Claim], facts: dict[str, Org], ids: Sequence[str]) -> Claim | None:
+    """The first of ids, strongest first, among the claims that show a tie, else None."""
+    return next((c for i in ids for c in claims if c.id == i and ev.shows_tie(c, facts)), None)
+
+
+def fit_tie(fit: CardFit | None) -> list[str] | None:
+    """The claim ids of the tie the ranker stored for the card: None without a fit, none for a weak or no tie."""
+    if fit is None:
+        return None
+    return list(fit.tie_claim_ids) if fit.tie_grade in rank.TIED else []
+
+
+def evidence_tie(store: Store, persons: list[str], claims: list[Claim], facts: dict[str, Org], today: date) -> list[str]:
+    """The claim ids of the persons' tie by the tie evidence, strongest first, when it is strong or medium."""
+    card = ev.card_of(store.identifiers_of(persons), persons)
+    found = ev.tie(card, claims, facts, places(claims, facts, today))
+    return list(found.claim_ids) if found.grade in rank.TIED else []
 
 
 def same_fact(claim: Claim, claims: list[Claim]) -> list[str]:
@@ -607,18 +792,27 @@ def same_fact(claim: Claim, claims: list[Claim]) -> list[str]:
     return [c.id for c in claims if line_key(c) == line_key(claim)]
 
 
-def summary_of(claims: list[Claim], facts: dict[str, Org], sources: dict[str, Source]) -> list[SummaryRow]:
-    """The rows under the head: the newest study, the tie, and the contact values or 'Not found'."""
+def years_of(ids: list[str], claims: list[Claim], sources: dict[str, Source]) -> str:
+    return span_words(frozenset().union(*(own_years(c, sources[c.source_id]) for c in claims if c.id in ids)))
+
+
+def summary_of(claims: list[Claim], facts: dict[str, Org], sources: dict[str, Source], ids: Sequence[str]) -> list[SummaryRow]:
+    """The rows under the head: the newest study, the tie and the contact values or 'Not found'.
+
+    The tie is the first of ids that shows one; it reads 'Tie to Flanders' when it lies in Flanders. The study is
+    left out when it is the tie.
+    """
     rows = []
-    if study := newest([c for c in claims if c.relation == "studied_at"]):
-        ids = same_fact(study, claims)
-        years = frozenset().union(*(rank.units(c) for c in claims if c.id in ids)) - {rank.UNDATED}
+    tie = tie_claim(claims, facts, ids)
+    if (study := newest([c for c in claims if c.relation == "studied_at"])) and not (tie and tie.id in same_fact(study, claims)):
+        line = same_fact(study, claims)
         org = facts.get(study.org_id or "")
-        rows.append(SummaryRow(key="Studied", value=org.name if org else study.value,
-                               years=rank.years_text(years).replace("-", "–"), claim_ids=ids))
-    if tie := tie_claim(claims, facts):
-        rows.append(SummaryRow(key="Tie to Flanders", value=what_of(tie, facts.get(tie.org_id or "")),
-                               claim_ids=same_fact(tie, claims)))
+        rows.append(SummaryRow(key="Studied", value=org.name if org else study.value, years=years_of(line, claims, sources),
+                               claim_ids=line))
+    if tie:
+        org, line = facts.get(tie.org_id or ""), same_fact(tie, claims)
+        rows.append(SummaryRow(key="Tie to Flanders" if ev.in_flanders(tie, org) else "Tie to Belgium", value=what_of(tie, org),
+                               years=years_of(line, claims, sources), claim_ids=line))
     found = [c for c in (contact_of(kind, claims, sources) for kind in ("email", "phone")) if c.claim]
     return rows + [SummaryRow(key="Contact", value=" · ".join(c.value for c in found) or "Not found",
                               claim_ids=[c.claim.claim_id for c in found])]
@@ -637,33 +831,50 @@ def contact_of(kind: str, claims: list[Claim], sources: dict[str, Source]) -> Co
     return ContactView(kind=kind, value=claim.value, claim=view)
 
 
-def found_as(store: Store, persons: list[str], claims: list[Claim], sources: dict[str, Source],
-             possible: list[str]) -> list[RecordView]:
-    """One entry per record and source the persons' facts came from, with its fact count, the page's own record first.
+def work_org(claims: list[Claim], facts: dict[str, Org], sources: dict[str, Source], today: date) -> str | None:
+    """The organization of the first Work line that has one among the claims, else None."""
+    work = [c for c in claims if group_of(c, facts, sources[c.source_id]) == "Work"]
+    line = next((s for s in work_lines(work, facts, sources, today) if s.shown.relation in (*JOINING, "hosted_by")), None)
+    return (line.org.name if line.org else line.shown.value) if line else None
 
-    A record can be separated when it is merged into the first person or is one of its possible matches. Nothing for
-    a single record.
+
+def found_as(store: Store, persons: list[str], claims: list[Claim], sources: dict[str, Source], possible: list[str],
+             facts: dict[str, Org], today: date, no_facts: bool) -> list[RecordView]:
+    """One row per record the persons' facts came from, the page's own record first.
+
+    A row's source is the one that gave the record most claims. Rows that share a label add the organization of the
+    record's first Work line. A record can be separated when it is merged into the first person or is one of its
+    possible matches. Rows show for two records or more, or when the page has no fact line.
     """
     records = {r.id: p for p in persons for r in store.records_of(p)}
-    if len(records) < 2:
-        return []
     owner = store.claim_records([c.id for c in claims])
-    counts: dict[tuple[str, str], int] = {}
+    mine: dict[str, list[Claim]] = {}
     for claim in claims:
-        key = (owner[claim.id], claim.source_id)
-        counts[key] = counts.get(key, 0) + 1
+        mine.setdefault(owner[claim.id], []).append(claim)
     order = {record: n for n, record in enumerate(records)}
-    return [RecordView(record_id=record, label=label_of(sources[source]), href=f"/sources/{source}", facts=n,
-                       separate=record != persons[0] and (records[record] == persons[0] or records[record] in possible))
-            for (record, source), n in sorted(counts.items(), key=lambda t: order.get(t[0][0], len(order)))]
+    ids = sorted(mine, key=lambda r: order.get(r, len(order)))
+    if len(ids) < 2 and not no_facts:
+        return []
+    top = {r: Counter(c.source_id for c in mine[r]).most_common(1)[0][0] for r in ids}
+    labels = Counter(record_label(sources[top[r]]) for r in ids)
+    rows = []
+    for record in ids:
+        label = record_label(sources[top[record]])
+        if labels[label] > 1 and (org := work_org(mine[record], facts, sources, today)):
+            label = f"{label}, {org}"
+        rows.append(RecordView(record_id=record, label=label, href=f"/sources/{top[record]}",
+                               facts=sum(is_fact(c, sources[c.source_id]) for c in mine[record]),
+                               separate=record != persons[0] and (records.get(record) == persons[0] or records.get(record) in possible)))
+    return rows
 
 
 def separated_label(store: Store, record_id: str) -> str:
-    """The source label of a separated record's first fact, else its name."""
+    """The source label of a separated record's source with most claims, else its name."""
     claims = store.claims_of([record_id])
     if not claims:
         return store.get_persons([record_id])[record_id].display_name
-    return label_of(store.get_sources([claims[0].source_id])[claims[0].source_id])
+    top = Counter(c.source_id for c in claims).most_common(1)[0][0]
+    return record_label(store.get_sources([top])[top])
 
 
 def latest(store: Store, person_id: str) -> Event | None:
@@ -712,12 +923,13 @@ def card_records(store: Store, search_id: str, person_id: str, key: str) -> list
 
 
 def profile(store: Store, person_id: str, today: date, card: list[str] | None = None,
-            words: Sequence[str] = ()) -> ProfileView | None:
+            words: Sequence[str] = (), tie_ids: Sequence[str] | None = None) -> ProfileView | None:
     """Everything the Person page shows of the id's person, or None for an unknown id.
 
-    The fact a just-undoable reject removed stays in its section, so the page can show it with Undo. With card, the
-    page combines the records on the card as the card does: their claims, their records under Sources and their
-    newest undoable decision; words are the topic words the quotes are centred on.
+    The facts a just-undoable reject removed stay in their section, so the page can show the line with Undo. With
+    card, the page combines the records on the card as the card does: their claims, their records under Sources and
+    their newest undoable decision; words are the topic words the quotes are centred on. tie_ids are the claims of
+    the tie the summary shows, strongest first; None means the tie evidence picks them.
     """
     canonical = store.canonical_ids([person_id]).get(person_id)
     if canonical is None:
@@ -727,8 +939,10 @@ def profile(store: Store, person_id: str, today: date, card: list[str] | None = 
     member = person.list_status == "in_list"
     claims = store.claims_of(card or [canonical])
     event = max(filter(None, (latest(store, p) for p in persons)), key=lambda e: (e.at, e.id), default=None)
-    removed = store.get_claim(event.claim_id) if event and event.kind == "reject_claim" else None
-    shown = claims + ([removed] if removed and removed.id not in {c.id for c in claims} else [])
+    gone = []
+    if event and event.kind == "reject_claim":
+        gone = [c for c in map(store.get_claim, (event.claim_id, *event.detail.get("also", []))) if c]
+    shown = claims + [c for c in gone if c.id not in {k.id for k in claims}]
     facts = store.get_orgs(list({c.org_id for c in shown if c.org_id}))
     sources = store.get_sources(list({c.source_id for c in shown}))
     seen_at = person.seen_at if member else None
@@ -736,18 +950,28 @@ def profile(store: Store, person_id: str, today: date, card: list[str] | None = 
     for claim in shown:
         if group := group_of(claim, facts, sources[claim.source_id]):
             groups.setdefault(group, []).append(claim)
-    lines = {title: fact_lines(found, facts, sources, seen_at, person.display_name, words) for title, found in groups.items()}
-    removed_view = claim_view(removed, sources[removed.source_id], facts.get(removed.org_id or "")) if removed else None
     name_match = None
     if not member:
         name_match = next(iter(network.name_matches(store, card or [canonical])), None)
     matches = network.possible_matches(store, canonical)
     possible = [p for p in matches if p != name_match and p not in persons]
     views = person_views(store, [persons, *([[name_match]] if name_match else []), *[[p] for p in possible]], today)
+    lines = {title: fact_lines(found, facts, sources, seen_at, person.display_name, words) for title, found in groups.items()
+             if title != "Work"}
+    work = work_lines(groups.get("Work", []), facts, sources, today, views[0].place)
+    lines["Work"] = [line_view(s, sources, seen_at, person.display_name, words) for s in work if not s.folded]
+    removed = None
+    if gone:
+        removed = next((v for found in lines.values() for v in found if v.claim_id == gone[0].id),
+                       claim_view(gone[0], sources[gone[0].source_id], facts.get(gone[0].org_id or "")))
+    shown_tie = evidence_tie(store, persons, claims, facts, today) if tie_ids is None else tie_ids
+    fold_line = fold_of(work, sources)
+    rows = found_as(store, persons, claims, sources, matches, facts, today, not (any(lines.values()) or fold_line))
     return ProfileView(
         person=views[0], contact=[contact_of(kind, claims, sources) for kind in ("email", "phone")],
-        facts=[FactGroup(title=title, facts=lines[title]) for title in GROUPS if lines.get(title)],
-        found_as=found_as(store, persons, claims, sources, matches), possible=views[2:] if name_match else views[1:],
-        name_match=views[1] if name_match else None, last=last_of(store, person, event, removed_view),
-        summary=summary_of(claims, facts, sources), records=len(persons),
+        facts=[FactGroup(title=title, facts=lines.get(title, []), fold=fold_line if title == "Work" else None)
+               for title in GROUPS if lines.get(title) or (title == "Work" and fold_line)],
+        found_as=rows, possible=views[2:] if name_match else views[1:],
+        name_match=views[1] if name_match else None, last=last_of(store, person, event, removed),
+        summary=summary_of(claims, facts, sources, shown_tie), records=len(rows) if len(persons) > 1 else 1,
     )

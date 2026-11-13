@@ -95,12 +95,14 @@ def topic_words(chips: Chips | None) -> list[str]:
     return list(dict.fromkeys(w for c in (chips.topics if chips else []) for w in parse.chip_words(c.text)))
 
 
-def fresh(claims: list, employer: str | None, created: date) -> bool:
+def fresh(claims: list, employer: str | None, created: date, facts: dict | None = None) -> bool:
     """Whether the newest claim for the employer is dated on or after created minus FRESH_YEARS years.
 
-    The date is valid_to or claim_date: YYYY, YYYY-MM or YYYY-MM-DD, padded to its first day.
+    The employer is a claim's value or its organization's name. The date is valid_to or claim_date:
+    YYYY, YYYY-MM or YYYY-MM-DD, padded to its first day.
     """
-    jobs = [c for c in claims if c.relation in present.EMPLOYED and c.value == employer]
+    named = {c.org_id for c in claims if facts and facts.get(c.org_id or "") and facts[c.org_id].name == employer}
+    jobs = [c for c in claims if c.relation in present.EMPLOYED and (c.value == employer or c.org_id in named)]
     newest = max(jobs, key=lambda c: (c.valid_to or c.claim_date or "", c.claim_date or ""), default=None)
     stamp = (newest.valid_to or newest.claim_date or "") if newest else ""
     try:
@@ -195,6 +197,11 @@ def pair_metrics(store: Store, kept: list, pairs: list[dict]) -> dict:
     return {"pairs_wrong": wrong, "pairs_split": split}
 
 
+def stated_role(claims: list, sources: dict) -> bool:
+    """Whether any claim states a job, wherever the card places it."""
+    return any(x.kind == "role" and x.relation is None and present.is_fact(x, sources[x.source_id]) for x in claims)
+
+
 def card_metrics(store: Store, scored: Search, kept: list, created: date, area: GeoArea | None) -> dict:
     """The doubles counts, the card shares of the first TOP cards, and the place, group and lane shares.
 
@@ -207,6 +214,7 @@ def card_metrics(store: Store, scored: Search, kept: list, created: date, area: 
     for claim in store.claims_of([p for found in ids for p in found]):
         by_person.setdefault(claim.person_id, []).append(claim)
     facts = store.get_orgs(list({x.org_id for found in by_person.values() for x in found if x.org_id}))
+    sources = store.get_sources(list({x.source_id for found in by_person.values() for x in found}))
     schemes = {p: frozenset(i.scheme for i in found) for p, found in store.identifiers_of([p for f in ids for p in f]).items()}
     question = Question(chips=scored.chips or Chips(), area=area)
     words = topic_words(scored.chips)
@@ -217,9 +225,9 @@ def card_metrics(store: Store, scored: Search, kept: list, created: date, area: 
         found = evidence.of({p: schemes.get(p, frozenset()) for p in records}, claims, facts, question, created)
         card = {
             "key": name_key(view.name), "orgs": {x.org_id for x in claims if x.org_id}, "lanes": set(c.lane_ranks),
-            "place": view.place is not None, "role": view.role is not None, "employer": view.employer is not None,
+            "place": view.place is not None, "role": stated_role(claims, sources), "employer": view.employer is not None,
             "tie": view.evidence is not None or bool(view.orgs), "sources2": len({x.source_id for x in claims}) >= 2,
-            "fresh": fresh(claims, view.employer, created), "topic": bool(words and parse.words_in(words, text)),
+            "fresh": fresh(claims, view.employer, created, facts), "topic": bool(words and parse.words_in(words, text)),
             "where": found.place.fit if area else None, "group0": c.group == 0,
         }
         cards.append(card | {"complete": all(card[f] for f in COMPLETE)})

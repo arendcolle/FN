@@ -3,9 +3,20 @@ import re
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal
+from urllib.parse import urlsplit
 
 from fn import geo, orgs, parse, rank
-from fn.contracts import Chip, Claim, Identifier, Org, Question, RoleFit, TieGrade, name_key
+from fn.contracts import (
+    Chip,
+    Claim,
+    Identifier,
+    Org,
+    Question,
+    RoleFit,
+    Source,
+    TieGrade,
+    name_key,
+)
 
 RECENT_YEARS = 5
 EMPLOYER = ("works_at", "affiliated_with")
@@ -14,6 +25,10 @@ DATE = re.compile(r"[0-9]{4}(-[0-9]{2}){0,2}")
 # Words of a claim that place it in Belgium, folded like name_key.
 BELGIAN_TEXT = re.compile(r"\b(belgi\w*|belge\w*|flemish|flanders|vlaams\w*|vlaanderen|antwerp\w*|ghent|gent|leuven|"
                           r"louvain|brussel\w*|bruxelles|liege|hasselt|mechelen|bruges|brugge|kortrijk|namur|walloni\w*)\b")
+# Words of a claim that place it in the Flemish Region, folded like name_key.
+FLEMISH_TEXT = re.compile(r"\b(flemish|flanders|vlaams\w*|vlaanderen|antwerp\w*|ghent|gent|leuven|hasselt|mechelen|bruges|"
+                          r"brugge|kortrijk|aalst|genk|oostende|ostend)\b")
+TIE_RELATIONS = ("studied_at", "born_in", "origin", "lives_in", "fellow_of", "member_of", "consul_for")
 # Seed lists whose rows are curated by the list's own body; every other list gives a medium tie.
 STRONG_LISTS = frozenset({"baef", "francqui", "fayat", "consuls", "climate"})
 STRONG_MARKERS = frozenset(f"seed:{name}" for name in STRONG_LISTS)
@@ -126,6 +141,31 @@ def mention_only(card: dict[str, frozenset[str]], claim: Claim) -> bool:
 def usable_role(card: dict[str, frozenset[str]], claim: Claim) -> bool:
     """A role claim; one of a web person counts only when its value stands in its quote, not when it is the page title."""
     return claim.kind == "role" and (not mention_only(card, claim) or name_key(claim.value) in name_key(claim.quote))
+
+
+def stated_role(claim: Claim, source: Source) -> bool:
+    """Whether a claim is a role a source states: no relation, and not the page title, host or url that extract stores
+    when a page gives no role."""
+    return claim.kind == "role" and claim.relation is None and claim.value not in (
+        source.title, urlsplit(source.url).hostname, source.url)
+
+
+def shows_tie(claim: Claim, facts: dict[str, Org]) -> bool:
+    """Whether a claim shows a Belgian tie: its organization is Belgian, or its relation is one a tie has and its value
+    says Belgium. A bare role or a topic never does."""
+    org = facts.get(claim.org_id or "")
+    if claim.relation is None and claim.kind in ("role", "topic"):
+        return False
+    return bool(org and org.country_code == "BE") or (
+        claim.relation in TIE_RELATIONS and bool(BELGIAN_TEXT.search(name_key(claim.value))))
+
+
+def in_flanders(claim: Claim, org: Org | None) -> bool:
+    """Whether a tie lies in the Flemish Region: the organization's region when it has one, else Flemish words in its
+    city or name, and without an organization in the claim's value."""
+    if org and org.region:
+        return org.region == "VLG"
+    return bool(FLEMISH_TEXT.search(name_key(f"{org.city or ''} {org.name}" if org else claim.value)))
 
 
 def match_text(card: dict[str, frozenset[str]], claim: Claim) -> str:

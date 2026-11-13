@@ -21,8 +21,8 @@ from fn.worker import now
 from tests.helpers import StubHttp, StubLLM, make_db, make_settings
 
 ROOT = Path(__file__).resolve().parent.parent
-# sha256 of components/bundle.css in version 11 of the design system.
-BUNDLE_SHA = "4f1a844883605813c3dd6c1e0faf0b156f2618607965ac516bf6094b5c41da81"
+# sha256 of components/bundle.css in version 12 of the design system.
+BUNDLE_SHA = "1c876bd97b1a8b4ac3291f049a8af3de5c588222c1df5d5fda51500d5f1ad7a4"
 YEAR = str(now().year)
 
 
