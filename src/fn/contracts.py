@@ -228,11 +228,12 @@ def _plain(match: re.Match) -> str:
 
 def page_source(url: str, title: str | None, markdown: str, raw: dict, fetched_at: datetime,
                 source_date: str | None, *, kind: Literal["vendor_page", "page"] = "vendor_page",
-                plain: bool = False) -> Source:
+                plain: bool = False, date_method: DateMethod | None = None) -> Source:
     """A Source of the given kind whose text is the vendor's markdown as plain text, so a quote matches what the reader sees.
 
     Links keep their anchor text; emphasis marks, heading markers and backslash escapes go. plain skips that pass
     and only normalizes. The id holds the kind and the content hash, so a page whose text changed is a new source.
+    date_method says where source_date comes from; without it a given date counts as a field of the record.
     """
     text = normalize(markdown if plain else MARKDOWN.sub(_plain, re.sub(r"^#{1,6}[ \t]+", "", markdown, flags=re.MULTILINE)))
     content_hash = hashlib.sha256(text.encode()).hexdigest()
@@ -240,8 +241,8 @@ def page_source(url: str, title: str | None, markdown: str, raw: dict, fetched_a
         id=hashlib.sha1(f"{kind}\0{url}\0{content_hash}".encode()).hexdigest(), kind=kind, url=url,
         title=" ".join(title.split()) or None if title else None, text=text,
         raw_json=json.dumps(raw, ensure_ascii=False, sort_keys=True),
-        content_hash=content_hash, source_date=source_date, date_method="record_field" if source_date else None,
-        fetched_at=fetched_at,
+        content_hash=content_hash, source_date=source_date,
+        date_method=(date_method or "record_field") if source_date else None, fetched_at=fetched_at,
     )
 
 

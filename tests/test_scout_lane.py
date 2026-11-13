@@ -30,8 +30,8 @@ class ResearchLLM:
         return type("Result", (), {"value": value})()
 
 
-def lead(name: str, *pages: str, place: str = "") -> ScoutLead:
-    return ScoutLead(name=name, role="Chef", employer="Cafe Test", place=place, pages=list(pages))
+def lead(name: str, *pages: str, place: str = "", employer: str = "Cafe Test") -> ScoutLead:
+    return ScoutLead(name=name, role="Chef", employer=employer, place=place, pages=list(pages))
 
 
 def head(name: str, text: str, *relations: dict) -> dict:
@@ -51,7 +51,8 @@ class ScoutLaneTest(unittest.TestCase):
 
         def read_all(ctx, urls):
             self.urls = list(urls)
-            return [pageread.Read(u, f"Title {i}", pages.get(u), None if pages.get(u) else "a 404") for i, u in enumerate(urls)]
+            return [pageread.Read(u, f"Title {i}", pages.get(u), None if pages.get(u) else "a 404",
+                                  published=getattr(self, "published", {}).get(u)) for i, u in enumerate(urls)]
 
         def windows(text, names, **kwargs):
             self.windowed.append(names)
@@ -188,6 +189,40 @@ class ScoutLaneTest(unittest.TestCase):
         text = f"{JAN_TEXT}\nJan Peeters lives in Stamford. The Fairfield shop opened in 2019."
         _, found = self.place_claims(text, self.PLACE, relation("lives_in", "Stamford", "Jan Peeters lives in Stamford."))
         self.assertEqual([c.value for c in found], ["Stamford"])
+
+    def employer_claims(self, text: str, employer: str, *relations: dict):
+        out = self.run_lane([lead("Jan Peeters", JAN, employer=employer)], {JAN: text}, {"Jan Peeters is": [
+            head("Jan Peeters", "Jan Peeters is head chef.", *relations)]})
+        (hit,) = out.hits
+        return out, [c for c in map(self.store.get_claim, hit.claim_ids) if c.relation == "works_at"]
+
+    def test_an_employer_the_page_prints_becomes_a_works_at_claim_with_the_page_line_as_quote(self):
+        """The reader gave no employer; the lead's stands on the page without its legal form and becomes the claim."""
+        out, (claim,) = self.employer_claims("Jan Peeters is head chef.\nCafe Test opened in 2019.", "Cafe Test LLC")
+        self.assertEqual((claim.value, claim.quote, claim.kind), ("Cafe Test", "Cafe Test opened in 2019.", "affiliation"))
+        self.assertIn("Jan Peeters: employer Cafe Test LLC from the page line", self.reasons(out, "mention", True))
+
+    def test_an_employer_only_in_the_page_title_is_found_on_the_first_line(self):
+        """A bio page names the firm in its title alone; the stored text opens with the title, so the claim quotes it."""
+        _, (claim,) = self.employer_claims("Jan Peeters is head chef.", "Title 0")
+        self.assertEqual((claim.value, claim.quote_start), ("Title 0", 0))
+
+    def test_an_employer_the_page_does_not_print_or_the_reader_gave_adds_nothing(self):
+        """No line holds the lead's employer, or the page reader already gave a works_at claim."""
+        self.assertEqual(self.employer_claims("Jan Peeters is head chef.", "Bistro Elsewhere")[1], [])
+        text = "Jan Peeters is head chef.\nHe works at Bakery Voorbeeld. Cafe Test is next door."
+        _, found = self.employer_claims(text, "Cafe Test", relation("works_at", "Bakery Voorbeeld", "He works at Bakery Voorbeeld."))
+        self.assertEqual([c.value for c in found], ["Bakery Voorbeeld"])
+
+    def test_claims_carry_the_pages_own_date_or_the_day_it_was_read(self):
+        """An undated page dates its claims by the day FN read it; a page with a date of its own by that date."""
+        out = self.run_lane([lead("Jan Peeters", JAN)], {JAN: JAN_TEXT}, {"Jan Peeters is": [head("Jan Peeters", "Jan Peeters is head chef at Cafe Test.")]})
+        claims = [self.store.get_claim(c) for c in out.hits[0].claim_ids]
+        self.assertEqual({(c.claim_date, c.date_method) for c in claims}, {(now().date().isoformat(), "read_date")})
+        self.published = {EVA: "2024-05-17"}
+        out = self.run_lane([lead("Eva Maes", EVA)], {EVA: EVA_TEXT}, {"Eva Maes is": [head("Eva Maes", "Eva Maes is pastry chef at Cafe Test.")]})
+        claims = [self.store.get_claim(c) for c in out.hits[0].claim_ids]
+        self.assertEqual({(c.claim_date, c.date_method, c.date_precision) for c in claims}, {("2024-05-17", "page_date", "day")})
 
     def test_a_long_line_is_cut_to_300_characters_around_the_place(self):
         """The quote holds the place and is at most 300 characters."""

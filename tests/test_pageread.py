@@ -1,11 +1,12 @@
 import logging
 import unittest
+from unittest import mock
 
 import httpx
 
 from fn import net, pageread
 from fn.contracts import ParseIn, ParseOut
-from fn.pageread import Read, allowed, html_text, read, read_all, windows
+from fn.pageread import Read, allowed, html_text, page_date, read, read_all, windows
 from fn.steps import StepContext, run_step
 from fn.worker import Worker, new_id, now
 from tests.helpers import StubLLM, make_db, make_settings
@@ -28,6 +29,8 @@ class PageReadTest(unittest.TestCase):
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.sent.append(request)
         answer = self.routes.get(str(request.url), httpx.Response(404))
+        if isinstance(answer, list):
+            answer = answer.pop(0)
         if isinstance(answer, Exception):
             raise answer
         return answer
@@ -154,6 +157,38 @@ class PageReadTest(unittest.TestCase):
         [again] = self.reading("https://a.example/p", settings=self.settings.model_copy(update={"http_mode": "replay"}))
         self.assertEqual((again.failed, again.text), (None, live.text))
 
+    def test_a_429_gets_one_more_try_and_a_second_429_is_the_failure(self):
+        """A host that answers 429 once is asked again after the wait; twice in a row the page fails with the answer."""
+        self.serve("https://a.example/p", page(LONG))
+        self.routes["https://a.example/p"] = [httpx.Response(429, text="slow down"), self.routes["https://a.example/p"]]
+        self.routes["https://b.example/robots.txt"] = httpx.Response(200, text="User-agent: *\nAllow: /")
+        self.routes["https://b.example/p"] = [httpx.Response(429, text="slow down"), httpx.Response(429, text="slow down")]
+        with mock.patch("fn.pageread.time.sleep") as slept:
+            ok, failed = self.reading("https://a.example/p", "https://b.example/p")
+        self.assertIsNone(ok.failed)
+        self.assertIn("returned 429", failed.failed)
+        self.assertEqual(slept.call_args_list, [mock.call(pageread.RETRY_S)] * 2)
+
+    def test_a_read_page_carries_its_own_date(self):
+        """read passes the date of the page's meta tags on with the text; a page without one has none."""
+        dated = f'<html><head><meta property="article:published_time" content="2024-05-17"></head><body><p>{LONG}</p></body></html>'
+        self.serve("https://a.example/dated", dated)
+        self.serve("https://a.example/plain", page(LONG))
+        with mock.patch("fn.pageread.time.sleep"):
+            got = self.reading("https://a.example/dated", "https://a.example/plain")
+        self.assertEqual([r.published for r in got], ["2024-05-17", None])
+
+    def test_pages_of_one_host_are_read_one_after_another_with_a_pause(self):
+        """Two pages of one host and one of another: one pause, between the two pages that share a host."""
+        for url in ("https://a.example/1", "https://a.example/2", "https://b.example/1"):
+            self.serve(url, page(LONG))
+        with mock.patch("fn.pageread.time.sleep") as slept:
+            got = self.reading("https://a.example/1", "https://b.example/1", "https://a.example/2")
+        self.assertEqual([r.url for r in got], ["https://a.example/1", "https://b.example/1", "https://a.example/2"])
+        self.assertEqual(slept.call_args_list, [mock.call(pageread.PAUSE_S)])
+        asked = [str(r.url) for r in self.sent if "a.example" in str(r.url) and "robots" not in str(r.url)]
+        self.assertEqual(asked, ["https://a.example/1", "https://a.example/2"])
+
     def test_the_page_and_its_robots_txt_are_asked_for_as_fn_alone(self):
         """Both requests carry exactly FN/0.1 as User-Agent, without the repository address."""
         self.serve("https://a.example/p", page(LONG))
@@ -177,6 +212,17 @@ class HtmlTextTest(unittest.TestCase):
 
     def test_a_page_without_a_title_gives_none(self):
         self.assertEqual(html_text("<p>text</p>"), (None, "text"))
+
+
+class PageDateTest(unittest.TestCase):
+    def test_a_changed_date_wins_over_a_published_one_and_a_page_without_one_has_none(self):
+        """The meta tags a page carries about itself give its date; a malformed value and other tags are ignored."""
+        both = ('<meta property="article:published_time" content="2023-04-01T08:00:00Z">'
+                '<meta content="2024-05-17" itemprop="dateModified">')
+        self.assertEqual(page_date(both), "2024-05-17")
+        self.assertEqual(page_date('<meta name="date" content="2022-11-03">'), "2022-11-03")
+        self.assertIsNone(page_date('<meta name="date" content="last week"><meta name="author" content="2024-05-17">'))
+        self.assertIsNone(page_date("<p>Published 2024-05-17</p>"))
 
 
 class WindowsTest(unittest.TestCase):
