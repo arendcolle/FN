@@ -341,7 +341,8 @@ class RunCaseTest(unittest.TestCase):
             self.assertEqual(p.lost_reason, "not fetched: beyond the first 1 authors seen", p.name)
 
     def test_two_runs_give_the_same_pick_rows(self):
-        """Search ids differ between runs, but every pick row (verdict, section, rank, Belgian claims, lost at) is the same."""
+        """After one run has stored what the lanes find, two more runs differ in search id only: every pick row is the same."""
+        gold.run_case(self.worker(), self.case)
         first, second = (gold.run_case(self.worker(), self.case) for _ in range(2))
         self.assertNotEqual(first.search_id, second.search_id)
         self.assertEqual(first.picks, second.picks)
