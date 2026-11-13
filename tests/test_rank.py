@@ -628,5 +628,59 @@ class CardRecordsTest(unittest.TestCase):
                          [("Boston", "employer")])
 
 
+class VerdictTest(unittest.TestCase):
+    HERE = dict(fit="inside", km=5.0, countries=("US",), only_openalex=False, job="known")
+
+    def fused(self, ask: Question, verdicts: dict, **people) -> dict:
+        entries = [hit_entry(k, openalex=n) for n, k in enumerate(people, 1)]
+        return {c.person_id: c for c in rank.fuse("s", entries, {}, None, people, ask, verdicts)}
+
+    def test_a_no_verdict_drops_a_confirmed_person_to_the_tie_branch_on_version_2_only(self):
+        """A confirmed person with verdict no is tier 5 with a tie and a topic word, 6 without a tie; version 1 ignores it."""
+        tied, bare = found(**self.HERE), found(kinds=(), **self.HERE)
+        out = self.fused(v2(), {"tied": "no", "bare": "no"}, tied=tied, bare=bare)
+        self.assertEqual({k: c.tier for k, c in out.items()}, {"tied": 5, "bare": 6})
+        words = self.fused(v2(), {"none": "no"}, none=found(kinds=(), words=(), **self.HERE))
+        self.assertEqual(words["none"].tier, 7)
+        v1 = Question(chips=ASK.chips, area=BOSTON, country="US")
+        out = self.fused(v1, {"tied": "no", "bare": "no"}, tied=tied, bare=bare)
+        self.assertEqual({k: c.tier for k, c in out.items()}, {"tied": 1, "bare": 3})
+
+    def test_only_a_yes_confirms_a_word_match_and_partly_leads_the_unconfirmed(self):
+        """Once the check ran, a partly person and one it did not look at are tier 5 with a tie, partly first and
+        a no last; a person who meets the asked role keeps tier 1 with a partly verdict, after the yes person."""
+        people = dict(partly=found(**self.HERE), yes=found(**self.HERE), plain=found(**self.HERE), nope=found(**self.HERE),
+                      met=found(role="met", **self.HERE))
+        ask = v2(None, Chip(text="founders", origin="edited", research=False))
+        out = self.fused(ask, {"partly": "partly", "yes": "yes", "nope": "no", "met": "partly"}, **people)
+        self.assertEqual({k: c.tier for k, c in out.items()}, {"partly": 5, "yes": 1, "plain": 5, "nope": 5, "met": 1})
+        self.assertEqual(sorted(out, key=lambda k: out[k].rank), ["met", "yes", "partly", "plain", "nope"])
+        late = self.fused(ask, {"partly": "partly"}, partly=found(role="met", **self.HERE), met=found(role="met", **self.HERE))
+        self.assertEqual({k: c.tier for k, c in late.items()}, {"partly": 1, "met": 5})
+        unchecked = self.fused(v2(), {}, plain=found(**self.HERE))
+        self.assertEqual(unchecked["plain"].tier, 1)
+        v1 = Question(chips=ASK.chips, area=BOSTON, country="US")
+        out = self.fused(v1, {"partly": "partly", "yes": "yes"}, **people)
+        self.assertEqual({c.tier for c in out.values()}, {1})
+
+    def test_a_person_the_check_sent_without_a_verdict_keeps_the_tier(self):
+        """A person in unsure (failed batch, skipped line) is not demoted as an unchecked word match."""
+        entries = [hit_entry(k, openalex=n) for n, k in enumerate(("plain", "lost"), 1)]
+        people = dict(plain=found(**self.HERE), lost=found(**self.HERE))
+        out = {c.person_id: c.tier for c in rank.fuse("s", entries, {}, None, people, v2(), {"x": "yes"}, unsure=["lost"])}
+        self.assertEqual(out, {"plain": 5, "lost": 1})
+
+    def test_rank_run_passes_the_verdicts_of_its_input_to_fuse(self):
+        """RankIn.verdicts reaches the ranking."""
+        store = make_db(self)
+        person = store.resolve_person([Identifier(scheme="openalex", value="A1")], "Ann Example")
+        ctx = StepContext(search_id="s", store=store, llm=None, http=None, now=now, new_id=new_id,
+                          log=logging.getLogger("fn.step"), settings=make_settings(self))
+        with mock.patch.object(rank, "fuse", return_value=[]) as fuse:
+            rank.run(ctx, RankIn(entries=[Entry(name_key="a", person_ids=[person.id], lane_ranks={"openalex": 1})], chips=Chips(),
+                                 verdicts={person.id: "no"}))
+        self.assertEqual(fuse.call_args.args[-1], {person.id: "no"})
+
+
 if __name__ == "__main__":
     unittest.main()

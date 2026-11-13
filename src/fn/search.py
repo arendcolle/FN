@@ -4,10 +4,12 @@ import logging
 import sys
 from collections.abc import Callable
 
-from fn import parse, rank, resolve
+from fn import fitcheck, parse, rank, resolve
 from fn.contracts import (
     Chips,
     Considered,
+    FitIn,
+    FitOut,
     LaneIn,
     LaneOut,
     ParseIn,
@@ -16,6 +18,7 @@ from fn.contracts import (
     PublishOut,
     RankIn,
     ResolveIn,
+    ResolveOut,
     SaveIn,
     SaveOut,
     Search,
@@ -43,11 +46,35 @@ def publish(outs: list[LaneOut]) -> Callable[[StepContext, PublishIn], PublishOu
     return step
 
 
-def finish(ctx: StepContext, outs: list[LaneOut], chips: Chips) -> None:
-    """Run the steps after the lanes in order: resolve the lane outputs, rank the entries and save the candidates."""
-    resolved = run_step(ctx, "resolve", resolve.run, ResolveIn(outs=outs))
-    ranked = run_step(ctx, "rank", rank.run, RankIn(entries=resolved.entries, chips=chips))
+def rank_and_save(ctx: StepContext, resolved: ResolveOut, chips: Chips, fit: FitOut) -> None:
+    ranked = run_step(ctx, "rank", rank.run,
+                      RankIn(entries=resolved.entries, chips=chips, verdicts=fit.verdicts, unsure=fit.unsure))
     run_step(ctx, "save", save, SaveIn(candidates=ranked.candidates, flags=resolved.flags))
+
+
+def finish(ctx: StepContext, outs: list[LaneOut], chips: Chips) -> None:
+    """Run the steps after the lanes in order: resolve the lane outputs, rank the entries, save the candidates, ask
+    the model which stored people fit the question, and rank and save again when it answered.
+
+    A fit step that raises leaves the first ranking saved.
+    """
+    resolved = run_step(ctx, "resolve", resolve.run, ResolveIn(outs=outs))
+    rank_and_save(ctx, resolved, chips, FitOut())
+    try:
+        fit = run_step(ctx, "fit", fitcheck.run, FitIn(question=ctx.store.get_search(ctx.search_id).question, chips=chips))
+    except Exception:  # noqa: BLE001 any error is kept on the step row and the first ranking stands
+        return
+    if fit.verdicts:
+        rank_and_save(ctx, resolved, chips, fit)
+
+
+def stored_fit(ctx: StepContext) -> FitOut:
+    """The output of the search's last fit step that ended ok, else an empty one."""
+    for step in reversed(ctx.store.list_steps(ctx.search_id)):
+        if step.step == "fit" and step.status == "ok":
+            output = ctx.store.get_payload(step.id)[1]
+            return FitOut.model_validate_json(output) if output else FitOut()
+    return FitOut()
 
 
 def first_heading(ctx: StepContext) -> int:
@@ -57,7 +84,8 @@ def first_heading(ctx: StepContext) -> int:
 
 
 def refinish(ctx: StepContext, search: Search) -> None:
-    """Run finish over the stored outputs of the search's lane steps and its stored chips.
+    """Resolve, rank and save the stored outputs of the search's lane steps with its stored chips and the verdicts of
+    its last fit step, and make no model call.
 
     A lane step that did not end ok counts as an empty output. Raises ValueError with the search id when
     no lane step has a stored output.
@@ -69,7 +97,8 @@ def refinish(ctx: StepContext, search: Search) -> None:
         outs.append(LaneOut.model_validate_json(output) if output else LaneOut(lane=step.step[5:], query="", total_seen=0))
     if not stored:
         raise ValueError(f"search {search.id} has no stored lane outputs")
-    finish(ctx, outs, search.chips)
+    resolved = run_step(ctx, "resolve", resolve.run, ResolveIn(outs=outs))
+    rank_and_save(ctx, resolved, search.chips, stored_fit(ctx))
 
 
 def run(ctx: StepContext, search: Search) -> None:
