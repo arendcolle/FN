@@ -36,9 +36,9 @@ This list holds every user-facing string the new and changed parts introduce, gr
 - Done with a source that could not be read: "Some sources could not be read, so this list may be incomplete." and the button "Search again"
 - Stopped after finding people: "This search stopped before it finished." and the button "Run again"
 - Stopped before finding anyone (Notice): title "This search stopped", text "FN ran into a problem before it found anyone. Your question is kept, so Try again runs it once more.", button "Try again"
-- Headings, in order, each followed by its count: "In your network", "Topic and a tie to Flanders", "Topic, no known tie", "Tie, topic not confirmed", "Other people found". A search stored before this round: "New"
+- Headings, in order, each followed by its count: "In your network", "Topic and a tie to Flanders or Belgium", "Topic, no known tie", "Tie, topic not confirmed", "Other people found". A search stored before this round: "New"
 - Card reason line: "`{reason, from a stored fact}` · `{source short name}`", at most 15 words with the source, for example "Builds 6G channel models at Columbia · columbia.edu"
-- Card second line: "`{tie in words}` · `{place fit}`". Tie: for example "Studied at Ghent University", or "No known tie to Flanders". Place fit: "in `{city or state}`", "elsewhere in the US", "place unknown"
+- Card second line: the tie in words, for example "Studied at Ghent University". Under "Topic, no known tie" the line is left out unless the place is unknown. With no tie under another heading: "No known tie to Flanders". Place words stand only when the role line shows no place: "place unknown". Tie and "place unknown" together: "`{tie in words}` · place unknown"
 - Combined line: "Combined from `{n}` records", a link to Sources on the person page
 - Same name: "Same name as `{name}` in your network", buttons "Same person", "Add as new", "Skip"
 - After Same person: "Added to your network", "· same person as `{name}`", "Undo"
@@ -69,7 +69,7 @@ This list holds every user-facing string the new and changed parts introduce, gr
 - After Remove from network (Banner): "`{name}` removed from your network." with "Undo"
 - Not in the network: "Add", "Skip". With a same-name network person: "Same name as `{name}` in your network", "Same person", "Add as new", "Skip"
 - After Add: "Added to your network", "Undo"
-- Why block heading: "Why for this search". Lines: the card's reason line, the tie in words or "No known tie to Flanders", the place words ("In `{city}`", "Elsewhere in the US", "Place unknown")
+- Why block heading: "Why for this search". Lines, each fact once: the card's reason line, the tie in words or "No known tie to Flanders", and "Place unknown" when the head shows no place
 - Summary keys: "Studied", "Tie to Flanders" (the tie's organization or place lies in Flanders) or "Tie to Belgium" (any other tie, Brussels and an unknown region included), "Contact". The tie value is the tie in the words of a fact. "Studied" is left out when the tie is that study. Contact value: "`{email}` · `{phone}`", or "Not found"
 - Section headings: "Work", "Education", "Ties to Flanders and Belgium", "Places", "Contact", "Sources", "Possible matches"
 - Under a section of more than three facts: "Show `{n}` more"
@@ -79,7 +79,7 @@ This list holds every user-facing string the new and changed parts introduce, gr
   - "Studied at": "Studied at KU Leuven, 2008–2013"
   - "Fellow of": "Fellow of Belgian American Educational Foundation, 2015"
   - "Member of": "Member of Koninklijke Vlaamse Academie van België voor Wetenschappen en Kunsten, 2021"
-  - "Honorary consul for": "Honorary consul for Belgium"
+  - "Consul for": "Consul for Belgium"
   - "Hosted by": "Hosted by Massachusetts Institute of Technology, 2015"
   - "Named at", for an affiliation a record or a list gives without a job: "Named at Chalmers University of Technology, 2009–2026"
   - "Lives in": "Lives in Boston, MA"

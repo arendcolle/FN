@@ -50,7 +50,7 @@ class ClaimViewTest(unittest.TestCase):
             (claim(relation="hosted_by", value="MIT"), None, "Hosted by MIT"),
             (claim(relation="member_of", value="KVAB"), None, "Member of KVAB"),
             (claim(relation="fellow_of", value="Example Foundation"), None, "Fellow of Example Foundation"),
-            (claim(relation="consul_for", value="Belgium"), None, "Honorary consul for Belgium"),
+            (claim(relation="consul_for", value="Belgium"), None, "Consul for Belgium"),
             (claim("role", "Research scientist", relation="fellow_of"), None, "Research scientist"),
             (claim("topic", "6G"), None, "Topic: 6G"),
             (claim("location", "Leuven", relation="born_in"), None, "Born in Leuven"),

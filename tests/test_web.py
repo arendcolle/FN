@@ -266,8 +266,7 @@ class WebTest(unittest.TestCase):
         self.assertIn(f'data-person="{anne}"><h3 class="fn-card__name text-name"><a href="/people/{anne}?search={search_id}'
                       f'&amp;card={anne}&amp;from=card">Anne Example</a></h3>', page)
         self.assertIn("Nokia Bell Labs · Murray Hill, NJ", page)
-        self.assertIn('<p class="fn-card__reason text-body">Worked at ULB, 2001–2004 · <a href="/sources/src-anne-0?claim=', page)
-        self.assertIn('class="fn-card__source">example.org</a></p>', page)
+        self.assertNotIn("Worked at ULB, 2001", page)
         self.assertIn('<p class="fn-card__reason text-body">Topic: ULB history · <a href="/sources/src-bob?claim=', page)
         self.assertNotIn("“", page)
         self.assertNotIn("date unknown", page)
@@ -295,8 +294,8 @@ class WebTest(unittest.TestCase):
         self.store.save_candidates("s1", [Candidate(search_id="s1", person_id=anne, person_ids=[anne], section="new",
                                                     rank=1, score=1.0, lane_ranks={"openalex": 1}, hit_person_ids=[anne])], [])
         page = self.client().get("/searches/s1").text
-        self.assertIn('<p class="fn-card__reason text-body">Studied at KU Leuven, 2012–2017 · <a href="/sources/src-oa?claim=', page)
-        self.assertIn('class="fn-card__source">OpenAlex record</a></p>', page)
+        self.assertNotIn("fn-card__reason", page)
+        self.assertIn("Studied at KU Leuven", page)
         self.assertNotIn("display_name:", page)
 
     def resolve(self, key: str, name: str) -> str:
