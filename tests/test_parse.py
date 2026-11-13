@@ -84,17 +84,14 @@ class ParseTest(unittest.TestCase):
         self.addCleanup(worker.shutdown)
         return worker.execute(worker.create_search(question).id)
 
-    def test_span_not_in_the_question_is_rejected(self):
-        """A span whose slice differs from the chip text, or lies outside the question, raises SpanError."""
-        for span in (Span(start=0, end=4), Span(start=5, end=500), Span(start=6, end=3)):
-            chips = Chips(topics=[Chip(text="wind", span=span, origin="parsed")])
-            with self.assertRaises(parse.SpanError):
-                parse.check_spans("Who knows wind?", chips)
-        place = Chips(place=Place(text="Boston", span=Span(start=0, end=6), origin="parsed"))
-        with self.assertRaises(parse.SpanError):
-            parse.check_spans("Who knows wind?", place)
-        with self.assertRaises(parse.SpanError):
-            parse.check_spans("Who knows wind?", Chips(topics=[Chip(text="wind", origin="parsed")]))
+    def test_span_on_the_wrong_word_or_outside_the_question_is_repaired(self):
+        """A wrong, reversed, out-of-range or missing span is replaced by the position of the chip's text."""
+        question = "Who knows wind?"
+        for span in (Span(start=0, end=4), Span(start=5, end=500), Span(start=6, end=3), None):
+            chips = Chips(topics=[Chip(text="wind", span=span, origin="parsed")],
+                          place=Place(text="knows", span=Span(start=0, end=5), origin="parsed"))
+            fixed = parse.check_spans(question, chips)
+            self.assertEqual((fixed.topics[0].span, fixed.place.span), (Span(start=10, end=14), Span(start=4, end=9)))
 
     def test_edited_chips_without_spans_are_kept(self):
         """A chip with no span, as the form sends it after an edit, passes the check unchanged."""
@@ -102,25 +99,48 @@ class ParseTest(unittest.TestCase):
                       place=Place(text="Gent", origin="edited"))
         self.assertIs(parse.check_spans("Who knows wind?", chips), chips)
 
-    def test_span_off_by_up_to_two_characters_is_moved_onto_the_text(self):
-        """A span at most two characters from its chip's text is moved onto it; three or more is rejected."""
-        question = "Who knows AI search in San Diego?"
-        chips = Chips(topics=[Chip(text="AI search", span=Span(start=11, end=20), origin="parsed")],
-                      place=Place(text="San Diego", span=Span(start=22, end=31), origin="parsed"))
-        fixed = parse.check_spans(question, chips)
-        for chip in (fixed.topics[0], fixed.place):
-            self.assertEqual(question[chip.span.start:chip.span.end], chip.text)
-        far = Chips(topics=[Chip(text="AI search", span=Span(start=13, end=22), origin="parsed")])
-        with self.assertRaises(parse.SpanError):
-            parse.check_spans(question, far)
+    def test_span_five_characters_off_is_moved_and_the_search_ends_done(self):
+        """A topic span five characters off comes back on its text, and the search does not fail."""
+        question = "Which business development people in Boston life sciences studied at a Flemish university?"
+        llm = StubLLM({"topics": [{"text": "life sciences", "span": {"start": 62, "end": 75}, "origin": "parsed"}]})
+        search = self.search_with(llm, question)
+        (topic,) = search.chips.topics
+        self.assertEqual((search.status, question[topic.span.start:topic.span.end]), ("done", "life sciences"))
 
-    def test_bad_span_from_the_llm_fails_the_step(self):
-        """A model answer with a wrong span stops the search at the parse step with a SpanError."""
-        llm = StubLLM({"topics": [{"text": "wind", "span": {"start": 0, "end": 4}, "origin": "parsed"}]})
-        with self.assertLogs("fn.worker", "ERROR"):
+    def test_text_that_stands_twice_gets_the_nearest_occurrence(self):
+        """The occurrence whose start is nearest to the claimed start wins; the first one without a claim."""
+        question = "wind and solar and wind"
+        self.assertEqual(parse.locate(question, "wind", 15), Span(start=19, end=23))
+        self.assertEqual(parse.locate(question, "wind", 3), Span(start=0, end=4))
+        self.assertEqual(parse.locate(question, "wind", None), Span(start=0, end=4))
+        self.assertIsNone(parse.locate(question, "", 0))
+
+    def test_text_in_another_case_becomes_the_questions_own_slice(self):
+        """A casefolded match keeps the question's spelling as the chip text, with an exact span."""
+        question = "Who knows AI and AI in Évora \U0001F600?"
+        chips = Chips(topics=[Chip(text="ai", span=Span(start=9, end=11), origin="parsed")],
+                      place=Place(text="évora", span=Span(start=0, end=5), origin="parsed"))
+        fixed = parse.check_spans(question, chips)
+        self.assertEqual((fixed.topics[0].text, fixed.topics[0].span), ("AI", Span(start=10, end=12)))
+        self.assertEqual((fixed.place.text, question[fixed.place.span.start:fixed.place.span.end]), ("Évora", "Évora"))
+
+    def test_text_the_question_does_not_hold_is_dropped_with_a_warning(self):
+        """A parsed chip whose text stands nowhere is dropped and logged; the other chips stay; the search ends done."""
+        llm = StubLLM({"topics": [{"text": "machine learning", "span": {"start": 10, "end": 26}, "origin": "parsed"},
+                                  {"text": "AI", "span": {"start": 10, "end": 12}, "origin": "parsed"}]})
+        with self.assertLogs("fn.parse", "WARNING") as logs:
+            search = self.search_with(llm, "Who knows AI?")
+        self.assertEqual((search.status, [c.text for c in search.chips.topics]), ("done", ["AI"]))
+        self.assertIn("chip 'machine learning' is not in the question; dropped", logs.output[0])
+
+    def test_place_and_tie_that_stand_nowhere_become_none(self):
+        """A dropped place or tie chip is None, and a search whose every chip is dropped still ends done."""
+        llm = StubLLM({"topics": [{"text": "solar", "origin": "parsed"}],
+                       "tie": {"text": "Flemish", "span": {"start": 0, "end": 7}, "origin": "parsed"},
+                       "place": {"text": "Boston", "span": {"start": 0, "end": 6}, "origin": "parsed"}})
+        with self.assertLogs("fn.parse", "WARNING"):
             search = self.search_with(llm, "Who knows wind?")
-        (step,) = self.store.list_steps(search.id)
-        self.assertEqual((search.status, step.status, step.error_type), ("failed", "error", "SpanError"))
+        self.assertEqual((search.status, search.chips.topics, search.chips.tie, search.chips.place), ("done", [], None, None))
 
     def test_model_answer_claiming_an_edited_chip_fails_the_step(self):
         """A model answer whose chip says origin edited is rejected, even with a correct span."""
@@ -180,16 +200,14 @@ class ParseTest(unittest.TestCase):
         chips = self.search_with(llm, "Who knows wind?").chips
         self.assertEqual((chips.version, chips.roles, chips.tie, chips.queries), (2, [], None, []))
 
-    def test_a_role_span_five_characters_off_fails_the_step(self):
-        """A role chip's span is checked like a topic's, so a position five characters off raises SpanError."""
+    def test_a_role_span_five_characters_off_is_moved_onto_the_role(self):
+        """A role chip's span is repaired like a topic's, so a position five characters off ends done."""
         llm = StubLLM({"roles": [{"text": "founders", "span": {"start": 19, "end": 27}, "origin": "parsed"}]})
-        with self.assertLogs("fn.worker", "ERROR"):
-            search = self.search_with(llm, "Which Flemish founders know wind?")
-        (step,) = self.store.list_steps(search.id)
-        self.assertEqual((search.status, step.error_type), ("failed", "SpanError"))
+        search = self.search_with(llm, "Which Flemish founders know wind?")
+        self.assertEqual((search.status, search.chips.roles[0].span), ("done", Span(start=14, end=22)))
 
-    def test_a_role_span_two_off_is_moved_onto_the_role(self):
-        """A role and a tie span within SPAN_SLACK of their text are moved onto it."""
+    def test_a_role_and_tie_span_off_are_moved_onto_their_text(self):
+        """A role and a tie span that miss their text are moved onto it."""
         question = "Which Flemish founders know wind?"
         chips = Chips(roles=[chip("founders", span=Span(start=16, end=24))], tie=chip("Flemish", span=Span(start=6, end=13)))
         fixed = parse.check_spans(question, chips)

@@ -7,9 +7,6 @@ from fn.steps import StepContext
 
 log = logging.getLogger("fn.parse")
 
-# The model's character offsets are sometimes off by one; a larger shift means a made-up position.
-SPAN_SLACK = 2
-
 FUNCTION_WORDS = {name_key(w) for w in """
 the a an and or but nor of in on at to for from by with without about as into over under between through during
 before after up down out off than then so if while who whom whose which what when where why how that this these those
@@ -40,7 +37,7 @@ professionnel professionnels deskundige deskundigen vakman
 
 
 class SpanError(ValueError):
-    """A chip's span is out of range or does not hold the chip's text."""
+    """The model's answer breaks a rule of the parse contract."""
 
 
 def content_words(text: str) -> list[str]:
@@ -110,56 +107,73 @@ def _all_chips(chips: Chips) -> list[Chip | Place]:
             *([chips.place] if chips.place else [])]
 
 
-def _nearby(question: str, text: str, start: int) -> Span | None:
-    """The span of text in question that starts within SPAN_SLACK characters of start, if any."""
-    for shift in sorted(range(-SPAN_SLACK, SPAN_SLACK + 1), key=abs):
-        at = start + shift
-        if at >= 0 and question[at:at + len(text)] == text:
-            return Span(start=at, end=at + len(text))
+def locate(question: str, text: str, near: int | None) -> Span | None:
+    """The span of text in question whose start is nearest to near (the first one when near is None or on a tie).
+
+    Compared exactly first, then casefolded when that finds nothing. None when text stands nowhere or is empty.
+    """
+    if not text:
+        return None
+    folded = question.casefold(), text.casefold()
+    for haystack, needle in ((question, text), folded if len(folded[0]) == len(question) else ("", text)):
+        starts, at = [], haystack.find(needle)
+        while at != -1:
+            starts.append(at)
+            at = haystack.find(needle, at + 1)
+        if starts:
+            start = min(starts, key=lambda s: abs(s - near)) if near is not None else starts[0]
+            return Span(start=start, end=start + len(text))
     return None
 
 
-def check_spans(question: str, chips: Chips) -> Chips:
-    """Return chips whose spans match the question; raise SpanError otherwise.
+def _checked[C: (Chip, Place)](question: str, chip: C) -> C | None:
+    """The chip with a span on its text in question, or None when the text stands nowhere in it.
 
-    A span off by at most SPAN_SLACK characters is moved onto the chip's text and logged;
-    chips come back unchanged when nothing moved. Only an edited chip may lack a span.
+    A chip whose span already holds its text is returned as it is. An edited chip is never dropped and keeps its text.
     """
-    moved: dict[int, Span] = {}
-    for chip in _all_chips(chips):
-        span = chip.span
-        if span is None:
-            if chip.origin == "edited":
-                continue
-            raise SpanError(f"chip {chip.text!r} has no span")
-        found = question[span.start:span.end] if 0 <= span.start < span.end <= len(question) else None
-        if found == chip.text:
-            continue
-        fixed = _nearby(question, chip.text, span.start) if chip.text else None
-        if fixed is None:
-            raise SpanError(f"chip {chip.text!r} claims [{span.start}:{span.end}] of the question, which holds {found!r}")
+    span = chip.span
+    if span is None and chip.origin == "edited":
+        return chip
+    if span is not None and 0 <= span.start < span.end <= len(question) and question[span.start:span.end] == chip.text:
+        return chip
+    fixed = locate(question, chip.text, span.start if span else None)
+    if fixed is None:
+        if chip.origin == "edited":
+            return chip
+        log.warning("chip %r is not in the question; dropped", chip.text)
+        return None
+    text = question[fixed.start:fixed.end]
+    if span is None:
+        log.info("span of chip %r set to [%d:%d]", chip.text, fixed.start, fixed.end)
+    else:
         log.info("span of chip %r moved from [%d:%d] to [%d:%d]", chip.text, span.start, span.end, fixed.start, fixed.end)
-        moved[id(chip)] = fixed
-    if not moved:
-        return chips
+    return chip.model_copy(update={"span": fixed} if chip.origin == "edited" else {"span": fixed, "text": text})
 
-    def fix[C: (Chip, Place)](chip: C) -> C:
-        return chip.model_copy(update={"span": moved[id(chip)]}) if id(chip) in moved else chip
 
-    return chips.model_copy(update={
-        "topics": [fix(c) for c in chips.topics],
-        "institutions": [fix(c) for c in chips.institutions],
-        "roles": [fix(c) for c in chips.roles],
-        "tie": fix(chips.tie) if chips.tie else None,
-        "place": fix(chips.place) if chips.place else None,
+def check_spans(question: str, chips: Chips) -> Chips:
+    """Return chips whose spans point at their own text in the question.
+
+    A wrong or missing span is replaced by the occurrence of the text nearest to the claimed start, and a text that
+    differs only in case becomes the question's own slice. A parsed chip whose text stands nowhere is dropped.
+    """
+    def keep(found: list[Chip]) -> list[Chip]:
+        return [c for c in (_checked(question, c) for c in found) if c is not None]
+
+    result = chips.model_copy(update={
+        "topics": keep(chips.topics),
+        "institutions": keep(chips.institutions),
+        "roles": keep(chips.roles),
+        "tie": _checked(question, chips.tie) if chips.tie else None,
+        "place": _checked(question, chips.place) if chips.place else None,
     })
+    return chips if result == chips else result
 
 
 def run(ctx: StepContext, inp: ParseIn) -> ParseOut:
     """Ask the LLM for chips and return them once their spans check out.
 
     Any ref from the model is dropped; an institution chip gets its ror: ref from data/org_aliases.csv only.
-    Raises SpanError for a bad or missing span, and for a model answer that claims an edited chip.
+    Raises SpanError for a model answer that claims an edited chip.
     """
     if ctx.llm is None:
         raise RuntimeError("the parse step needs an LLM")
