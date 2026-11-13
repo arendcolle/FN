@@ -82,21 +82,95 @@ class FtsQueryTest(unittest.TestCase):
                 self.assertEqual((out.query, out.hits), ("", []))
                 self.assertEqual([c.reason for c in out.considered], [seeds.NO_QUERY])
 
-    def test_claims_from_lane_and_vendor_sources_are_no_seed_hit_and_page_claims_are(self):
-        """The seed lane matches claims from seed and page sources only.
+    def add(self, kind: str, text: str, key: str | None = None) -> str:
+        """A topic claim quoted from a new source of the given kind, for a new person named key (default kind)."""
+        key = key or kind
+        source = Source(id=f"src-{key}", kind=kind, url=f"https://example.org/{key}", text=text,
+                        content_hash=hashlib.sha256(text.encode()).hexdigest())
+        person = self.store.resolve_person([Identifier(scheme="seed", value=key)], key)
+        self.store.upsert_claim(ClaimDraft(person_id=person.id, kind="topic", value=text, quote=text, quote_start=0,
+                                           quote_end=len(text), source=source))
+        self.people[person.id] = key
+        return key
 
-        Claims from record, vendor_record and vendor_page sources never become seed hits.
+    def test_version_1_matches_every_source_kind_and_a_non_research_role_skips_records(self):
+        """Version 1 chips match claims from every source kind.
+
+        A version 2 question with only non-research role chips leaves out record sources.
         """
         text = "Leads 6G networks research"
-        for kind in ("record", "vendor_record", "vendor_page", "page"):
-            source = Source(id=f"src-{kind}", kind=kind, url=f"https://example.org/{kind}", text=text,
-                            content_hash=hashlib.sha256(text.encode()).hexdigest())
-            person = self.store.resolve_person([Identifier(scheme="seed", value=kind)], kind)
-            self.store.upsert_claim(ClaimDraft(person_id=person.id, kind="topic", value=text, quote=text, quote_start=0,
-                                               quote_end=len(text), source=source))
-            self.people[person.id] = kind
+        kinds = ("record", "vendor_record", "vendor_page", "page", "seed_page")
+        for kind in kinds:
+            self.add(kind, text)
         out = self.lane(topic("6G"))
-        self.assertCountEqual([self.people[h.person_id] for h in out.hits], ["6g", "page"])
+        self.assertCountEqual([self.people[h.person_id] for h in out.hits], ["6g", *kinds])
+        chips = Chips(version=2, topics=[Chip(text="6G", origin="edited")],
+                      roles=[Chip(text="experts", origin="edited", research=False)])
+        out = self.lane(chips)
+        self.assertCountEqual([self.people[h.person_id] for h in out.hits], ["6g", *kinds[1:]])
+
+    def test_each_row_of_the_source_kind_table(self):
+        """Records are searched for version 1, version 2 without a role and with a research role, and not otherwise."""
+        for kind in ("record", "vendor_record", "vendor_page", "seed_page"):
+            self.add(kind, "Leads 6G networks research")
+
+        def role(research: bool) -> Chip:
+            return Chip(text="founders", origin="edited", research=research)
+
+        topics = [Chip(text="6G", origin="edited")]
+        rows = ((topic("6G"), True), (Chips(version=2, topics=topics), True),
+                (Chips(version=2, topics=topics, roles=[role(True), role(False)]), True),
+                (Chips(version=2, topics=topics, roles=[role(False)]), False))
+        for chips, searched in rows:
+            with self.subTest(chips=chips):
+                found = {self.people[h.person_id] for h in self.lane(chips).hits}
+                self.assertEqual(found, {"6g", "record", "vendor_record", "vendor_page", "seed_page"} - (
+                    set() if searched else {"record"}))
+
+    def test_records_rank_after_every_other_kind(self):
+        """A record that scores better than a seed person still ranks after it, so records only fill the cap."""
+        self.add("record", "6G")
+        self.add("seed_page", "Leads 6G networks research and many other things besides")
+        out = self.lane(topic("6G"))
+        self.assertEqual([self.people[h.person_id] for h in out.hits], ["6g", "seed_page", "record"])
+
+    def test_role_words_follow_the_topic_words_and_precede_the_institution(self):
+        chips = Chips(version=2, topics=[Chip(text="nanotech", origin="edited")], roles=[Chip(text="founders", origin="edited")],
+                      institutions=[Chip(text="MIT", origin="edited")])
+        self.assertEqual(seeds.fts_query(chips, lambda text: ["M.I.T."]), '"nanotech" OR "founders" OR "MIT" OR "M.I.T."')
+
+    def test_related_query_leaves_out_a_term_of_the_first_query_and_is_empty_for_version_1(self):
+        chips = Chips(version=2, topics=[Chip(text="6G", origin="edited", related=["6g", 'next "gen" AND net'])],
+                      roles=[Chip(text="founders", origin="edited", related=["Founders", "ceo"])])
+        first = seeds.fts_query(chips)
+        self.assertEqual(seeds.related_query(chips, first), '"next ""gen"" AND net" OR "ceo"')
+        self.assertEqual(seeds.related_query(topic("6G"), '"6g"'), "")
+
+    def test_related_hits_rank_after_first_pass_hits_and_a_person_in_both_is_one_hit(self):
+        """A related word finds a person the first query misses, ranked after every first-pass hit."""
+        self.add("seed_page", "Works on nanotech", "plain")
+        self.add("seed_page", "Nanotech founder", "both")
+        self.add("seed_page", "Founder and CEO of a firm", "related")
+        chips = Chips(version=2, topics=[Chip(text="nanotech", origin="edited")],
+                      roles=[Chip(text="leaders", origin="edited", research=False, related=["founder", "ceo"])])
+        out = self.lane(chips)
+        self.assertEqual([self.people[h.person_id] for h in out.hits][2:], ["related"])
+        self.assertCountEqual([self.people[h.person_id] for h in out.hits][:2], ["plain", "both"])
+        self.assertEqual([h.rank for h in out.hits], [1, 2, 3])
+        self.assertEqual(out.considered[2].reason, "fts rank 3, related word, matched 'Founder and CEO of a firm'")
+        self.assertEqual(out.query, '"nanotech" OR "leaders"; related: "founder" OR "ceo"')
+
+    def test_the_cap_counts_both_passes(self):
+        """280 first-pass hits and 50 related hits give 300 hits, and the last 30 rows are below the cap."""
+        for i in range(280):
+            self.add("seed_page", f"Studies zebrafish number {i}", f"bulk{i}")
+        for i in range(50):
+            self.add("seed_page", f"Studies danio number {i}", f"rel{i}")
+        out = self.lane(Chips(version=2, topics=[Chip(text="zebrafish", origin="edited", related=["danio"])]))
+        self.assertEqual((len(out.hits), out.total_seen), (300, 330))
+        self.assertEqual([c.reason for c in out.considered[-30:]],
+                         [f"fts rank {r}, related word, below the top 300" for r in range(301, 331)])
+        self.assertEqual(sum(self.people[h.person_id].startswith("rel") for h in out.hits), 20)
 
     def test_an_imported_affiliation_is_a_seed_hit(self):
         """Claims that quote an import or staff source match, so imported people are found by organization and role."""
@@ -313,6 +387,13 @@ class SeedPlaceTest(unittest.TestCase):
                 out = self.lane(chips)
                 self.assertEqual(self.keys(out), expected)
                 self.assertNotIn("place", {c.stage for c in out.considered})
+
+    def test_a_role_chip_beside_a_city_runs_the_place_search_after_the_role_hits(self):
+        """Role words alone leave the place search on, so the people near the city follow the role hits."""
+        self.claim("founder1", "Founders club member")
+        self.lives("consul", "Boston", 42.36, -71.06)
+        chips = Chips(version=2, roles=[Chip(text="founders", origin="edited", research=False)], place=BOSTON)
+        self.assertEqual(self.keys(self.lane(chips)), ["founder1", "consul"])
 
 
 if __name__ == "__main__":
