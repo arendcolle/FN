@@ -320,8 +320,8 @@ class FlowTest(unittest.TestCase):
         page = self.get(str(running.url))
         words = page.words
         self.assertLess(words.index("In your network 1"), words.index("Nora Network"))
-        self.assertLess(words.index("Nora Network"), words.index("New 1"))
-        self.assertLess(words.index("New 1"), words.index("Pim Newcomer"))
+        self.assertLess(words.index("Nora Network"), words.index("Topic and a tie to Flanders 1"))
+        self.assertLess(words.index("Topic and a tie to Flanders 1"), words.index("Pim Newcomer"))
         self.assertEqual(self.card(page, "Nora Network").forms, [])
         self.assertEqual([f.buttons for f in self.card(page, "Pim Newcomer").forms], [["Add"], ["Skip"]])
 

@@ -17,6 +17,7 @@ from fn.contracts import (
     ImportPreview,
     ListPlace,
     NetworkFilter,
+    ResultsHeading,
     Search,
     Source,
     normalize,
@@ -164,6 +165,11 @@ def network_page(store: Store, flt: NetworkFilter, limit: int, view: str, top: S
     return page("Network", top, block, current="network", body_class="fn-app", extra_head=MAP_HEAD), facts
 
 
+def section_heading(title: str, count: int) -> Safe:
+    """A heading of the results list with the number of people under it; no number when it is zero."""
+    return h.h2(title, " ", h.span(f"{count:,}") if count else None, class_="fn-section text-label")
+
+
 def person_cards(store: Store, search: Search, shown: int, show_skipped: bool, view: str,
                  active: bool) -> tuple[list[object], bool, dict]:
     """The count line, the shown cards under their section headings, Show more and the skipped line.
@@ -176,8 +182,11 @@ def person_cards(store: Store, search: Search, shown: int, show_skipped: bool, v
     if not found.cards and not found.skipped_hidden:
         return [], False, facts
     counts = {"network": len(found.network), "new": len(found.new)}
-    sections = [[h.h2(title, " ", h.span(f"{counts[section]:,}"), class_="fn-section text-label"),
-                 [result_card(c, search.id, here, shown) for c in group]]
+    firsts = {x.first_key: x for x in found.headings}
+    sections = [[None if section == "new" and firsts else
+                 section_heading(title, counts[section]),
+                 [[section_heading(firsts[c.key].title, firsts[c.key].count) if c.key in firsts else None,
+                   result_card(c, search.id, here, shown)] for c in group]]
                 for section, title in SECTIONS.items() if (group := [c for c in found.cards if c.section == section])]
     count = None if active else count_line(found.total, found.not_on_map,
                                            [h.a("Export", href=f"/searches/{search.id}/export.csv")] if found.total else [])

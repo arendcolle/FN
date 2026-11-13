@@ -26,7 +26,7 @@ BUNDLE_SHA = "4f1a844883605813c3dd6c1e0faf0b156f2618607965ac516bf6094b5c41da81"
 YEAR = str(now().year)
 
 
-class ResultsPageTest(unittest.TestCase):
+class ResultsPageCase(unittest.TestCase):
     def setUp(self):
         self.settings = make_settings(self)
         self.store = make_db(self, self.settings)
@@ -73,6 +73,8 @@ class ResultsPageTest(unittest.TestCase):
     def card(self, html: str, key: str) -> str:
         return re.search(rf'<article [^>]*id="card-{key}".*?</article>', html, re.DOTALL).group(0)
 
+
+class ResultsPageTest(ResultsPageCase):
     def test_a_list_of_21_shows_20_cards_then_show_1_more(self):
         """The first page holds 20 cards and Show more names the one left; ?shown=40 shows all 21 and no Show more."""
         people = [self.person(f"Person {n:02}") for n in range(21)]
