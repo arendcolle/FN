@@ -48,6 +48,8 @@ SPECS: dict[str, ListSpec] = {
     "fayat": ListSpec(("fellow_of", "Flemish Government")),
     "wikidata": ListSpec(None, job=True, place=True),
     "chambers": ListSpec(None, job=True),
+    "belcham": ListSpec(None, job=True),
+    "advisors": ListSpec(None, job=True, place=True),
     "missions": ListSpec(None, job=True),
 }
 # The list claims by list; the other lists' rows carry no list claim.
