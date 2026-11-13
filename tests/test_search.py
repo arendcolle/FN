@@ -71,6 +71,41 @@ class SearchStepsTest(unittest.TestCase):
         self.assertEqual([s.step for s in self.store.list_steps(search_id)],
                          ["parse", "lane:seeds", "publish", "lane:web", "resolve", "rank", "save"])
 
+    def run_with(self, given: Chips, lanes) -> str:
+        search_id = self.worker.create_search("Who knows wind?", given, "edited").id
+        with mock.patch("fn.search.LANES", lanes):
+            self.worker.execute(search_id)
+        return search_id
+
+    def test_openalex_is_skipped_when_no_research_is_asked_and_runs_for_version_1_chips(self):
+        """Version 2 chips with only a business role give a skipped lane:openalex step and no call; version 1 runs it."""
+        calls = []
+        seen = self.finds("openalex", "Bo Lind")
+        counted = SimpleNamespace(name="openalex", run=lambda ctx, inp: calls.append(1) or seen.run(ctx, inp))
+        founders = Chip(text="founders", origin="edited", research=False)
+        for given, status, called in ((Chips(roles=[founders], version=2), "skipped", 0),
+                                      (Chips(roles=[founders]), "ok", 1)):
+            with self.subTest(version=given.version):
+                calls.clear()
+                search_id = self.run_with(given, [self.finds("seeds", "Ann Smith"), counted])
+                steps = {s.step: s for s in self.store.list_steps(search_id)}
+                self.assertEqual((steps["lane:openalex"].status, len(calls)), (status, called))
+                self.assertEqual(self.store.get_search(search_id).status, "done")
+                self.assertEqual(self.store.failed_lanes(search_id), [])
+
+    def test_web_topic_gets_the_tier_1_and_2_people_the_publish_before_it_saved(self):
+        """first_heading counts the kept new-section people in tier 1 or 2 that the earlier lanes' publish saved."""
+        got = {}
+
+        def watch(ctx: StepContext, inp: LaneIn) -> LaneOut:
+            got[ctx.store.list_steps(ctx.search_id)[-1].step] = inp.first_heading
+            return LaneOut(lane="web_topic", query="", total_seen=0)
+
+        lanes = [self.finds("seeds", "Ann Smith"), self.finds("web", "Pat Lee"), SimpleNamespace(name="web_topic", run=watch)]
+        with mock.patch("fn.rank.tier", return_value=2):
+            self.run_with(CHIPS, lanes)
+        self.assertEqual(got, {"lane:web_topic": 2})
+
     def test_a_lane_that_raises_is_kept_as_an_error_and_the_search_ends_done(self):
         """The failing lane's step holds the error, failed_lanes names it and the other lanes' people are saved."""
         search_id = self.execute([self.finds("seeds", "Ann Smith"), self.raises("openalex"), self.finds("web", "Pat Lee")])

@@ -8,7 +8,7 @@ from unittest import mock
 import httpx
 from pydantic import SecretStr
 
-from fn import llm, net
+from fn import llm, net, websearch
 from fn.contracts import Chip, Chips, LaneIn, LaneOut, Place, page_source
 from fn.lanes import web
 from fn.steps import StepContext, run_step
@@ -76,7 +76,7 @@ class BodyTest(unittest.TestCase):
 
         The helper itself must flag a stray key, at the top and inside advanced_settings.
         """
-        extract = web.extract_body([EVENT], "objective")
+        extract = websearch.extract_body([EVENT], "objective")
         for body, schema in ((web.request(NEW_YORK), "V1SearchRequest"), (extract, "V1ExtractRequest")):
             self.assertEqual(unknown(body, schema), [])
         self.assertEqual(unknown({**web.request(NEW_YORK), "max_results": 5}, "V1SearchRequest"), ["max_results"])
@@ -102,9 +102,26 @@ class BodyTest(unittest.TestCase):
             with self.subTest(objective=objective):
                 self.assertEqual(web.request(given), {"objective": objective, "search_queries": queries, "mode": "fast"})
 
+    def test_roles_join_the_objective_and_the_queries_and_tie_false_leaves_belgium_out(self):
+        """Role chips come first in the objective, one query each with the place; tie=False starts "People who are"."""
+        given = Chips(roles=[Chip(text="founders", origin="edited"), Chip(text="business leaders", origin="edited")],
+                      topics=[Chip(text="nanotech", origin="edited")], place=Place(text="New York", origin="edited"))
+        self.assertEqual(web.objective(given), "People with a connection to Belgium who are founders, business leaders "
+                                               "and work on nanotech in New York")
+        self.assertEqual(websearch.rule_queries(given), ["nanotech New York", "founders New York", "business leaders New York"])
+        self.assertEqual(web.objective(given, tie=False),
+                         "People who are founders, business leaders and work on nanotech in New York")
+
+    def test_more_than_five_queries_are_cut_at_five(self):
+        """Topics, roles and institutions together give at most 5 queries, in that order."""
+        given = Chips(topics=[Chip(text=f"t{i}", origin="edited") for i in range(3)],
+                      roles=[Chip(text=f"r{i}", origin="edited") for i in range(2)],
+                      institutions=[Chip(text="imec", origin="edited")])
+        self.assertEqual(websearch.rule_queries(given), ["t0", "t1", "t2", "r0", "r1"])
+
     def test_extract_body_asks_for_12000_characters_of_full_content_and_a_20s_fetch(self):
         """Extract gets the URLs in the order given, the search objective, full content up to 12,000 characters and 20 s."""
-        self.assertEqual(web.extract_body([EVENT, NEWS], "who"), {
+        self.assertEqual(websearch.extract_body([EVENT, NEWS], "who"), {
             "urls": [EVENT, NEWS], "objective": "who",
             "advanced_settings": {"full_content": {"max_chars_per_result": 12000},
                                   "fetch_policy": {"timeout_seconds": 20}}})
@@ -197,7 +214,7 @@ class WebLaneTest(unittest.TestCase):
         self.assertEqual([r.url.path for r in self.sent], ["/v1/search", "/v1/extract"])
         self.assertEqual(json.loads(search.content), web.request(NEW_YORK))
         objective = web.request(NEW_YORK)["objective"]
-        self.assertEqual(json.loads(extract.content), web.extract_body([EVENT, FACULTY, NEWS], objective))
+        self.assertEqual(json.loads(extract.content), websearch.extract_body([EVENT, FACULTY, NEWS], objective))
         self.assertEqual({r.headers["x-api-key"] for r in self.sent}, {KEY})
         self.assertEqual(self.store.conn.execute("SELECT count(*) FROM sources").fetchone()[0], 3)
         self.assertEqual({r["kind"] for r in self.stored().values()}, {"vendor_page"})
@@ -334,6 +351,13 @@ class WebLaneTest(unittest.TestCase):
                                  ("", [], [("query", web.NO_QUERY)]))
                 self.assertEqual(self.step().status, "ok")
 
+    def test_a_role_and_a_place_alone_post_one_search(self):
+        """Roles with a place and no topic or institution still run: one Search whose query is the role and the place."""
+        given = Chips(roles=[Chip(text="founders", origin="edited")], place=Place(text="New York", origin="edited"))
+        self.run_lane(given)
+        self.assertEqual(json.loads(self.sent[0].content)["search_queries"], ["founders New York"])
+        self.assertEqual(self.sent[0].url.path, "/v1/search")
+
     def test_a_search_with_no_results_is_noted_and_extract_is_not_called(self):
         """An empty result list ends the lane after one call, with one note and no source."""
         self.search["results"] = []
@@ -372,24 +396,24 @@ class WebLaneTest(unittest.TestCase):
         self.assertEqual([c.cost_usd for c in self.store.list_calls(step.id)], [0.001, None])
         self.assertEqual(step.cost_usd, 0.001)
         self.assertIn("sku_extract_invented", step.log)
-        with self.assertLogs("fn.lanes.web", "WARNING") as logged:
-            self.assertIsNone(web.usage_cost(json.dumps(self.extract).encode()))
+        with self.assertLogs("fn.websearch", "WARNING") as logged:
+            self.assertIsNone(websearch.usage_cost(json.dumps(self.extract).encode()))
         self.assertIn("sku_extract_invented", logged.output[0])
-        self.assertEqual(web.usage_cost(json.dumps(self.search).encode()), 0.001)
+        self.assertEqual(websearch.usage_cost(json.dumps(self.search).encode()), 0.001)
 
     def test_a_priced_sku_costs_its_price_times_its_count_and_no_usage_has_no_cost(self):
         """Each SKU adds price times count; one unknown SKU among known ones still gives None; no usage gives None."""
-        with mock.patch.dict(web.PRICES, {"sku_extract_invented": 0.002}):
+        with mock.patch.dict(websearch.PRICES, {"sku_extract_invented": 0.002}):
             self.run_lane()
             step = self.step()
             costs = [c.cost_usd for c in self.store.list_calls(step.id)]
             self.assertAlmostEqual(costs[1], 0.006)
             self.assertAlmostEqual(step.cost_usd, 0.007)
             mixed = {"usage": [{"name": "sku_search", "count": 2}, {"name": "sku_other", "count": 1}]}
-            with self.assertLogs("fn.lanes.web", "WARNING"):
-                self.assertIsNone(web.usage_cost(json.dumps(mixed).encode()))
+            with self.assertLogs("fn.websearch", "WARNING"):
+                self.assertIsNone(websearch.usage_cost(json.dumps(mixed).encode()))
             for body in ({"usage": []}, {"usage": None}, {}):
-                self.assertIsNone(web.usage_cost(json.dumps(body).encode()))
+                self.assertIsNone(websearch.usage_cost(json.dumps(body).encode()))
 
 
 class WebPeopleTest(unittest.TestCase):

@@ -36,7 +36,7 @@ SourceKind = Literal["page", "record", "seed_page", "import", "vendor_record", "
 StepStatus = Literal["running", "ok", "error", "skipped", "interrupted"]
 SearchStatus = Literal["queued", "running", "done", "failed", "interrupted"]
 SearchKind = Literal["search", "job"]
-LaneName = Literal["seeds", "openalex", "web", "linkedin"]
+LaneName = Literal["seeds", "openalex", "web", "web_topic", "linkedin"]
 ChipOrigin = Literal["parsed", "edited"]
 Depth = Literal["quick"]
 IdentifierScheme = Literal["seed", "openalex", "orcid", "profile_url", "mention", "email", "import"]
@@ -722,6 +722,7 @@ class LaneIn(Model):
     search_id: str
     chips: Chips
     depth: Depth = "quick"
+    first_heading: int | None = None
 
 
 class LaneOut(Model):
