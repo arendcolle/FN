@@ -188,16 +188,16 @@ def tier(found: "evidence.Evidence | None", question: Question | None, researche
 
     On a version-2 question, a person the web researcher named for this question (researched) counts as a
     confirmed match: the researcher chose them for the question, which word matching cannot do. For anyone else
-    a verdict of "no" takes the match away. Unless the person meets the asked role, so does "partly", and so
-    does having no verdict once the fit check ran (checked): only a "yes" confirms a word match.
+    a verdict of "no" takes the match away, and so does "partly" unless the person meets the asked role. Once
+    the fit check ran (checked), a person it did not look at is no confirmed match either: a "yes" confirms.
     """
     if found is None or found.role.fit == "fails":
         return 7
     tied, fits = found.belgian.grade in TIED, place_fit(found, question) in FITS
     current = question is not None and question.chips.version >= 2
     match = confirmed(found, question)
-    unsure = verdict == "partly" or (checked and verdict is None)
-    if current and (verdict == "no" or (unsure and found.role.fit != "met")):
+    partly = verdict == "partly" and found.role.fit != "met"
+    if current and (verdict == "no" or partly or (checked and verdict is None)):
         match = False
     if match or (current and researched):
         return (1 if fits else 2) if tied else (3 if fits else 4)

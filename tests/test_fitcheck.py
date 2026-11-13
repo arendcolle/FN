@@ -110,15 +110,15 @@ class FitCheckTest(unittest.TestCase):
         self.assertEqual(len(llm.calls[0][1]["people"].splitlines()), 4)
         self.assertEqual(set(out.verdicts), {c.person_id for c in keep})
 
-    def test_75_candidates_give_three_calls_of_20_and_15_are_not_checked(self):
-        """The first 60 in rank order go out in batches of 20, each numbered from 1."""
-        for i in range(75):
-            self.person(f"Person {i:02d}")
+    def test_135_candidates_give_six_calls_of_20_and_15_are_not_checked(self):
+        """The first 120 in rank order go out in batches of 20, each numbered from 1."""
+        for i in range(135):
+            self.person(f"Person {i:03d}")
         llm = BatchLLM()
         out = self.check(llm)
-        self.assertEqual([len(d["people"].splitlines()) for _, d in llm.calls], [20, 20, 20])
+        self.assertEqual([len(d["people"].splitlines()) for _, d in llm.calls], [20] * 6)
         self.assertTrue(all(d["people"].startswith("1. ") for _, d in llm.calls))
-        self.assertEqual(set(out.verdicts), {c.person_id for c in self.people[:60]})
+        self.assertEqual(set(out.verdicts), {c.person_id for c in self.people[:120]})
 
     def test_a_wrong_number_is_ignored_and_a_missing_person_gets_no_verdict(self):
         """A row for a line the batch does not have changes nothing; a duplicate number keeps its first row."""

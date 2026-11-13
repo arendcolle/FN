@@ -5,7 +5,7 @@ from fn.llm import FixtureMissing
 from fn.steps import StepContext, fan_out
 
 TASK = "fit"
-MAX_PEOPLE = 60
+MAX_PEOPLE = 120
 BATCH = 20
 LINE_WORDS = 40
 EMPLOYER = ("works_at", "affiliated_with")
