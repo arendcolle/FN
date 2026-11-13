@@ -25,6 +25,7 @@ from fn.present import (
     PROSE,
     RESULTS_STEP,
     card,
+    card_candidate,
     cut,
     geo,
     label_of,
@@ -74,6 +75,7 @@ from fn.web.parts import (
     skipped_line,
     status_line,
     status_note,
+    summary_list,
     upload_form,
 )
 from fn.web.requests import first, form_of, store_of, worker_of
@@ -450,7 +452,8 @@ def card_decision(store: Store, candidate: Candidate, action: str, match: str) -
 
 @router.post("/searches/{search_id}/people/{person_id}/{action}")
 async def card_action(request: Request, search_id: str, person_id: str, action: str) -> Response:
-    """A card's decision; a fetch request gets the card back, any other goes to the results page at the card."""
+    """A card's decision; a fetch request gets the card back, any other goes to the results page at the card or to
+    the Person page it was pressed on."""
     if action not in CARD_ACTIONS:
         raise HTTPException(404, "No such action")
     store, form = store_of(request), await form_of(request)
@@ -458,6 +461,8 @@ async def card_action(request: Request, search_id: str, person_id: str, action: 
     card_decision(store, candidate, action, first(form, "match"))
     request.state.facts = {"action": action}
     here = local_path(form.get("next", [""])[0]) or ""
+    if re.fullmatch(r"/people/[^/]+", urlsplit(here).path):
+        return RedirectResponse(here, 303)
     here = here if here.split("?")[0] in (f"/searches/{search_id}", f"/searches/{search_id}/map") else f"/searches/{search_id}"
     if request.headers.get("x-requested-with") == "fetch":
         shown = shown_of(parse_qs(urlsplit(here).query).get("shown", [""])[0])
@@ -574,10 +579,14 @@ def person_page(store: Store, person_id: str, params: dict[str, str], error: str
 
     params is the page's query; error and typed re-open the edit field of kind edit with a refused value.
     """
-    view = profile(store, person_id, now().astimezone().date())
-    here = person_here(person_id, params)
     search = store.get_search(params.get("search", ""))
     shown, key = shown_of(params.get("shown", "")), params.get("card", "")
+    candidate = card_candidate(store, search.id, person_id, key) if search and key else None
+    topic = next((p.detail for p in candidate.score_parts if p.feature == "topic"), "") if candidate else ""
+    view = profile(store, person_id, now().astimezone().date(), identity.on_card(store, candidate) if candidate else None,
+                   topic.split(", ") if topic else [])
+    here = person_here(person_id, params)
+    route = f"/searches/{search.id}/people/{candidate.person_id}" if candidate else None
     back = search_back(search, shown, key) if search else back_link(store, params.get("back", ""))
     place = list_place(store, search, shown, key) if search and key else None
     edit = edit or (params.get("edit") if params.get("edit") in CONTACT_KINDS else None)
@@ -585,9 +594,9 @@ def person_page(store: Store, person_id: str, params: dict[str, str], error: str
     text = page(
         view.person.name,
         profile_banner(view, params.get("undo") == "refused", here),
-        h.main(h.div(profile_head(view, back, place, here),
-                     contact_block(view, here, edit, error, typed) if member else None,
-                     fact_groups(view, here, params.get("all") == "1"), found_as_block(view, here),
+        h.main(h.div(profile_head(view, back, place, here, route), summary_list(view.summary),
+                     fact_groups(view, here, params.get("all")),
+                     contact_block(view, here, edit, error, typed) if member else None, found_as_block(view, here),
                      possible_block(view, here), class_="fn-column"), class_="fn-page"),
         current="search" if leads_to_search(back) else "network",
     )

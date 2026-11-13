@@ -467,6 +467,8 @@ class ClaimView(Model):
     href: str
     date: str
     is_new: bool = False
+    source: str = ""
+    url: str | None = None
 
 
 class OrgView(Model):
@@ -561,6 +563,15 @@ class RecordView(Model):
     label: str
     href: str
     facts: int
+    # Whether Not this person accepts the record: it is merged into the page's person or a possible match.
+    separate: bool = False
+
+
+class SummaryRow(Model):
+    key: Literal["Studied", "Tie to Flanders", "Contact"]
+    value: str
+    years: str = ""
+    claim_ids: list[str] = []
 
 
 class ProfileView(Model):
@@ -571,6 +582,8 @@ class ProfileView(Model):
     possible: list[PersonView]
     name_match: PersonView | None = None
     last: LastView | None = None
+    summary: list[SummaryRow] = []
+    records: int = 1
 
 
 class BackLink(Model):

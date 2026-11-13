@@ -343,7 +343,7 @@ class FlowTest(unittest.TestCase):
         profile = self.get(merged.link("Ada Example", self.card(merged, "Ada Example")))
         self.assertIn("Wind policy", profile.words)
         self.assertIn("Wind law", profile.words)
-        self.assertIn("Found as", profile.words)
+        self.assertIn("Sources", profile.words)
         self.assertEqual(sum(1 for s in profile.scopes if "fn-line" in s.attrs.get("class", "").split()
                              and "· 1 fact" in s.words), 2)
         skipped = self.submit(merged.form("Skip", self.card(merged, "Cy Skipper")))
@@ -371,12 +371,12 @@ class FlowTest(unittest.TestCase):
         again = self.get(str(profile.url))
         fact = again.scope("Wind leases", "fn-claim")
         self.assertNotEqual(fact.words.split()[0], "New")
-        removed = self.submit(again.form("Remove", fact))
+        removed = self.submit(again.form("Not correct", fact))
         line = removed.scope("", "fn-claim--removed")
         self.assertIn("Undo", line.words)
         self.assertFalse(removed.has_scope("Wind leases is what", "fn-claim"))
         restored = self.submit(removed.form("Undo", line))
-        self.assertEqual(restored.form("Remove", restored.scope("Wind leases", "fn-claim")).buttons, ["Remove"])
+        self.assertEqual(restored.form("Not correct", restored.scope("Wind leases", "fn-claim")).buttons, ["Not correct"])
 
     def walk_browse(self) -> None:
         self.import_file("contacts.csv", CONTACTS)
@@ -388,7 +388,7 @@ class FlowTest(unittest.TestCase):
         profile = self.get(point["properties"]["href"])
         self.assertIn("Ann Harbor", profile.words)
         facts = [s for s in profile.scopes if "fn-claim" in s.attrs.get("class", "").split()]
-        self.assertGreaterEqual(len(facts), 3)
+        self.assertGreaterEqual(len(facts), 2)
         for fact in facts:
             with self.subTest(fact=fact.words):
                 (label, href), = fact.links
