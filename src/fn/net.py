@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
-from urllib.parse import unquote
+from urllib.parse import unquote, urljoin
 
 import httpx
 
@@ -18,6 +18,7 @@ from fn.steps import current_recorder, redact
 TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 MAX_BYTES = 5 * 1024 * 1024
 MAX_RETRY_AFTER_S = 30
+REDIRECTS = (301, 302, 303, 307, 308)
 ERROR_BODY_CHARS = 300
 OPENALEX_HOST = "api.openalex.org"
 # Hosts that answer XML unless the request accepts JSON.
@@ -42,7 +43,22 @@ KEYS = {
 
 
 class HttpError(RuntimeError):
-    """An outbound call was refused, failed, returned a non-2xx status or missed the replay cache."""
+    """An outbound call was refused, failed, returned a non-2xx status or missed the replay cache.
+
+    status is the HTTP status of a non-2xx answer, else None.
+    """
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
+
+
+class Redirect(HttpError):
+    """A 301, 302, 303, 307 or 308 answer with a Location header; location is that header as sent."""
+
+    def __init__(self, message: str, status: int, location: str):
+        super().__init__(message, status)
+        self.location = location
 
 
 class CacheMiss(HttpError):
@@ -84,9 +100,11 @@ class Client:
                                  headers={"User-Agent": USER_AGENT})
 
     def _request(self, method: str, url: str, params: dict[str, str] | None, body: dict | None,
-                 timeout_s: float | None) -> httpx.Request:
+                 timeout_s: float | None, agent: str | None = None) -> httpx.Request:
         timeout = TIMEOUT if timeout_s is None else httpx.Timeout(timeout_s, connect=TIMEOUT.connect)
         request = self.http.build_request(method, url, params=params, json=body, timeout=timeout)
+        if agent is not None:
+            request.headers["User-Agent"] = agent
         if request.url.host in JSON_ONLY_WHEN_ASKED:
             request.headers["Accept"] = "application/json"
         if request.url.scheme not in ("http", "https"):
@@ -126,6 +144,12 @@ class Client:
             return json.loads(body).get("meta", {}).get("cost_usd")
         except (ValueError, AttributeError):
             return None
+
+    def _write_cache(self, path: Path, body: bytes) -> None:
+        self.cache.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=self.cache, suffix=".tmp", delete=False) as tmp:
+            tmp.write(body)
+        os.replace(tmp.name, path)
 
     def _send(self, request: httpx.Request, shown: str, key: str, *, cost: Callable[[bytes], float | None] | None,
               keep: Callable[[bytes], bool] | None, cache: CacheMode) -> httpx.Response:
@@ -169,13 +193,15 @@ class Client:
                                     error=f"{type(exc).__name__}: {exc}")
                     raise
                 if saved:
-                    self.cache.mkdir(mode=0o700, parents=True, exist_ok=True)
-                    with tempfile.NamedTemporaryFile(dir=self.cache, suffix=".tmp", delete=False) as tmp:
-                        tmp.write(body)
-                    os.replace(tmp.name, path)
+                    self._write_cache(path, body)
                 recorder.record("http", shown, ms, status=response.status_code, response_sha=sha,
                                 response_path=str(path) if saved else None, cost_usd=price)
                 return httpx.Response(response.status_code, content=body, request=request)
+            location = response.headers.get("location")
+            if response.status_code in REDIRECTS and location:
+                error = f"{shown} returned {response.status_code} to {location}"
+                recorder.record("http", shown, ms, status=response.status_code, error=error)
+                raise Redirect(error, response.status_code, location)
             wait = retry_after(response) if response.status_code in retry_on else None
             error = f"{shown} returned {response.status_code}"
             if wait is not None:
@@ -184,19 +210,35 @@ class Client:
                 error += f": {text}"
             recorder.record("http", shown, ms, status=response.status_code, error=error)
             if retried or wait is None or wait > MAX_RETRY_AFTER_S:
-                raise HttpError(error)
+                raise HttpError(error, response.status_code)
             self.sleep(wait)
             retried = True
 
-    def get(self, url: str, params: dict[str, str] | None = None) -> httpx.Response:
+    def get(self, url: str, params: dict[str, str] | None = None, *, redirects: int = 0,
+            agent: str | None = None) -> httpx.Response:
         """GET url with params as a recorded call of the running step and return the 2xx response.
 
-        A 429 or 503 with Retry-After up to 30 s is retried once after that wait. Raises HttpError
-        for a refused URL, a non-2xx status (naming any longer wait), a body over 5 MB or a replay miss.
+        A 429 or 503 with Retry-After up to 30 s is retried once after that wait. redirects is how many 301, 302,
+        303, 307 or 308 hops to follow, each a recorded call; a live final answer is also cached under url. agent
+        replaces the User-Agent. Raises HttpError for a refused URL, a non-2xx status (naming any longer wait),
+        too many redirects, a body over 5 MB or a replay miss.
         """
-        request = self._request("GET", url, params, None, None)
-        shown = f"GET {unquote(str(request.url))}"
-        return self._send(request, shown, str(request.url), cost=None, keep=None, cache="refresh")
+        current, first = url, None
+        for hop in range(redirects + 1):
+            request = self._request("GET", current, params if hop == 0 else None, None, None, agent)
+            shown = f"GET {unquote(str(request.url))}"
+            first = first or str(request.url)
+            try:
+                response = self._send(request, shown, str(request.url), cost=None, keep=None, cache="refresh")
+            except Redirect as moved:
+                if not redirects:
+                    raise
+                current = urljoin(str(request.url), moved.location)
+                continue
+            if hop and self.settings.http_mode != "replay":
+                self._write_cache(cache_file(self.cache, first), response.content)
+            return response
+        raise HttpError(f"GET {url} redirected more than {redirects} times")
 
     def post(self, url: str, body: dict, params: dict[str, str] | None = None, *, timeout_s: float | None = None,
              cost: Callable[[bytes], float | None] | None = None, keep: Callable[[bytes], bool] | None = None,

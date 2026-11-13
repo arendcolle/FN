@@ -88,7 +88,8 @@ def clean_name(name: str) -> str:
 
 
 class HttpClient(Protocol):
-    def get(self, url: str, params: dict[str, str] | None = None) -> httpx.Response: ...
+    def get(self, url: str, params: dict[str, str] | None = None, *, redirects: int = 0,
+            agent: str | None = None) -> httpx.Response: ...
 
     def post(self, url: str, body: dict, params: dict[str, str] | None = None, *, timeout_s: float | None = None,
              cost: Callable[[bytes], float | None] | None = None, keep: Callable[[bytes], bool] | None = None,
@@ -226,16 +227,17 @@ def _plain(match: re.Match) -> str:
 
 
 def page_source(url: str, title: str | None, markdown: str, raw: dict, fetched_at: datetime,
-                source_date: str | None) -> Source:
-    """A vendor_page Source whose text is the vendor's markdown as plain text, so a quote matches what the reader sees.
+                source_date: str | None, *, kind: Literal["vendor_page", "page"] = "vendor_page",
+                plain: bool = False) -> Source:
+    """A Source of the given kind whose text is the vendor's markdown as plain text, so a quote matches what the reader sees.
 
-    Links keep their anchor text; emphasis marks, heading markers and backslash escapes go. The id holds the
-    content hash, so a page whose text changed is stored as a new source.
+    Links keep their anchor text; emphasis marks, heading markers and backslash escapes go. plain skips that pass
+    and only normalizes. The id holds the kind and the content hash, so a page whose text changed is a new source.
     """
-    text = normalize(MARKDOWN.sub(_plain, re.sub(r"^#{1,6}[ \t]+", "", markdown, flags=re.MULTILINE)))
+    text = normalize(markdown if plain else MARKDOWN.sub(_plain, re.sub(r"^#{1,6}[ \t]+", "", markdown, flags=re.MULTILINE)))
     content_hash = hashlib.sha256(text.encode()).hexdigest()
     return Source(
-        id=hashlib.sha1(f"vendor_page\0{url}\0{content_hash}".encode()).hexdigest(), kind="vendor_page", url=url,
+        id=hashlib.sha1(f"{kind}\0{url}\0{content_hash}".encode()).hexdigest(), kind=kind, url=url,
         title=" ".join(title.split()) or None if title else None, text=text,
         raw_json=json.dumps(raw, ensure_ascii=False, sort_keys=True),
         content_hash=content_hash, source_date=source_date, date_method="record_field" if source_date else None,
