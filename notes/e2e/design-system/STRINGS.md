@@ -82,7 +82,7 @@ This list holds every user-facing string the new and changed parts introduce, gr
   - "Consul for": "Consul for Belgium"
   - "Hosted by": "Hosted by Massachusetts Institute of Technology, 2015"
   - "Named at", for an affiliation a record or a list gives without a job: "Named at Chalmers University of Technology, 2009–2026"
-  - "Lives in": "Lives in Boston, MA"
+  - "Based in": "Based in Boston, MA" (a home, a base or an office city a source states for the person)
   - "Born in": "Born in Namur, Belgium"
   - "Origin:": "Origin: Belgian"
   - "Topic:": "Topic: AI in health care"

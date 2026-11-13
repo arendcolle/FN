@@ -147,6 +147,15 @@ class CardLinesTest(CardLinesCase):
         for text in ("date unknown", "Matches:", "<blockquote"):
             self.assertNotIn(text, html)
 
+    def test_a_tie_that_only_repeats_the_shown_place_is_left_out_of_the_second_line(self):
+        """Based in Brussels as the tie beside a role line in Brussels says the place once; another tie still shows."""
+        home = self.person("Bram Brussel", "home")
+        page = self.source("Bram is counsel at Example Law in Brussels", url="https://examplelaw.org/bram")
+        self.claim(home, "role", "Counsel, Example Law", src=page, quote="Bram is counsel")
+        where = self.claim(home, "location", "Brussels", relation="lives_in", lat=50.85, lon=4.35, src=page, quote="in Brussels")
+        html = self.stored([(home, None, fit("medium", [where], "abroad"))])
+        self.assertEqual(self.lines(html, home)[1], None)
+
     def test_a_card_whose_role_line_shows_a_place_says_no_place_words_and_one_without_says_place_unknown(self):
         """No place fit, chip or city words beside a shown place; 'place unknown' (card) and 'Place unknown' (why) without."""
         rows = []

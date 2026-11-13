@@ -334,7 +334,7 @@ class YearsAndWordsTest(PersonContentCase):
 
 class PlacesAndTieRowTest(PersonContentCase):
     def test_a_place_a_record_gives_for_an_institution_is_no_fact_but_the_head_still_uses_it(self):
-        """A location without a relation from a record is no line; a stated place from a page is 'Lives in'."""
+        """A location without a relation from a record is no line; a stated place from a page is 'Based in'."""
         ada = self.person("Ada Voorbeeld", "ada")
         record = self.source("OpenAlex record", kind="record", url="https://openalex.org/A3", title="Ada Voorbeeld")
         self.claim(ada, "location", "Gothenburg", src=record, lat=57.7, lon=11.97)
@@ -342,7 +342,7 @@ class PlacesAndTieRowTest(PersonContentCase):
         self.assertEqual(self.section(html, "Places"), "")
         self.assertIn("Gothenburg", html)
         self.claim(ada, "location", "Boston, MA", claim_date="2024")
-        self.assertEqual(self.lines(self.page(ada), "Places"), ["Lives in Boston, MA, 2024"])
+        self.assertEqual(self.lines(self.page(ada), "Places"), ["Based in Boston, MA, 2024"])
 
     def test_the_tie_row_follows_the_ranker_fit_and_reads_belgium_for_a_brussels_foundation(self):
         """With a strong fit whose first claim is the fellowship the row is 'Tie to Belgium: Fellow of …'."""
