@@ -30,8 +30,13 @@ def save(ctx: StepContext, inp: SaveIn) -> SaveOut:
 
 
 def publish(outs: list[LaneOut]) -> Callable[[StepContext, PublishIn], PublishOut]:
-    """The publish step over the lane outputs so far: it resolves, ranks and saves them as the final steps do."""
+    """The publish step over the lane outputs so far: it resolves, ranks and saves them as the final steps do.
+
+    A lane that added no hits leaves the saved candidates as they are, so the step returns their count.
+    """
     def step(ctx: StepContext, inp: PublishIn) -> PublishOut:
+        if not outs[-1].hits:
+            return PublishOut(count=len(ctx.store.list_candidates(ctx.search_id)))
         resolved = resolve.run(ctx, ResolveIn(outs=outs))
         ranked = rank.run(ctx, RankIn(entries=resolved.entries, chips=inp.chips))
         return save(ctx, SaveIn(candidates=ranked.candidates, flags=resolved.flags))
@@ -78,7 +83,7 @@ def run(ctx: StepContext, search: Search) -> None:
     else:
         chips = run_step(ctx, "parse", parse.run, inp).chips
         ctx.store.set_search_chips(search.id, chips, "parsed")
-    lane_in = LaneIn(search_id=search.id, chips=chips, depth=search.depth)
+    lane_in = LaneIn(search_id=search.id, chips=chips, depth=search.depth, question=search.question)
     outs, failed = [], 0
     for i, lane in enumerate(LANES):
         try:

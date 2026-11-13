@@ -301,7 +301,7 @@ class RunCaseTest(unittest.TestCase):
         self.assertIn("authors_institution_mit_p1.json", by_name["Anne Deconinck"].lost_reason)
         missed = by_name["Nobody Atall"]
         self.assertEqual((missed.verdict, missed.lost_step),
-                         ("missed", "lane:seeds, lane:openalex, lane:web, lane:web_topic, lane:linkedin"))
+                         ("missed", "lane:seeds, lane:openalex, lane:web, lane:web_topic, lane:scout, lane:linkedin"))
         self.assertIn("not found by any lane; lane:seeds query", missed.lost_reason)
         self.assertIn("lane:openalex query authors filter=last_known_institutions.ror", missed.lost_reason)
 
@@ -400,7 +400,7 @@ class RunCaseTest(unittest.TestCase):
         anne = next(p for p in self.case.picks if p.name == "Anne Deconinck")
         result = self.results(self.case)["Anne Deconinck"]
         self.assertEqual((result.verdict, result.lost_step),
-                         ("no lane in slice", "lane:seeds, lane:openalex, lane:web, lane:web_topic, lane:linkedin"))
+                         ("no lane in slice", "lane:seeds, lane:openalex, lane:web, lane:web_topic, lane:scout, lane:linkedin"))
         self.assertTrue(result.lost_reason.startswith("not found by any lane; lane:seeds query"))
         self.assertTrue(result.lost_reason.endswith(f"; reach.json: {anne.reach_evidence}"))
         self.assertIn("lane:openalex query authors filter=last_known_institutions.ror", result.lost_reason)

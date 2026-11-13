@@ -28,6 +28,7 @@ class Settings(BaseModel):
     apify_token: SecretStr | None = None
     linkedin_live: bool = False
     llm_workers: int = Field(6, ge=1)
+    scout: bool = True
 
     @property
     def db_path(self) -> Path:
@@ -73,5 +74,6 @@ def from_env() -> Settings:
         "apify_token": secret("APIFY_TOKEN"),
         "linkedin_live": env.get("FN_LINKEDIN") == "1",
         "llm_workers": env.get("FN_LLM_WORKERS"),
+        "scout": None if env.get("FN_SCOUT") is None else env["FN_SCOUT"].lower() not in ("0", "false"),
     }
     return Settings(**{k: v for k, v in fields.items() if v is not None})

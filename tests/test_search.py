@@ -8,6 +8,7 @@ from unittest import mock
 
 from fn.contracts import Chip, Chips, Identifier, LaneHit, LaneIn, LaneOut
 from fn import search
+from fn.lanes import scout as scout_lane
 from fn.steps import StepContext
 from fn.worker import Worker, new_id, now
 from tests.helpers import StubHttp, StubLLM, make_db, make_settings
@@ -105,6 +106,33 @@ class SearchStepsTest(unittest.TestCase):
         with mock.patch("fn.rank.tier", return_value=2):
             self.run_with(CHIPS, lanes)
         self.assertEqual(got, {"lane:web_topic": 2})
+
+    def test_the_lane_input_carries_the_question_and_scout_runs_after_web_topic_on_or_off(self):
+        """LaneIn.question is the search's question; lane:scout follows lane:web_topic with the lane on and off, and off says why."""
+        for scout in (True, False):
+            with self.subTest(scout=scout):
+                settings = self.settings.model_copy(update={"scout": scout})
+                worker = Worker(self.store, settings, llm=StubLLM(), http=StubHttp())
+                self.addCleanup(worker.shutdown)
+                search_id = worker.create_search("Who knows wind?", CHIPS, "edited").id
+                seen = []
+
+                def watch(ctx: StepContext, inp: LaneIn) -> LaneOut:
+                    seen.append(inp.question)
+                    return LaneOut(lane="web_topic", query="", total_seen=0)
+
+                with mock.patch("fn.search.LANES", [SimpleNamespace(name="web_topic", run=watch), scout_lane,
+                                                    self.finds("linkedin", "Ann Smith")]):
+                    worker.execute(search_id)
+                steps = self.store.list_steps(search_id)
+                self.assertEqual(seen, ["Who knows wind?"])
+                self.assertEqual([s.step for s in steps][:5], ["parse", "lane:web_topic", "publish", "lane:scout", "publish"])
+                (scouted,) = [s for s in steps if s.step == "lane:scout"]
+                self.assertEqual(scouted.status, "ok")
+                if not scout:
+                    out = LaneOut.model_validate_json(self.store.get_payload(scouted.id)[1])
+                    self.assertEqual([c.reason for c in out.considered], ["web research is off"])
+        self.assertEqual([lane.name for lane in search.LANES][-3:], ["web_topic", "scout", "linkedin"])
 
     def test_a_lane_that_raises_is_kept_as_an_error_and_the_search_ends_done(self):
         """The failing lane's step holds the error, failed_lanes names it and the other lanes' people are saved."""
