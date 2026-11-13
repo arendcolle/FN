@@ -7,6 +7,7 @@ from collections.abc import Callable
 from fn import parse, rank, resolve
 from fn.contracts import (
     Chips,
+    Considered,
     LaneIn,
     LaneOut,
     ParseIn,
@@ -44,6 +45,12 @@ def finish(ctx: StepContext, outs: list[LaneOut], chips: Chips) -> None:
     run_step(ctx, "save", save, SaveIn(candidates=ranked.candidates, flags=resolved.flags))
 
 
+def first_heading(ctx: StepContext) -> int:
+    """How many kept people of the new section the saved candidates put in tier 1 or 2."""
+    kept = ctx.store.list_candidates(ctx.search_id, kept_only=True)
+    return sum(c.section == "new" and c.tier in (1, 2) for c in kept)
+
+
 def refinish(ctx: StepContext, search: Search) -> None:
     """Run finish over the stored outputs of the search's lane steps and its stored chips.
 
@@ -75,7 +82,16 @@ def run(ctx: StepContext, search: Search) -> None:
     outs, failed = [], 0
     for i, lane in enumerate(LANES):
         try:
-            outs.append(run_step(ctx, f"lane:{lane.name}", lane.run, lane_in))
+            if lane.name == "openalex" and not parse.wants_research(chips):
+                outs.append(skip_step(ctx, "lane:openalex", lane_in, LaneOut(
+                    lane="openalex", query="", total_seen=0,
+                    considered=[Considered(person_key="-", name="", stage="query", kept=False,
+                                           reason="no research asked")])))
+            else:
+                given = lane_in
+                if lane.name == "web_topic":
+                    given = lane_in.model_copy(update={"first_heading": first_heading(ctx)})
+                outs.append(run_step(ctx, f"lane:{lane.name}", lane.run, given))
         except Exception:  # noqa: BLE001 any lane error is kept on its step row and the search goes on
             failed += 1
             outs.append(LaneOut(lane=lane.name, query="", total_seen=0))

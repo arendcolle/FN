@@ -2,7 +2,7 @@
 from typing import Protocol
 
 from fn.contracts import LaneIn, LaneName, LaneOut
-from fn.lanes import linkedin, openalex, seeds, web
+from fn.lanes import linkedin, openalex, seeds, web, web_topic
 from fn.steps import StepContext
 
 
@@ -12,4 +12,4 @@ class Lane(Protocol):
     def run(self, ctx: StepContext, inp: LaneIn) -> LaneOut: ...
 
 
-LANES: list[Lane] = [seeds, openalex, web, linkedin]
+LANES: list[Lane] = [seeds, openalex, web, web_topic, linkedin]

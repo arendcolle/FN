@@ -234,7 +234,7 @@ def card_metrics(store: Store, scored: Search, kept: list, created: date, area: 
     flags |= {"topic": lambda x: x["topic"]} if words else {}
     flags |= {"group0_top20": lambda x: x["group0"]}
     flags |= {"lane_openalex_only": lambda x: x["lanes"] == {"openalex"}, "lane_seeds_only": lambda x: x["lanes"] == {"seeds"},
-              "lane_web_only": lambda x: x["lanes"] == {"web"}, "lane_multi": lambda x: len(x["lanes"]) >= 2}
+              "lane_web_only": lambda x: bool(x["lanes"]) and x["lanes"] <= {"web", "web_topic"}, "lane_multi": lambda x: len(x["lanes"]) >= 2}
     return out | {name: share(sum(bool(test(x)) for x in first), len(first)) for name, test in flags.items() if first}
 
 
