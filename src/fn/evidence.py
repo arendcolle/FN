@@ -78,12 +78,12 @@ def recent(stamp: str | None, today: date) -> bool:
 def places(claims: list[Claim], facts: dict[str, Org], today: date, names: geo.Names | None = None) -> list[Place]:
     """The stated places of a person's claims, then the cities of their recent employers, in claim order.
 
-    A stated place is a located location claim of any date that is not a birthplace; its country comes from names.
+    A stated place is a located location claim of any date that is not a birthplace or an origin; its country comes from names.
     An employer's city needs a works_at or affiliated_with claim whose valid_to, else claim_date, is recent.
     """
     found = [Place(c.lat, c.lon, c.value, geo.country_at(names, c.lat, c.lon) if names else None, "stated", c.id,
                    rank.year(c.valid_to or c.claim_date))
-             for c in claims if c.kind == "location" and c.relation != "born_in" and c.lat is not None and c.lon is not None]
+             for c in claims if c.kind == "location" and c.relation not in ("born_in", "origin") and c.lat is not None and c.lon is not None]
     for c in claims:
         org = facts.get(c.org_id or "")
         stamp = c.valid_to or c.claim_date

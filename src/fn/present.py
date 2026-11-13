@@ -130,9 +130,9 @@ def newest(claims: list[Claim]) -> Claim | None:
 def place_of(claims: list[Claim]) -> Claim | None:
     """The newest dated location claim with coordinates, else an undated one with them, else the newest location.
 
-    A born_in claim never places anyone.
+    A born_in or origin claim never places anyone.
     """
-    found = [c for c in claims if c.kind == "location" and c.relation != "born_in"]
+    found = [c for c in claims if c.kind == "location" and c.relation not in ("born_in", "origin")]
     dotted = [c for c in found if c.lat is not None and c.lon is not None]
     return newest([c for c in dotted if c.claim_date] or dotted or found)
 
@@ -164,9 +164,11 @@ def years_words(claim: Claim) -> str:
 
 
 def what_of(claim: Claim, org: Org | None) -> str:
-    """The fact in plain words, such as 'Studied at KU Leuven', 'Field: 6G' or 'Born in Leuven'."""
+    """The fact in plain words, such as 'Studied at KU Leuven', 'Field: 6G', 'Born in Leuven' or 'Origin: Belgian'."""
     if claim.kind in ("role", "availability"):
         return claim.value
+    if claim.kind == "location" and claim.relation == "origin":
+        return f"Origin: {claim.value}"
     if claim.kind == "location":
         return f"{'Born in' if claim.relation == 'born_in' else 'Based in'} {claim.value}"
     if claim.kind in FIELDS:

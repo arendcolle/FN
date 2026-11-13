@@ -25,7 +25,7 @@ Section = Literal["network", "new"]
 ClaimKind = Literal["topic", "affiliation", "role", "location", "availability", "email", "phone"]
 Relation = Literal[
     "studied_at", "works_at", "worked_at", "affiliated_with", "hosted_by",
-    "fellow_of", "member_of", "consul_for", "born_in", "lives_in",
+    "fellow_of", "member_of", "consul_for", "born_in", "lives_in", "origin",
 ]
 DateMethod = Literal[
     "page_date", "sitemap", "wayback_first_seen", "document_heading",
@@ -42,6 +42,7 @@ Depth = Literal["quick"]
 IdentifierScheme = Literal["seed", "openalex", "orcid", "profile_url", "mention", "email", "import"]
 Ask = Literal["talk", "mentor", "host", "join", "other"]
 PlaceKind = Literal["metro", "anywhere_us", "abroad"]
+Need = Literal["must", "nice"]
 CallKind = Literal["http", "llm"]
 LLMMode = Literal["live", "record", "replay", "prefer"]
 CacheMode = Literal["refresh", "prefer", "only"]
@@ -105,6 +106,9 @@ class Chip(Model):
     span: Span | None = None
     origin: ChipOrigin
     ref: str | None = None
+    need: Need = "must"
+    related: list[str] = []
+    research: bool | None = None
 
 
 class Place(Model):
@@ -112,6 +116,12 @@ class Place(Model):
     span: Span | None = None
     origin: ChipOrigin
     kind: PlaceKind | None = None
+    need: Need = "nice"
+
+
+class WebQuery(Model):
+    text: str
+    lang: Literal["en", "nl"]
 
 
 class Chips(Model):
@@ -119,6 +129,10 @@ class Chips(Model):
     institutions: list[Chip] = []
     place: Place | None = None
     ask: Ask | None = None
+    roles: list[Chip] = []
+    tie: Chip | None = None
+    version: int = 1
+    queries: list[WebQuery] = []
 
 
 class Search(Model):
@@ -328,11 +342,17 @@ class PageRelation(Model):
     year_to: int | None = None
 
 
+class PageTopic(Model):
+    topic: str
+    quote: str
+
+
 class PageMention(Model):
     name: str
     quote: str
     role: str | None = None
     relations: list[PageRelation] = []
+    topics: list[PageTopic] = []
 
 
 class PagePeople(Model):
@@ -345,6 +365,7 @@ class Located(Model):
     role: str | None = None
     span: Span
     relations: list[tuple[PageRelation, Span]] = []
+    topics: list[tuple[str, Span]] = []
 
 
 class LaneHit(Model):

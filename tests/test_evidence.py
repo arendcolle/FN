@@ -66,6 +66,10 @@ class PlacesTest(unittest.TestCase):
         """A born_in claim with coordinates is left out."""
         self.assertEqual(evidence.places([lives("c1", "Boston", 42.36, -71.06, "born_in")], FACTS, TODAY), [])
 
+    def test_an_origin_is_never_a_place(self):
+        """An origin claim with coordinates is left out, as a birthplace is."""
+        self.assertEqual(evidence.places([lives("c1", "Belgian", 50.5, 4.4, "origin")], FACTS, TODAY), [])
+
 
 class TopicTest(unittest.TestCase):
     def test_every_word_of_a_chip_in_one_claim_is_a_match(self):

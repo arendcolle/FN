@@ -31,6 +31,12 @@ flemish flanders onderzoek onderzoeker onderzoekers wetenschap wetenschapper uni
 technologie belgisch belgische belgie vlaams vlaamse vlaanderen recherche chercheur chercheurs scientifique
 universite personnes personne belge belges belgique flamand flamande flamands flandre
 """.split()}
+MAX_RELATED = 6
+# Words that name a kind of person without saying which, so they are no help as a related word.
+RELATED_SKIP = GENERIC_WORDS | {name_key(w) for w in """
+specialist specialists professional professionals individual individuals staff member members specialiste specialistes
+professionnel professionnels deskundige deskundigen vakman
+""".split()}
 
 
 class SpanError(ValueError):
@@ -66,8 +72,42 @@ def topic_match(chips: list[str], texts: list[str]) -> bool:
     return any(len(words_in(found, text)) == len(found) for found in wanted for text in texts)
 
 
+def clean_related(chip: Chip) -> list[str]:
+    """The related words of a chip, at most MAX_RELATED, each on one line.
+
+    An entry stays when it has a content word that is not in RELATED_SKIP, differs from the chip's text and from
+    every kept entry, and has a content word the chip's own text lacks.
+    """
+    own, seen, kept = set(content_words(chip.text)), {name_key(chip.text)}, []
+    for entry in chip.related:
+        entry = " ".join(entry.split())
+        key = name_key(entry)
+        mine = set(content_words(entry))
+        if not (mine - RELATED_SKIP) or key in seen or mine <= own:
+            continue
+        seen.add(key)
+        kept.append(entry)
+    return kept[:MAX_RELATED]
+
+
+def tie_must(chips: Chips) -> bool:
+    """Whether the question requires a tie: false for chips stored before version 2, else whether the tie chip is a must."""
+    return chips.version >= 2 and chips.tie is not None and chips.tie.need == "must"
+
+
+def asks_researchers(chips: Chips) -> bool:
+    """Whether the question asks for academic researchers: always for version 1 chips, else when a role chip says so."""
+    return chips.version < 2 or any(r.research for r in chips.roles)
+
+
+def wants_research(chips: Chips) -> bool:
+    """Whether the question asks for research expertise: researchers asked for, or no role named."""
+    return asks_researchers(chips) or not chips.roles
+
+
 def _all_chips(chips: Chips) -> list[Chip | Place]:
-    return [*chips.topics, *chips.institutions, *([chips.place] if chips.place else [])]
+    return [*chips.topics, *chips.institutions, *chips.roles, *([chips.tie] if chips.tie else []),
+            *([chips.place] if chips.place else [])]
 
 
 def _nearby(question: str, text: str, start: int) -> Span | None:
@@ -109,6 +149,8 @@ def check_spans(question: str, chips: Chips) -> Chips:
     return chips.model_copy(update={
         "topics": [fix(c) for c in chips.topics],
         "institutions": [fix(c) for c in chips.institutions],
+        "roles": [fix(c) for c in chips.roles],
+        "tie": fix(chips.tie) if chips.tie else None,
         "place": fix(chips.place) if chips.place else None,
     })
 
@@ -125,7 +167,12 @@ def run(ctx: StepContext, inp: ParseIn) -> ParseOut:
     if any(chip.origin == "edited" for chip in _all_chips(chips)):
         raise SpanError("the model returned a chip with origin 'edited'")
     chips = chips.model_copy(update={
-        "topics": [c.model_copy(update={"ref": None}) for c in chips.topics],
-        "institutions": [c.model_copy(update={"ref": orgs.ref(c.text)}) for c in chips.institutions],
+        "topics": [c.model_copy(update={"ref": None, "related": clean_related(c), "research": None}) for c in chips.topics],
+        "institutions": [c.model_copy(update={"ref": orgs.ref(c.text), "related": [], "research": None})
+                         for c in chips.institutions],
+        "roles": [c.model_copy(update={"ref": None, "related": clean_related(c), "research": bool(c.research)})
+                  for c in chips.roles],
+        "tie": chips.tie.model_copy(update={"ref": None, "related": [], "research": None}) if chips.tie else None,
+        "version": 2,
     })
     return ParseOut(chips=check_spans(inp.question, chips))

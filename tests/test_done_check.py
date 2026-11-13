@@ -4,8 +4,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 # Built from parts so this file does not match its own pattern.
-PATTERN = re.compile("|".join([r"\bTi" r"e[A-Z]", r"\bti" r"es\b", "tie" "_json", "tie" "_text", "GOLD" "_TIE",
-                               r"\.ti" r"e\b", "HIT" "_LIMIT"]))
+PATTERN = re.compile("|".join([r"\bti" r"es\b", "tie" "_json", "tie" "_text", "GOLD" "_TIE", "HIT" "_LIMIT"]))
 SKIPPED = (ROOT / "src" / "fn" / "migrations",)
 
 

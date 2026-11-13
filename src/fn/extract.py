@@ -27,7 +27,7 @@ TASK = "extract"
 CHUNK_CHARS = 6_000
 # A relation quote is looked for this far from the start of its mention quote, so each speaker keeps their own line.
 NEAR_CHARS = 1_500
-PLACES: frozenset[Relation] = frozenset({"born_in", "lives_in"})
+PLACES: frozenset[Relation] = frozenset({"born_in", "lives_in", "origin"})
 PARAGRAPH = re.compile(r"[^\n]+(?:\n[^\n]+)*")
 LINE = re.compile(r"[^\n]+")
 
@@ -87,9 +87,9 @@ def names_org(org: str, quote: str) -> bool:
 def check(source: Source, start: int, end: int, mention: PageMention) -> tuple[Located | None, list[Considered]]:
     """The mention with its quotes found in the chunk source.text[start:end], or None, and a row per part dropped.
 
-    The mention needs a name of two words or more, found in its quote. A relation's quote must lie in the chunk
-    within NEAR_CHARS of the mention quote's start and name its org. A relation that would be the same claim as
-    an earlier kept one, by claim kind, org and quote start, is dropped, because store.upsert_claim keeps one.
+    The mention needs a name of two words or more, found in its quote. A relation's or topic's quote must lie in
+    the chunk within NEAR_CHARS of the mention quote's start and hold its org or topic. A relation or topic that
+    would be the same claim as an earlier kept one is dropped, because store.upsert_claim keeps one.
     """
     text, name = source.text, clean_name(mention.name)
     key = identifier(source.url, name).value
@@ -117,8 +117,20 @@ def check(source: Source, start: int, end: int, mention: PageMention) -> tuple[L
         else:
             claims[claim] = rel
             kept.append((rel, Span(start=at[0], end=at[1])))
+    topics, seen = [], set()
+    for topic in mention.topics:
+        at = locate(text, topic.quote, span[0], min(span[0] + NEAR_CHARS, end))
+        if at is None:
+            dropped.append(drop("topic", f"topic quote not near the mention: {topic.topic!r}, quote {topic.quote[:200]!r}"))
+        elif not name_key(topic.topic) or words(topic.topic) not in words(text[at[0]:at[1]]):
+            dropped.append(drop("topic", f"topic not in quote: {topic.topic!r}, quote {text[at[0]:at[1]][:200]!r}"))
+        elif (again := (name_key(topic.topic), at[0])) in seen:
+            dropped.append(drop("topic", f"same topic as before: {topic.topic!r}"))
+        else:
+            seen.add(again)
+            topics.append((normalize(topic.topic), Span(start=at[0], end=at[1])))
     located = Located(name=name, role=normalize(mention.role or "") or None, span=Span(start=span[0], end=span[1]),
-                      relations=kept)
+                      relations=kept, topics=topics)
     return located, dropped
 
 
@@ -171,11 +183,11 @@ def stated(year: int | None, quote: str) -> str | None:
 
 
 def drafts(person_id: str, source: Source, located: Located, ctx: StepContext | None = None) -> list[ClaimDraft]:
-    """A role claim quoting the mention, then one claim per kept relation quoting its own passage.
+    """A role claim quoting the mention, then one claim per kept relation quoting its own passage, then one per topic.
 
-    The role is the mention's, else the page title, else the URL's host. born_in gives a location claim without
-    coordinates, lives_in one with the coordinates geo finds for the place when ctx is given, any other relation
-    an affiliation claim at the alias file's org id. A claim is dated only by the years its quote states.
+    The role is the mention's, else the page title, else the URL's host. born_in and origin give a location claim
+    without coordinates, lives_in one with the coordinates geo finds when ctx is given, any other relation an
+    affiliation claim at the alias file's org id. Only the years a relation's quote states date its claim.
     """
     def quoted(span: Span) -> dict:
         return {"person_id": person_id, "quote": source.text[span.start:span.end], "quote_start": span.start,
@@ -197,14 +209,15 @@ def drafts(person_id: str, source: Source, located: Located, ctx: StepContext | 
         else:
             found.append(ClaimDraft(kind="affiliation", relation=rel.relation, org_id=orgs.org_id(rel.org),
                                     value=normalize(rel.org), **base))
+    found += [ClaimDraft(kind="topic", value=topic, **quoted(span)) for topic, span in located.topics]
     return found
 
 
 def locate_stored(store: Store, names: geo.Names) -> int:
     """Give stored place claims without coordinates the ones geo finds for their place; returns how many it filled.
 
-    These are the claims evidence reads as a stated place: every location claim that is not a birthplace. A place
-    that names no city stays as it is.
+    These are the claims evidence reads as a stated place: every location claim that is not a birthplace or an
+    origin. A place that names no city stays as it is.
     """
     filled = 0
     with store.tx():

@@ -414,8 +414,8 @@ class Store:
         return cursor.rowcount > 0
 
     def unlocated_places(self) -> list[tuple[str, str]]:
-        """The id and place text of every location claim without coordinates that is not a birthplace."""
-        rows = self.conn.execute("SELECT id, value FROM claims WHERE kind = 'location' AND relation IS NOT 'born_in' "
+        """The id and place text of every location claim without coordinates that is not a birthplace or an origin."""
+        rows = self.conn.execute("SELECT id, value FROM claims WHERE kind = 'location' AND COALESCE(relation, '') NOT IN ('born_in', 'origin') "
                                  "AND lat IS NULL ORDER BY id")
         return [(r[0], r[1]) for r in rows]
 

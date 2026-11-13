@@ -132,6 +132,17 @@ class PersonViewsTest(unittest.TestCase):
         self.claim(born, "location", "Leuven", relation="born_in", lat=50.88, lon=4.7)
         self.assertIsNone(self.view(born).place)
 
+    def test_an_origin_claim_reads_as_origin_and_never_becomes_the_place(self):
+        """An origin claim such as Belgian is a fact line 'Origin: Belgian', even with coordinates, and places nobody."""
+        origin = self.person("origin")
+        self.claim(origin, "location", "Belgian", relation="origin", lat=50.5, lon=4.4)
+        self.assertIsNone(self.view(origin).place)
+        self.assertEqual(present.what_of(self.store.claims_of([origin])[0], None), "Origin: Belgian")
+        both = self.person("both")
+        self.claim(both, "location", "Belgian", relation="origin")
+        self.claim(both, "location", "Boston", relation="lives_in", lat=42.36, lon=-71.06)
+        self.assertEqual(self.view(both).place, "Boston")
+
     def test_the_role_is_a_job_not_a_seed_list_or_a_page_title(self):
         """A seed list role and a web-page role equal to the page title or host are skipped for the newest job."""
         anne = self.person("anne")

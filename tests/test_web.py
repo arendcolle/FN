@@ -30,10 +30,12 @@ from fn.contracts import (
     Search,
     Source,
     StepRun,
+    WebQuery,
 )
 from fn.steps import StepContext, run_step, setup_logging
 from fn.store import Store
 from fn.web.app import create_app, serve
+from fn.web.debug import chips_from_form
 from fn.web.html import h, safe_url
 from fn.worker import new_id, now
 from tests.helpers import (
@@ -680,6 +682,27 @@ class ContractsV1Test(unittest.TestCase):
             self.assertIn(f"<td>{seq}</td><td>{step}</td><td>-</td><td>-</td>"
                           "<td>stored under contracts v1, not shown</td>", response.text)
         self.assertEqual(self.store.list_request_errors(), [])
+
+
+class ChipsFromFormTest(unittest.TestCase):
+    def test_edited_chips_keep_the_sources_roles_tie_and_version_and_drop_its_queries(self):
+        """A rerun of version 2 chips keeps roles, tie and version 2; a kept topic keeps need and related; queries go."""
+        source = Chips(
+            topics=[Chip(text="wind", origin="parsed", need="nice", related=["offshore"]),
+                    Chip(text="solar", origin="parsed", related=["pv"])],
+            roles=[Chip(text="founders", origin="parsed", research=False)],
+            tie=Chip(text="Flemish", origin="parsed", need="must"), version=2,
+            queries=[WebQuery(text="Flemish founders", lang="en")])
+        chips = chips_from_form({"topics": ["wind", "hydro"]}, source)
+        self.assertEqual([(c.text, c.need, c.related) for c in chips.topics],
+                         [("wind", "nice", ["offshore"]), ("hydro", "must", [])])
+        self.assertEqual((chips.roles, chips.version, chips.queries), (source.roles, 2, []))
+        self.assertEqual(chips.model_dump()["tie"], source.model_dump()["tie"])
+
+    def test_a_form_without_a_source_gives_version_1(self):
+        """Without source chips there are no roles or tie and the version is 1."""
+        chips = chips_from_form({"topics": ["wind"]})
+        self.assertEqual((chips.version, chips.roles, chips.queries), (1, [], []))
 
 
 class LoggingTest(unittest.TestCase):
