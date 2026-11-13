@@ -233,10 +233,10 @@ class WebTest(unittest.TestCase):
         self.assertEqual(client.get("/debug/sources/src?claim=nope").status_code, 404)
 
     def test_a_card_shows_employer_place_belgian_orgs_and_one_quote(self):
-        """A card reads 'employer · place', its first three Belgian orgs with years then '+1 more', and one quote.
+        """A card reads 'employer · place' and a reason line, the first claim that matched the topic chip, with its source.
 
-        The quote is the first claim that matched the topic chip. Without a place, role or employer the card has
-        no role line; without a date the citation says 'date unknown'. A map point carries the id of its card.
+        Without a place, role or employer the card has no role line, and no quote reaches it. A map point carries the
+        id of its card.
         """
         record = Source(id="org", kind="record", url="https://ror.org/x", text="id", content_hash="h0", fetched_at=now())
         names = {"ror:01r9htc13": "ULB", "ror:05f950310": "KU Leuven", "ror:006e5kg04": "VUB", "ror:00cv9y106": "UGent"}
@@ -266,19 +266,17 @@ class WebTest(unittest.TestCase):
         self.assertIn(f'data-person="{anne}"><h3 class="fn-card__name text-name"><a href="/people/{anne}?search={search_id}'
                       f'&amp;card={anne}&amp;from=card">Anne Example</a></h3>', page)
         self.assertIn("Nokia Bell Labs · Murray Hill, NJ", page)
-        self.assertIn('ULB <span class="text-year">2001–2004</span> · KU Leuven <span class="text-year">2005–2008</span>'
-                      ' · VUB <span class="text-year">2009</span> · +1 more', page)
-        quote = unescape(page[page.index("“Anne Example, ULB"):])
-        self.assertTrue(quote.startswith("“Anne Example, ULB”<cite"))
-        self.assertIn(">anne-0 page</a>, 2004</cite>", quote)
+        self.assertIn('<p class="fn-card__reason text-body">Worked at ULB, 2001–2004 · <a href="/sources/src-anne-0?claim=', page)
+        self.assertIn('class="fn-card__source">example.org</a></p>', page)
+        self.assertIn('<p class="fn-card__reason text-body">Topic: ULB history · <a href="/sources/src-bob?claim=', page)
+        self.assertNotIn("“", page)
+        self.assertNotIn("date unknown", page)
         self.assertNotIn('Bob Nowhere</a></h3><p class="fn-card__role', page)
-        self.assertIn("“Bob Nowhere studies ULB history”", page)
-        self.assertIn(">bob page</a>, date unknown</cite>", page)
         (point,) = client.get(f"/api/searches/{search_id}/geo").json()["features"]
         self.assertEqual((point["properties"]["id"], point["properties"]["employer"]), (anne, "Nokia Bell Labs"))
 
     def test_a_card_from_a_record_states_the_fact_and_never_quotes_the_record(self):
-        """An OpenAlex record's claim shows as 'Studied at KU Leuven, 2012–2017' with the citation 'OpenAlex record'.
+        """An OpenAlex record's claim is the reason line 'Studied at KU Leuven, 2012–2017' with the source 'OpenAlex record'.
 
         No line of the record's text reaches the page.
         """
@@ -297,9 +295,8 @@ class WebTest(unittest.TestCase):
         self.store.save_candidates("s1", [Candidate(search_id="s1", person_id=anne, person_ids=[anne], section="new",
                                                     rank=1, score=1.0, lane_ranks={"openalex": 1}, hit_person_ids=[anne])], [])
         page = self.client().get("/searches/s1").text
-        self.assertIn('<p class="fn-fact text-body">Studied at KU Leuven, <span class="text-year">2012–2017</span></p>', page)
-        self.assertIn('<p class="fn-cite text-small"><a href="/sources/src-oa?claim=', page)
-        self.assertIn(">OpenAlex record</a>, 2025</p>", page)
+        self.assertIn('<p class="fn-card__reason text-body">Studied at KU Leuven, 2012–2017 · <a href="/sources/src-oa?claim=', page)
+        self.assertIn('class="fn-card__source">OpenAlex record</a></p>', page)
         self.assertNotIn("display_name:", page)
 
     def resolve(self, key: str, name: str) -> str:

@@ -268,7 +268,7 @@ class WayBackTest(unittest.TestCase):
         card = re.search(rf'<article [^>]*id="card-{twin}".*?</article>', html, re.DOTALL).group(0)
         back = quote(f"/searches/s1?shown=40#card-{twin}", safe="")
         self.assertIn(f'<a href="/people/{ada}?back={back}">Ada Example</a>', card)
-        self.assertRegex(card, rf'<a href="/sources/src-1\?claim=[0-9a-f]+&back={re.escape(back)}#quote">')
+        self.assertRegex(card, rf'<a href="/sources/src-1\?claim=[0-9a-f]+&back={re.escape(back)}#quote" class="fn-card__source">')
         added = unescape(self.client.post(f"/searches/s1/people/{bob}/add", headers={"x-requested-with": "fetch"},
                                           data={"next": "/searches/s1?shown=40"}).text)
         back = quote(f"/searches/s1?shown=40#card-{bob}", safe="")

@@ -30,12 +30,14 @@ from fn.contracts import (
     PersonView,
     ProfileView,
     QuoteView,
+    ReasonView,
     RecordView,
     ResultsHeading,
     ResultsView,
     Search,
     Source,
     SummaryRow,
+    WhyView,
 )
 from fn.evidence import places
 from fn.store import Store, fold
@@ -63,6 +65,8 @@ HEADINGS = {1: "Topic and a tie to Flanders", 2: "Topic, no known tie", 3: "Tie,
 WORK = "OpenAlex work "
 UNKNOWN_DATE = "date unknown"
 QUOTE_WORDS = 25
+REASON_WORDS = 15
+NO_TIE = "No known tie to Flanders"
 FIELD_LABEL = re.compile(r"[*•-]\s*(?:[^\W_]| ){1,30}:")
 ENTITY = re.compile(r"&#?\w+;")
 IMAGE_TOKENS = ("orcid image", "author orcid", "![", "[image")
@@ -467,11 +471,11 @@ def job_claims(claims: list[Claim], sources: dict[str, Source]) -> list[Claim]:
 
 
 def person_view(store: Store, person: Person, claims: list[Claim], facts: dict[str, Org], sources: dict[str, Source],
-                shown: Claim | None, today: date, records: int = 1) -> PersonView:
+                shown: Claim | None, today: date, records: int = 1, tie_ids: Sequence[str] = ()) -> PersonView:
     """The view of one person from the claims of its records; shown is the claim the card gives as evidence.
 
-    records is how many records not merged into one person the claims come from. The role and employer are the
-    head line's.
+    records is how many records not merged into one person the claims come from; tie_ids are the claim ids of the
+    tie, strongest first. The role and employer are the head line's.
     """
     member = person.list_status == "in_list"
     seen_at = person.seen_at if member else None
@@ -481,6 +485,7 @@ def person_view(store: Store, person: Person, claims: list[Claim], facts: dict[s
     role = head.role if head else None
     employer = (head.org.name if head.org else head.shown.value) if head and head.shown.relation in JOINING else None
     contact = {kind: newest([c for c in claims if c.kind == kind]) for kind in ("email", "phone")}
+    tie = tie_claim(claims, facts, tie_ids)
     return PersonView(
         person_id=person.id, name=person.display_name, role=what_of(role, None) if role else None,
         employer=employer, place=place, lat=lat, lon=lon, place_basis=basis, records=records,
@@ -491,16 +496,18 @@ def person_view(store: Store, person: Person, claims: list[Claim], facts: dict[s
         new_facts=sum(1 for c in claims if seen_at and c.first_seen_at and c.first_seen_at > seen_at),
         email=contact["email"].value if contact["email"] else None,
         phone=contact["phone"].value if contact["phone"] else None,
+        tie=what_of(tie, facts.get(tie.org_id or "")) if tie else None, tie_claim_id=tie.id if tie else None,
     )
 
 
 def person_views(store: Store, groups: list[list[str]], today: date, matched: list[list[str]] | None = None,
-                 topics: list[str | None] | None = None) -> list[PersonView]:
+                 topics: list[str | None] | None = None, tie_ids: list[list[str] | None] | None = None) -> list[PersonView]:
     """One view per group of stored person ids, named after its first; all claims come from one claims_of call.
 
     Ids are mapped to their canonical person first. matched holds, per group, the claim ids a search matched,
     which the evidence falls back to when the group has no claim at a Belgian organization. topics holds, per
-    group, the claim the evidence shows first.
+    group, the claim the evidence shows first. tie_ids holds, per group, the claim ids of its tie, strongest first; a
+    group with None takes the tie evidence's, and without tie_ids no view has a tie.
     """
     canonical = store.canonical_ids([p for g in groups for p in g])
     groups = [list(dict.fromkeys(canonical[p] for p in g)) for g in groups]
@@ -515,8 +522,10 @@ def person_views(store: Store, groups: list[list[str]], today: date, matched: li
              zip(owned, matched or [[] for _ in groups], topics or [None for _ in groups])]
     needed = {c.source_id for claims in owned for c in claims if c.kind == "role" or c.relation in JOINING}
     sources = store.get_sources(list(needed | {c.source_id for c in shown if c}))
-    return [person_view(store, persons[g[0]], claims, facts, sources, s, today, len(g))
-            for g, claims, s in zip(groups, owned, shown)]
+    tied = [[] if tie_ids is None else t if t is not None else evidence_tie(store, g, claims, facts, today)
+            for g, claims, t in zip(groups, owned, tie_ids or [None for _ in groups])]
+    return [person_view(store, persons[g[0]], claims, facts, sources, s, today, len(g), t)
+            for g, claims, s, t in zip(groups, owned, shown, tied)]
 
 
 def heading_of(candidate: Candidate) -> str:
@@ -577,19 +586,49 @@ def topic_claim(candidate: Candidate) -> str | None:
     return next((p.claim_ids[0] for p in candidate.score_parts if p.feature == "topic" and p.claim_ids), None)
 
 
-def why_of(candidate: Candidate, view: PersonView) -> str | None:
-    """The why line from the candidate's stored parts: the topic words found, else the place it was listed for."""
-    parts = {p.feature: p for p in candidate.score_parts}
-    if topic := parts.get("topic"):
-        return f"Matches: {topic.detail}" + (" · Place from the employer" if view.place_basis == "employer" else "")
-    if place := parts.get("place"):
-        return f"Based in {place.detail.split(': ', 1)[-1]}"
-    return None
+def reason_of(view: ClaimView | None, href: str) -> ReasonView | None:
+    """The card's reason line: the fact cut at a word with '…' so that it, its years and its source name are at most
+    15 words, then its years; None without a claim.
+    """
+    if view is None:
+        return None
+    room = max(REASON_WORDS - len(view.years.split()) - len(view.source.split()), 1)
+    words = view.what.split()
+    what = view.what if len(words) <= room else " ".join(words[:room]).rstrip(" ,;:.") + "…"
+    return ReasonView(text=f"{what}, {view.years}" if view.years else what, source=view.source, href=href)
 
 
-def card_view(store: Store, candidate: Candidate, view: PersonView, skipped: bool, today: date) -> CardView:
+def place_words(search: Search, fit: CardFit | None) -> str | None:
+    """Where the person is for the question in words, such as 'in Boston' or 'elsewhere in the US'; None without a
+    place chip, for an abroad chip or without a fit.
+    """
+    place = search.chips.place if search.chips else None
+    if place is None or place.kind == "abroad" or fit is None:
+        return None
+    if fit.place == "inside":
+        return "in the US" if place.kind == "anywhere_us" else f"in {place.text}"
+    return {"outside": "elsewhere in the US", "abroad": "outside the US", "unknown": "place unknown"}.get(fit.place)
+
+
+def candidate_view(store: Store, candidate: Candidate, today: date) -> PersonView:
+    """The view of the candidate's card, with the tie the ranker stored for it, else the tie evidence's."""
+    return person_views(store, [identity.on_card(store, candidate)], today, [candidate.reason_claim_ids],
+                        [topic_claim(candidate)], [fit_tie(candidate.fit)])[0]
+
+
+def fit_words(search: Search, candidate: Candidate, view: PersonView) -> str | None:
+    """The card's second line: the tie in words, left out when the reason names it, then the place words."""
+    named = view.evidence is not None and view.tie_claim_id == view.evidence.claim_id
+    parts = [None if named else view.tie or NO_TIE, place_words(search, candidate.fit)]
+    return " · ".join(p for p in parts if p) or None
+
+
+def card_view(store: Store, search: Search, candidate: Candidate, view: PersonView, skipped: bool,
+              today: date) -> CardView:
     """The candidate's card: its state from the people's status now, the same-name network person and the Undo."""
-    base = {"key": candidate.person_id, "section": candidate.section, "person": view, "why": why_of(candidate, view)}
+    base = {"key": candidate.person_id, "section": candidate.section, "person": view,
+            "reason": reason_of(view.evidence, view.evidence.href) if view.evidence else None,
+            "fit": fit_words(search, candidate, view)}
     event = latest(store, view.person_id)
     if skipped:
         undo = LastView(event_id=event.id, kind="skip", words=DONE["skip"]) if event and event.kind == "skip" else None
@@ -603,11 +642,17 @@ def card_view(store: Store, candidate: Candidate, view: PersonView, skipped: boo
     return CardView(**base, state="new")
 
 
-def card(store: Store, candidate: Candidate, today: date) -> CardView:
+def card(store: Store, search: Search, candidate: Candidate, today: date) -> CardView:
     """The card of one candidate, as the results page shows it."""
-    view = person_views(store, [identity.on_card(store, candidate)], today, [candidate.reason_claim_ids],
-                        [topic_claim(candidate)])[0]
-    return card_view(store, candidate, view, is_skipped(store, candidate), today)
+    return card_view(store, search, candidate, candidate_view(store, candidate, today), is_skipped(store, candidate), today)
+
+
+def why_view(store: Store, search: Search, candidate: Candidate, today: date) -> WhyView:
+    """The Person page's why block for the card it was opened from: the card's lines, the reason without its source."""
+    view = candidate_view(store, candidate, today)
+    place = place_words(search, candidate.fit)
+    return WhyView(reason=reason_of(view.evidence, view.evidence.href) if view.evidence else None,
+                   tie=view.tie or NO_TIE, place=place[:1].upper() + place[1:] if place else None)
 
 
 def results(store: Store, search: Search, today: date, shown: int = RESULTS_STEP,
@@ -619,7 +664,7 @@ def results(store: Store, search: Search, today: date, shown: int = RESULTS_STEP
     """
     candidates = store.list_candidates(search.id, kept_only=True)
     views = person_views(store, [identity.on_card(store, c) for c in candidates], today, [c.reason_claim_ids for c in candidates],
-                         [topic_claim(c) for c in candidates])
+                         [topic_claim(c) for c in candidates], [fit_tie(c.fit) for c in candidates])
     skipped = [is_skipped(store, c) for c in candidates]
     kept = [(c, v) for c, v, s in zip(candidates, views, skipped) if not s]
     cards, counted, hidden, next_key = [], 0, 0, None
@@ -634,7 +679,7 @@ def results(store: Store, search: Search, today: date, shown: int = RESULTS_STEP
             continue
         else:
             counted += 1
-        cards.append(card_view(store, c, v, s, today))
+        cards.append(card_view(store, search, c, v, s, today))
     people = [v for _, v in kept]
     return ResultsView(network=[v for c, v in kept if c.section == "network"],
                        new=[v for c, v in kept if c.section == "new"], cards=cards, total=len(kept), shown=counted,

@@ -513,6 +513,9 @@ class PersonView(Model):
     phone: str | None = None
     # How many records not merged into one person the view combines.
     records: int = 1
+    # The tie in words and the claim that shows it; None unless the page asked for the tie and it is strong or medium.
+    tie: str | None = None
+    tie_claim_id: str | None = None
 
 
 # The person's latest decision while it can still be undone; claim_id names the fact or contact it concerns.
@@ -524,6 +527,13 @@ class LastView(Model):
     separated: bool = False
 
 
+# The card's reason line: the stored fact in at most 15 words with its source's short name and the source page link.
+class ReasonView(Model):
+    text: str
+    source: str
+    href: str
+
+
 class CardView(Model):
     key: str
     section: Section
@@ -533,7 +543,9 @@ class CardView(Model):
     undo_event: LastView | None = None
     note: str | None = None
     note_href: str | None = None
-    why: str | None = None
+    reason: ReasonView | None = None
+    # The card's second line: the tie in words, then the place words.
+    fit: str | None = None
 
 
 # One heading of the new section: how many people stand under it and the key of the first shown card under it.
@@ -607,6 +619,13 @@ class SummaryRow(Model):
     claim_ids: list[str] = []
 
 
+# The Person page's why block: the card's reason without its source, the tie in words and the place in words.
+class WhyView(Model):
+    reason: ReasonView | None = None
+    tie: str
+    place: str | None = None
+
+
 class ProfileView(Model):
     person: PersonView
     contact: list[ContactView]
@@ -617,6 +636,7 @@ class ProfileView(Model):
     last: LastView | None = None
     summary: list[SummaryRow] = []
     records: int = 1
+    why: WhyView | None = None
 
 
 class BackLink(Model):

@@ -11,6 +11,7 @@ from fn.contracts import (
     LaneHit,
     LaneOut,
     ResolveIn,
+    Search,
     Source,
 )
 from fn.steps import StepContext
@@ -300,7 +301,9 @@ class OnCardTest(StoreTest):
         """The card reads every record on it, so a place held by the likely record shows on the hit's card."""
         a, b = self.person("Ann Example"), self.person("Ann Example")
         self.claim(b, kind="location", value="Gent", relation="lives_in", lat=51.05, lon=3.72)
-        view = present.card(self.store, self.candidate([a], [a, b]), date(2026, 11, 12))
+        search = Search(id="s", question="q", status="done", created_at=now(), code_sha=None, dirty=False,
+                        llm_mode="replay", settings_json="{}", boot_id="b")
+        view = present.card(self.store, search, self.candidate([a], [a, b]), date(2026, 11, 12))
         self.assertEqual(view.person.place, "Gent")
 
 
