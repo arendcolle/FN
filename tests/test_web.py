@@ -264,7 +264,7 @@ class WebTest(unittest.TestCase):
         page = client.get(f"/searches/{search_id}").text
         self.assertEqual(page.count('class="fn-card"'), 2)
         self.assertIn(f'data-person="{anne}"><h3 class="fn-card__name text-name"><a href="/people/{anne}?search={search_id}'
-                      f'&amp;from=card">Anne Example</a></h3>', page)
+                      f'&amp;card={anne}&amp;from=card">Anne Example</a></h3>', page)
         self.assertIn("Nokia Bell Labs · Murray Hill, NJ", page)
         self.assertIn('ULB <span class="text-year">2001–2004</span> · KU Leuven <span class="text-year">2005–2008</span>'
                       ' · VUB <span class="text-year">2009</span> · +1 more', page)

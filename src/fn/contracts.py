@@ -571,6 +571,18 @@ class ProfileView(Model):
     last: LastView | None = None
 
 
+class BackLink(Model):
+    label: str
+    href: str
+
+
+class ListPlace(Model):
+    position: int
+    total: int
+    previous: str | None = None
+    next: str | None = None
+
+
 class StepRun(Model):
     id: str
     search_id: str

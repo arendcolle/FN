@@ -77,7 +77,8 @@ class CardActionsTest(unittest.TestCase):
         self.assertEqual(self.buttons(self.card(html, bob)), ["Add", "Skip"])
         twin_card = self.card(html, twin)
         self.assertEqual(self.buttons(twin_card), ["Same person", "Add as new", "Skip"])
-        self.assertIn(f'Same name as <a href="/people/{ada}">Ada Example</a> in your network', twin_card)
+        self.assertIn(f'Same name as <a href="/people/{ada}?back=%2Fsearches%2Fs1%23card-{twin}">Ada Example</a> in your network',
+                      twin_card)
 
     def test_add_puts_the_person_in_the_network_once_with_where_it_was_decided(self):
         """Add sets the person in the network and writes one event with the search, rank and section; the card
@@ -105,7 +106,7 @@ class CardActionsTest(unittest.TestCase):
         self.assertEqual(self.store.canonical_ids([mention])[mention], ada)
         card = self.act("s1", bob, "add")
         self.assertEqual(self.store.canonical_ids([other])[other], other)
-        self.assertIn(f'<span class="text-body">·</span><a class="text-body" href="/people/{bob}#matches">'
+        self.assertIn(f'<span class="text-body">·</span><a class="text-body" href="/people/{bob}?back=%2Fsearches%2Fs1%23card-{bob}#matches">'
                       '1 possible match</a>', card)
 
     def test_same_person_merges_and_add_as_new_keeps_them_apart(self):
@@ -122,7 +123,8 @@ class CardActionsTest(unittest.TestCase):
         self.assertEqual(self.store.get_persons([other])[other].list_status, "in_list")
         self.assertEqual(self.store.not_same_pairs([other]), {frozenset((bob, other))})
         self.assertIn("· as a new person", apart)
-        self.assertIn(f'Same name as <a href="/people/{bob}">Bob Example</a> in your network', apart)
+        self.assertIn(f'Same name as <a href="/people/{bob}?back=%2Fsearches%2Fs1%23card-{other}">Bob Example</a> in your network',
+                      apart)
 
     def test_skip_shrinks_the_card_here_and_hides_the_person_elsewhere(self):
         """A person skipped on this search is the one-line card with Undo; another search hides them and counts

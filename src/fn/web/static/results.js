@@ -65,3 +65,21 @@ if (live) {
   for (const type of ["pointerout", "focusout"]) document.addEventListener(type, () => setTimeout(() => held && swap()));
   setTimeout(poll, 2000);
 }
+
+// The browser's own scroll restore misses the list panel, so it is saved by address and set back on Back.
+const scrollKey = () => `fn-scroll:${location.pathname}${location.search}`;
+const panel = () => document.querySelector(".fn-results__list");
+
+addEventListener("pagehide", () => {
+  try {
+    if (panel()) sessionStorage.setItem(scrollKey(), String(panel().scrollTop));
+  } catch {}
+});
+
+addEventListener("pageshow", (event) => {
+  try {
+    const back = event.persisted || performance.getEntriesByType("navigation")[0]?.type === "back_forward";
+    const saved = sessionStorage.getItem(scrollKey());
+    if (back && saved !== null && panel()) panel().scrollTop = Number(saved);
+  } catch {}
+});
