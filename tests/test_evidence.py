@@ -328,5 +328,31 @@ class RoleTest(unittest.TestCase):
         self.assertEqual(role_of([role_claim("Professor")], []).fit, "unknown")
 
 
+class JobTest(unittest.TestCase):
+    def job_of(self, claims, card=None):
+        return evidence.job(claims, card or {"p1": frozenset({"openalex"})}, TODAY.date())
+
+    def test_a_role_and_a_works_at_is_known_and_a_role_alone_or_an_old_affiliation_is_none(self):
+        """known needs a role without a relation and an employer; an affiliation older than RECENT_YEARS is no employer."""
+        role = role_claim("Chief of staff")
+        self.assertEqual(self.job_of([role, job("c2", MIT, "2010")]), "known")
+        self.assertEqual(self.job_of([role]), "none")
+        self.assertEqual(self.job_of([role, job("c2", MIT, "2010", relation="affiliated_with")]), "none")
+        self.assertEqual(self.job_of([role, job("c2", MIT, "2024", relation="affiliated_with")]), "known")
+
+    def test_the_evidence_of_a_card_carries_its_job(self):
+        """of passes the job through, so the ranker reads what the card shows of the person's work."""
+        claims = [role_claim("Chief of staff"), job("c2", MIT, "2010")]
+        found = evidence.of({"p1": frozenset({"openalex"})}, claims, FACTS, asked(roles=[]), TODAY, NAMES)
+        self.assertEqual(found.job, "known")
+
+    def test_a_fellowship_role_or_a_page_title_role_with_an_employer_is_an_employer_alone(self):
+        """A role with a relation is a list entry, and a web person's page title is no role."""
+        fellow = claim("c1", kind="role", relation="fellow_of", value="Fellow", quote="Fellow")
+        self.assertEqual(self.job_of([fellow, job("c2", MIT, "2024", relation="affiliated_with")]), "employer")
+        title = role_claim("Founders summit speakers", "Ann Example, CTO")
+        self.assertEqual(self.job_of([title, job("c2", MIT, "2024")], MENTION), "employer")
+
+
 if __name__ == "__main__":
     unittest.main()

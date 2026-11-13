@@ -31,6 +31,7 @@ TIED = ("strong", "medium")
 ROLES = ("met", "unknown", "fails")
 FITS = ("inside", "unknown", "none")
 PLACES = {"outside": 1, "abroad": 2}
+SPOTS = {"unknown": 1, "outside": 2, "abroad": 3}
 BLANK = (7, 4, False, 1, False, 2, 0, 0)
 
 
@@ -155,6 +156,17 @@ def has_topic(found: "evidence.Evidence", question: Question | None) -> bool:
     return found.topic.match or not asked
 
 
+def confirmed(found: "evidence.Evidence", question: Question | None) -> bool:
+    """Whether the person matches what was asked. Version-1 chips: has_topic. Version 2: a met role chip, or
+    has_topic with a known job, or with an employer alone on an OpenAlex-only card when the question wants research."""
+    if question is None or question.chips.version < 2:
+        return has_topic(found, question)
+    if found.role.fit == "met":
+        return True
+    return has_topic(found, question) and (found.job == "known" or (
+        found.job == "employer" and found.only_openalex and parse.wants_research(question.chips)))
+
+
 def place_fit(found: "evidence.Evidence", question: Question | None) -> PlaceFit:
     """none without a place in the question; abroad, inside or outside by the person's places, else unknown.
 
@@ -174,7 +186,7 @@ def tier(found: "evidence.Evidence | None", question: Question | None) -> int:
     if found is None or found.role.fit == "fails":
         return 7
     tied, fits = found.belgian.grade in TIED, place_fit(found, question) in FITS
-    if has_topic(found, question):
+    if confirmed(found, question):
         return (1 if fits else 2) if tied else (3 if fits else 4)
     if tied:
         return 5 if found.topic.words else 6
@@ -197,14 +209,18 @@ def fit_of(found: "evidence.Evidence | None", question: Question | None) -> Card
 
 
 def order_key(found: "evidence.Evidence | None", question: Question | None, level: int) -> tuple:
-    """The new section's order before score: tier, heading, abroad last, role met, own words before related words,
-    tie grade, place, then more topic words. Network people and people without evidence share BLANK."""
+    """The new section's order before score: tier, heading, abroad last, role met (with the topic first), own
+    words before related words, tie grade, place, then more topic words. BLANK is for people without evidence."""
     if found is None:
         return BLANK
     place = place_fit(found, question)
     grade = found.belgian.grade
-    return (level, heading(level, grade), place == "abroad", ROLES.index(found.role.fit), found.topic.related,
-            TIED.index(grade) if grade in TIED else len(TIED), PLACES.get(place, 0), -len(found.topic.words))
+    legacy = question is None or question.chips.version < 2
+    spot = PLACES.get(place, 0) if legacy else SPOTS.get(place, 0)
+    # Version 2: within a role fit, a person who also matches the topic stands first.
+    role = ROLES.index(found.role.fit) if legacy else 2 * ROLES.index(found.role.fit) + (not found.topic.match)
+    return (level, heading(level, grade), place == "abroad", role, found.topic.related,
+            TIED.index(grade) if grade in TIED else len(TIED), spot, -len(found.topic.words))
 
 
 def no_tie(section: Section, found: "evidence.Evidence | None", question: Question | None) -> CutReason | None:

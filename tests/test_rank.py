@@ -211,7 +211,8 @@ ASK = Question(chips=Chips(topics=[Chip(text="wind power", origin="edited")]), a
 def found(*, words: tuple[str, ...] = ("wind",), match: bool = True, kinds: tuple[str, ...] = ("belgian_org",),
           years: int = 5, last: int | None = 2024, fit: str = "unknown", km: float | None = None,
           countries: tuple[str, ...] = (), institution: bool = False, only_openalex: bool = True,
-          grade: str | None = None, role: str = "unknown", related: bool = False) -> evidence.Evidence:
+          grade: str | None = None, role: str = "unknown", related: bool = False,
+          job: str = "none") -> evidence.Evidence:
     """Evidence as rank reads it, with every field a test may vary."""
     near = evidence.Place(42.4, -71.1, "Cambridge", "US", "employer", "c-place", 2024) if km is not None else None
     return evidence.Evidence(
@@ -222,7 +223,7 @@ def found(*, words: tuple[str, ...] = ("wind",), match: bool = True, kinds: tupl
                            grade=grade or ("strong" if kinds else "none")),
         role=evidence.Role(fit=role),
         place=evidence.Where(fit=fit, km=km, nearest=near, countries=frozenset(countries)),
-        only_openalex=only_openalex)
+        only_openalex=only_openalex, job=job)
 
 
 def ranked(cases: dict[str, tuple[int, evidence.Evidence]], ask: Question = ASK,
@@ -310,10 +311,10 @@ def v2(tie: str | None = None, *roles: Chip, **flags) -> Question:
 
 class TierTest(unittest.TestCase):
     CASES = {
-        "t1": found(fit="inside", km=5.0, countries=("US",), only_openalex=False),
-        "t2": found(fit="outside", km=900.0, countries=("US",), only_openalex=False),
-        "t3": found(kinds=(), only_openalex=False),
-        "t4": found(kinds=(), fit="outside", km=900.0, countries=("US",), only_openalex=False),
+        "t1": found(job="known", fit="inside", km=5.0, countries=("US",), only_openalex=False),
+        "t2": found(job="known", fit="outside", km=900.0, countries=("US",), only_openalex=False),
+        "t3": found(job="known", kinds=(), only_openalex=False),
+        "t4": found(job="known", kinds=(), fit="outside", km=900.0, countries=("US",), only_openalex=False),
         "t5": found(match=False, only_openalex=False),
         "t6_tie": found(match=False, words=(), only_openalex=False),
         "t6_none": found(match=False, kinds=(), only_openalex=False),
@@ -351,7 +352,7 @@ class TierTest(unittest.TestCase):
     def test_in_tier_1_role_met_comes_before_unknown_then_own_words_then_strong_before_medium(self):
         """The met person with a related word and a worse score is first; then own words before a related word;
         then a strong tie before a medium one."""
-        here = dict(fit="inside", km=5.0, countries=("US",), only_openalex=False)
+        here = dict(fit="inside", km=5.0, countries=("US",), only_openalex=False, job="known")
         out = ranked({"unknown": (1, found(**here)), "met": (30, found(role="met", related=True, **here))}, v2())
         self.assertEqual([c.person_id for c in out], ["met", "unknown"])
         out = ranked({"related": (1, found(related=True, **here)), "own": (30, found(**here))}, v2())
@@ -361,8 +362,8 @@ class TierTest(unittest.TestCase):
 
     def test_in_tier_2_outside_comes_before_abroad_whatever_the_role_and_grade(self):
         """Abroad stands last in tier 2 even with role met and a strong tie against role unknown and a medium tie."""
-        out = ranked({"abroad": (1, found(countries=("BE",), role="met", only_openalex=False)),
-                      "outside": (30, found(fit="outside", km=900.0, countries=("US",), grade="medium", only_openalex=False))},
+        out = ranked({"abroad": (1, found(countries=("BE",), role="met", only_openalex=False, job="known")),
+                      "outside": (30, found(job="known", fit="outside", km=900.0, countries=("US",), grade="medium", only_openalex=False))},
                      v2())
         self.assertEqual([(c.person_id, c.tier) for c in out], [("outside", 2), ("abroad", 2)])
 
@@ -401,6 +402,56 @@ class TierTest(unittest.TestCase):
         self.assertEqual([rank.heading(6, g) for g in ("strong", "medium", "weak", "none")], [3, 3, 4, 4])
         (c,) = rank.fuse("s", [hit_entry("a", seeds=1)], {})
         self.assertEqual((c.tier, c.fit), (7, None))
+
+
+class ConfirmedTest(unittest.TestCase):
+    BIZ = Chip(text="founders", origin="edited", research=False)
+    HERE = dict(fit="inside", km=5.0, countries=("US",), only_openalex=False)
+
+    def tiers(self, ask: Question, **people) -> dict:
+        out = ranked({k: (n, ev) for n, (k, ev) in enumerate(people.items(), 1)}, ask)
+        return {c.person_id: c.tier for c in out}
+
+    def test_a_topic_match_without_a_known_job_stands_in_tier_5_and_a_job_without_a_tie_before_it(self):
+        """Topic words and a tie without role and employer are tier 5; with both tier 1; a job without a tie is tier 3."""
+        ask = v2("nice", self.BIZ)
+        out = ranked({"none": (1, found(**self.HERE)), "job": (2, found(job="known", **self.HERE)),
+                      "bare": (3, found(job="known", kinds=(), **self.HERE))}, ask)
+        self.assertEqual([(c.person_id, c.tier) for c in out], [("job", 1), ("bare", 3), ("none", 5)])
+
+    def test_version_1_chips_keep_a_person_without_a_job_in_tier_1(self):
+        """Stored searches carry version-1 chips, whose tiers do not read the job."""
+        v1 = Question(chips=ASK.chips, area=BOSTON, country="US")
+        self.assertEqual(self.tiers(v1, none=found(**self.HERE)), {"none": 1})
+
+    def test_an_employer_alone_confirms_only_an_openalex_only_card_on_a_question_that_wants_research(self):
+        """OpenAlex-only with an employer is tier 1 without a role chip and tier 5 beside a business role chip;
+        a seed person with an employer alone is tier 5 on both."""
+        people = dict(oa=found(job="employer", **self.HERE | {"only_openalex": True}), seed=found(job="employer", **self.HERE))
+        self.assertEqual(self.tiers(v2(), **people), {"oa": 1, "seed": 5})
+        self.assertEqual(self.tiers(v2(None, self.BIZ), **people), {"oa": 5, "seed": 5})
+
+    def test_a_met_role_confirms_without_an_employer_and_no_role_chip_does_not(self):
+        """A consul who meets the role chip is tier 1 without an employer; without a role chip the same person is tier 5."""
+        consul = found(role="met", **self.HERE)
+        self.assertEqual(self.tiers(v2(None, self.BIZ), consul=consul), {"consul": 1})
+        self.assertEqual(self.tiers(v2(), consul=found(**self.HERE)), {"consul": 5})
+
+    def test_a_met_role_confirms_without_a_topic_word_and_stands_after_role_and_topic(self):
+        """A brewer who meets the role chip but holds no topic word is tier 1, behind a person with role and topic."""
+        ask = v2(None, self.BIZ)
+        people = {"role": (1, found(role="met", words=(), **self.HERE)), "both": (2, found(role="met", **self.HERE)),
+                  "topic": (3, found(job="known", **self.HERE))}
+        self.assertEqual([(c.person_id, c.tier) for c in ranked(people, ask)], [("both", 1), ("role", 1), ("topic", 1)])
+
+    def test_inside_the_area_stands_before_an_unknown_place_on_version_2_only(self):
+        """Within tier 1 a version-2 question puts the inside person first despite the worse score; version 1 keeps score order."""
+        people = {"unknown": (1, found(job="known", kinds=("belgian_org", "seed_list"), only_openalex=False)),
+                  "inside": (2, found(job="known", **self.HERE))}
+        self.assertEqual([c.person_id for c in ranked(people, v2())], ["inside", "unknown"])
+        v1 = Question(chips=Chips(topics=ASK.chips.topics, place=Place(text="Boston", origin="edited")),
+                      area=BOSTON, country="US")
+        self.assertEqual([c.person_id for c in ranked(people, v1)], ["unknown", "inside"])
 
 
 class ExemptionTest(unittest.TestCase):
