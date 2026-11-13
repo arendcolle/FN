@@ -111,7 +111,7 @@ class StubHttp:
     A POST with cache="only" raises CacheMiss, as a client with an empty cache does.
     """
 
-    def get(self, url: str, params: dict[str, str] | None = None) -> httpx.Response:
+    def get(self, url: str, params: dict[str, str] | None = None, **options) -> httpx.Response:
         current_recorder().record("http", f"GET {url} {params or {}}", 1, status=200)
         if url == geo.CITIES_URL:
             return httpx.Response(200, content=cities_zip())

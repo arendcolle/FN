@@ -1,8 +1,9 @@
 import unittest
+from datetime import UTC, datetime
 
 from pydantic import ValidationError
 
-from fn.contracts import Chips, ClaimDraft, Source, name_key, normalize
+from fn.contracts import Chips, ClaimDraft, Source, name_key, normalize, page_source
 
 SOURCE = Source(id="s1", kind="page", url="https://example.org", text="Anne works at KU Leuven.", content_hash="h")
 
@@ -39,6 +40,17 @@ class ChipsTest(unittest.TestCase):
         self.assertEqual((chips.topics[0].need, chips.topics[0].related, chips.topics[0].research),
                          ("must", [], None))
         self.assertEqual(chips.place.need, "nice")
+
+
+class PageSourceTest(unittest.TestCase):
+    def test_a_plain_page_source_has_kind_page_and_keeps_markup_characters(self):
+        """kind="page" with plain=True stores the text as written, so a_b_c stays; the default pass strips emphasis."""
+        at = datetime(2026, 11, 13, tzinfo=UTC)
+        plain = page_source("https://example.org/p", None, "files a_b_c and *x*", {}, at, None, kind="page", plain=True)
+        marked = page_source("https://example.org/p", None, "files a_b_c and *x*", {}, at, None)
+        self.assertEqual((plain.kind, plain.text), ("page", "files a_b_c and *x*"))
+        self.assertEqual(marked.kind, "vendor_page")
+        self.assertNotEqual(plain.id, marked.id)
 
 
 class NameKeyTest(unittest.TestCase):

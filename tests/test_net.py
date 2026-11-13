@@ -87,6 +87,55 @@ class NetTest(unittest.TestCase):
         self.assertEqual({r.headers["user-agent"] for r in self.sent},
                          {f"FN/0.1 (https://github.com/arendcolle/FN) httpx/{httpx.__version__}"})
 
+    def fetch(self, client: net.Client, url: str, **options) -> httpx.Response:
+        """GET url with options through client inside one step; returns the response or raises what the client raised."""
+        worker = Worker(self.store, self.settings, llm=StubLLM())
+        self.addCleanup(worker.shutdown)
+        search = worker.create_search("question")
+        ctx = StepContext(search_id=search.id, store=self.store, llm=None, http=client, now=now, new_id=new_id,
+                          log=logging.getLogger("fn.step"), settings=self.settings)
+        out = []
+        run_step(ctx, "fetch", lambda c, i: (out.append(c.http.get(url, **options)), ParseOut(chips={}))[1],
+                 ParseIn(question="wind"))
+        self.search_id = search.id
+        return out[0]
+
+    def test_an_error_carries_the_status_of_the_answer(self):
+        """A 404 raises HttpError with status 404; a refused URL has no status."""
+        with self.assertRaises(net.HttpError) as raised:
+            self.fetch(self.client([httpx.Response(404)]), "https://example.org/gone")
+        self.assertEqual(raised.exception.status, 404)
+        with self.assertRaises(net.HttpError) as refused:
+            self.fetch(self.client([]), "ftp://example.org/file")
+        self.assertIsNone(refused.exception.status)
+
+    def test_redirects_are_followed_as_recorded_calls_capped_and_limited_to_http(self):
+        """Hops up to the limit are followed, each its own call; one more fails; an ftp location is refused."""
+        hop = lambda to: httpx.Response(302, headers={"location": to})
+        client = self.client([hop("/b"), hop("https://other.example/c"), httpx.Response(200, text="final")])
+        self.assertEqual(self.fetch(client, "http://example.org/a", redirects=3).text, "final")
+        self.assertEqual([str(r.url) for r in self.sent],
+                         ["http://example.org/a", "http://example.org/b", "https://other.example/c"])
+        calls = self.store.list_calls(self.store.list_steps(self.search_id)[-1].id)
+        self.assertEqual([c.status for c in calls], [302, 302, 200])
+        with self.assertRaises(net.HttpError) as capped:
+            self.fetch(self.client([hop("/b"), hop("/c"), hop("/d")]), "https://example.org/a", redirects=2)
+        self.assertEqual(str(capped.exception), "GET https://example.org/a redirected more than 2 times")
+        with self.assertRaises(net.HttpError) as ftp:
+            self.fetch(self.client([hop("ftp://example.org/x")]), "https://example.org/a", redirects=3)
+        self.assertIn("refused ftp URL", str(ftp.exception))
+        with self.assertRaises(net.Redirect) as plain:
+            self.fetch(self.client([hop("/b")]), "https://example.org/a")
+        self.assertEqual((plain.exception.status, plain.exception.location), (302, "/b"))
+
+    def test_agent_replaces_the_user_agent_for_one_call_only(self):
+        """A call with agent sends exactly that header; a call without it keeps the repository agent."""
+        client = self.client([httpx.Response(200, text="a"), httpx.Response(200, text="b")])
+        self.fetch(client, "https://example.org/a", agent="FN/0.1")
+        self.fetch(client, "https://example.org/b")
+        self.assertEqual([r.headers["user-agent"] for r in self.sent],
+                         ["FN/0.1", f"FN/0.1 (https://github.com/arendcolle/FN) httpx/{httpx.__version__}"])
+
     def test_retry_after_is_honoured_once_up_to_30s_and_a_longer_wait_fails_the_step(self):
         """A 429 asking for 2 s is retried after 2 s; one asking for 120 s fails the step and names the wait."""
         ok = self.client([httpx.Response(429, headers={"Retry-After": "2"}), httpx.Response(200, text="ok")])
