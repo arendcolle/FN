@@ -284,7 +284,7 @@ class YearsAndWordsTest(PersonContentCase):
         self.assertEqual(self.role_line(self.page(ada)), "Example Health")
 
     def test_a_role_joins_the_employer_of_its_source_when_the_quotes_overlap_or_it_is_the_only_pair(self):
-        """Overlapping quotes join; two roles and two jobs on one page join by overlap, not by order."""
+        """Overlapping quotes join; two roles and a works_at and a worked_at join by overlap, and a worked_at never joins."""
         ada = self.person("Ada Voorbeeld", "ada")
         text = "Engineer at Alpha Labs. Earlier, director at Beta Works."
         src = self.source(text)
@@ -292,7 +292,37 @@ class YearsAndWordsTest(PersonContentCase):
         self.claim(ada, "role", "engineer", quote="Engineer at Alpha Labs", src=src)
         self.claim(ada, "affiliation", "Alpha Labs", quote="Alpha Labs", src=src, relation="works_at")
         self.claim(ada, "affiliation", "Beta Works", quote="Beta Works", src=src, relation="worked_at")
-        self.assertCountEqual(self.lines(self.page(ada)), ["Engineer, Alpha Labs", "Director, Beta Works"])
+        self.assertCountEqual(self.lines(self.page(ada)), ["Engineer, Alpha Labs", "Director", "Worked at Beta Works"])
+
+    def test_a_role_never_joins_a_past_job_of_its_source(self):
+        """'Partner' and a worked_at on one page are two lines, and the head names no employer."""
+        pia = self.person("Pia Voorbeeld", "pia")
+        src = self.source("Pia Voorbeeld, partner. Earlier, at Beta Works.")
+        self.claim(pia, "role", "Partner", quote="Pia Voorbeeld, partner", src=src, claim_date="2024")
+        self.claim(pia, "affiliation", "Beta Works", quote="Beta Works", src=src, relation="worked_at", valid_from="2006",
+                   valid_to="2009", claim_date="2009")
+        html = self.page(pia)
+        self.assertCountEqual(self.lines(html), ["Partner, 2024", "Worked at Beta Works, 2006–2009"])
+        self.assertEqual(self.role_line(html), "Partner")
+
+    def test_a_role_that_names_its_organization_is_not_followed_by_it(self):
+        """'Managing Director at BGR Group' joined to BGR Group reads as the role alone, on the line and the head."""
+        bo = self.person("Bo Voorbeeld", "bo")
+        src = self.source("Bo Voorbeeld, Managing Director at BGR Group.")
+        self.claim(bo, "role", "Managing Director at BGR Group", quote="Managing Director at BGR Group", src=src,
+                   claim_date="2024")
+        self.claim(bo, "affiliation", "BGR Group", quote="BGR Group", src=src, relation="works_at", claim_date="2024")
+        html = self.page(bo)
+        self.assertEqual(self.lines(html), ["Managing Director at BGR Group, 2024"])
+        self.assertEqual(self.role_line(html), "Managing Director at BGR Group")
+
+    def test_a_consul_post_reads_consul_for_the_country(self):
+        """A consul_for claim reads 'Consul for Belgium', never 'Honorary consul for'."""
+        cy = self.person("Cy Voorbeeld", "cy")
+        src = self.source("Cy Voorbeeld, consul", kind="seed_page", title="Consuls")
+        fact = self.claim(cy, "role", "Consul", relation="consul_for", org_id=BAEF.id, claim_date="2020", src=src)
+        self.assertRegex(unescape(self.raw(f"/sources/{src.id}", claim=fact)),
+                         rf"The (record|page) (lists|says): Consul for {BAEF.name}, 2020\.")
 
     def test_a_card_with_two_ways_to_say_one_job_reads_the_role_with_a_capital(self):
         """A lower-case stated role reads with a capital letter on the line."""

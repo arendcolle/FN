@@ -39,13 +39,14 @@ class CardLinesCase(base.PersonContentCase):
         super().setUp()
         self.store.upsert_org(ULB, replace=True)
 
-    def stored(self, cards: list[tuple[str, str | None, CardFit | None]], place: Place | None = BOSTON) -> str:
+    def stored(self, cards: list[tuple[str, str | None, CardFit | None]], place: Place | None = BOSTON,
+               tiers: list[int | None] | None = None) -> str:
         """A done search s1 with a card per (person, reason claim, fit); a reason is also the topic part."""
         self.store.create_search(search_of(place))
         self.store.save_candidates("s1", [
             Candidate(search_id="s1", person_id=person, person_ids=[person], hit_person_ids=[person],
                       card_person_ids=[person], section="new", rank=n, score=1.0, lane_ranks={"seeds": n},
-                      reason_claim_ids=[reason] if reason else [], fit=found,
+                      reason_claim_ids=[reason] if reason else [], fit=found, tier=(tiers or [None] * len(cards))[n - 1],
                       score_parts=[ScorePart(feature="topic", rank=1, points=0.1, claim_ids=[reason], detail="x")]
                       if reason else [])
             for n, (person, reason, found) in enumerate(cards, 1)], [])
@@ -105,12 +106,12 @@ class CardLinesTest(CardLinesCase):
         rows = [self.seed_row(), self.paper_row(), self.web_row(), self.old_row(), self.plain_row()]
         html = self.stored(rows)
         expected = [
-            ("Topic: AI in health care · example.org", "Fellow of Belgian American Educational Foundation · in Boston"),
+            ("Topic: AI in health care · example.org", "Fellow of Belgian American Educational Foundation · place unknown"),
             ("Paper: Deep learning for early warning of sepsis in intensive care units…, 2023 · OpenAlex work",
-             "Studied at KU Leuven · elsewhere in the US"),
-            ("Founder and CEO, Fictional Robotics · fictionalrobotics.com", "Origin: Belgian · place unknown"),
-            ("Worked at ULB, 2013–2018 · example.org", None),
-            ("Director of robotics, Example Health · examplehealth.org", "No known tie to Flanders · in Boston"),
+             "Studied at KU Leuven · place unknown"),
+            (None, "Origin: Belgian · place unknown"),
+            (None, "Worked at ULB · place unknown"),
+            (None, "No known tie to Flanders"),
         ]
         for (person, _, _), want in zip(rows, expected):
             with self.subTest(want=want[0]):
@@ -123,8 +124,8 @@ class CardLinesTest(CardLinesCase):
         tie = self.claim(weak, "affiliation", "Example Lab", relation="worked_at", claim_date="2020")
         bare = self.person("Bram Bare", "bare")
         html = self.stored([(weak, tie, fit("weak", [tie], "inside")), (bare, None, fit("none", [], "inside"))])
-        self.assertEqual(self.lines(html, weak)[1], "No known tie to Flanders · in Boston")
-        self.assertEqual(self.lines(html, bare), (None, "No known tie to Flanders · in Boston"))
+        self.assertEqual(self.lines(html, weak)[1], "No known tie to Flanders · place unknown")
+        self.assertEqual(self.lines(html, bare), (None, "No known tie to Flanders · place unknown"))
 
     def test_a_reason_never_passes_15_words_and_no_card_shows_a_quote_or_an_unknown_date(self):
         """A 40-word role and a 300-character paper title are cut at a word with '…'; no 'date unknown', 'Matches:'
@@ -132,7 +133,7 @@ class CardLinesTest(CardLinesCase):
         """
         long = self.person("Lotte Long", "long")
         words = " ".join(f"word{n}" for n in range(40))
-        job = self.claim(long, "role", words, src=self.source(f"Lotte Long {words}", url="https://www.example.org/long"))
+        job = self.claim(long, "topic", words, src=self.source(f"Lotte Long {words}", url="https://www.example.org/long"))
         paper = self.person("Pim Paper", "paper", "openalex")
         title = " ".join(["Tidal"] + ["coastal"] * 42)
         work = self.source(title, kind="record", url="https://openalex.org/W7", title=f"OpenAlex work {title}")
@@ -142,26 +143,117 @@ class CardLinesTest(CardLinesCase):
             reason = self.lines(html, person)[0]
             self.assertLessEqual(words_of(reason), 15, reason)
             self.assertIn("…", reason)
-        self.assertIn("Word0 word1", self.lines(html, long)[0])
+        self.assertIn("Topic: word0 word1", self.lines(html, long)[0])
         for text in ("date unknown", "Matches:", "<blockquote"):
             self.assertNotIn(text, html)
 
-    def test_place_words_for_each_fit_and_each_kind_of_place_chip(self):
-        """inside reads the chip's text or 'the US'; outside, abroad and unknown read their words; nothing without a
-        chip, with an abroad chip or without a fit.
+    def test_a_card_whose_role_line_shows_a_place_says_no_place_words_and_one_without_says_place_unknown(self):
+        """No place fit, chip or city words beside a shown place; 'place unknown' (card) and 'Place unknown' (why) without."""
+        rows = []
+        for found in ("inside", "outside", "abroad", "unknown", "none"):
+            plain = self.person(f"Petra {found}", f"plain-{found}")
+            page = self.source(f"Petra is Director of robotics, Example Health ({found})", url=f"https://examplehealth.org/{found}")
+            self.claim(plain, "role", "Director of robotics, Example Health", src=page)
+            self.claim(plain, "location", "Boston, MA", relation="lives_in", lat=42.36, lon=-71.06, src=page,
+                       quote="Petra is Director")
+            rows.append((plain, None, fit("none", [], found)))
+        lost = self.person("Lena Lost", "lost")
+        self.claim(lost, "role", "Director of robotics, Example Health")
+        html = self.stored([*rows, (lost, None, fit("none", [], "inside"))])
+        for plain, _, found in rows:
+            with self.subTest(fit=found.place):
+                self.assertEqual(self.lines(html, plain), (None, "No known tie to Flanders"))
+                self.assertEqual(re.findall(r"<li>(.*?)</li>", self.page(plain, search="s1", card=plain)),
+                                 ["No known tie to Flanders"])
+        self.assertEqual(self.lines(html, lost), (None, "No known tie to Flanders · place unknown"))
+        self.assertEqual(re.findall(r"<li>(.*?)</li>", self.page(lost, search="s1", card=lost)),
+                         ["No known tie to Flanders", "Place unknown"])
+
+
+class ReasonTest(CardLinesCase):
+    def worker(self, name: str, key: str, role: str = "Partner, Example LLP", date: str = "2024") -> tuple[str, str]:
+        """A person with a stated role on a page; returns the person and the role claim."""
+        person = self.person(name, key)
+        page = self.source(f"{name} is {role}", url=f"https://{key}.example.org/about")
+        return person, self.claim(person, "role", role, src=page, claim_date=date)
+
+    def test_a_host_a_study_or_an_affiliation_is_no_reason_but_a_stated_role_or_a_topic_is(self):
+        """A stored reason of relation hosted_by, studied_at or affiliated_with gives no reason line when the person has
+        no role or topic claim, and the stated role or the topic claim when the person has one.
         """
-        metro = search_of(Place(text="Boston", origin="edited", kind="metro"))
-        anywhere = search_of(Place(text="the US", origin="edited", kind="anywhere_us"))
-        abroad = search_of(Place(text="Paris", origin="edited", kind="abroad"))
-        for found, words in (("inside", "in Boston"), ("outside", "elsewhere in the US"), ("abroad", "outside the US"),
-                             ("unknown", "place unknown"), ("none", None)):
-            with self.subTest(fit=found):
-                self.assertEqual(present.place_words(metro, fit(place=found)), words)
-        self.assertEqual(present.place_words(anywhere, fit(place="inside")), "in the US")
-        self.assertEqual(present.place_words(anywhere, fit(place="outside")), "elsewhere in the US")
-        self.assertIsNone(present.place_words(abroad, fit(place="inside")))
-        self.assertIsNone(present.place_words(search_of(None), fit(place="inside")))
-        self.assertIsNone(present.place_words(metro, None))
+        rows, bare = [], []
+        for relation in ("hosted_by", "studied_at", "affiliated_with"):
+            person = self.person(f"Hanna {relation}", relation)
+            record = self.source("OpenAlex record", kind="record", url=f"https://openalex.org/{relation}", title="Record")
+            bare.append((person, self.claim(person, "affiliation", "KU Leuven", src=record, relation=relation,
+                                            org_id=base.LEUVEN.id, claim_date="2015"), fit("strong", [], "none")))
+        topical = self.person("Tessa Topical", "topical")
+        host = self.claim(topical, "affiliation", "KU Leuven", relation="hosted_by", org_id=base.LEUVEN.id, claim_date="2015",
+                          src=self.source("Tessa", kind="record", url="https://openalex.org/T", title="Record"))
+        self.claim(topical, "topic", "wind energy", quote="Tessa on wind energy",
+                   src=self.source("Tessa on wind energy", url="https://example.org/wind"))
+        html = self.stored([*bare, (topical, host, fit("strong", [], "none"))])
+        for person, _, _ in bare:
+            self.assertEqual(self.lines(html, person)[0], None)
+        self.assertEqual(self.lines(html, topical)[0], "Topic: wind energy · example.org")
+
+    def test_a_topic_from_a_page_that_lists_the_person_as_a_fellow_is_no_reason(self):
+        """A study or project on a fellows list is the fellow's own work, so the card gets no reason line."""
+        person = self.person("Fenna Fellow", "fellow")
+        page = self.source("Fenna Fellow, fellow. Study of tidal power", url="https://fellows.example.org/list")
+        fellow = self.claim(person, "affiliation", "Example Foundation", relation="fellow_of", src=page, claim_date="2015")
+        self.claim(person, "topic", "tidal power", quote="Study of tidal power", src=page)
+        html = self.stored([(person, fellow, fit("strong", [], "none"))])
+        self.assertEqual(self.lines(html, person)[0], None)
+
+    def test_a_page_title_role_is_never_the_reason_nor_the_first_why_line(self):
+        """A role equal to its page's title is no stated role: no reason line and no first line in the why block."""
+        web = self.person("Wanda Web", "web")
+        page = self.source("Wanda Web at the lab", url="https://lab.example.org/wanda", title="Wanda Web at the lab")
+        title = self.claim(web, "role", "Wanda Web at the lab", src=page)
+        html = self.stored([(web, title, fit("none", [], "inside"))])
+        self.assertEqual(self.lines(html, web)[0], None)
+        self.assertNotIn("Wanda Web at the lab", re.sub(r"<[^>]+>", " ", self.page(web, search="s1", card=web).split("fn-why")[1]))
+
+    def test_a_reason_that_repeats_the_role_line_is_dropped_and_one_that_adds_a_topic_stays(self):
+        """The role line 'Partner, Example LLP' holds every word of the reason 'Partner'; 'Topic: export controls' adds some."""
+        repeat, old = self.worker("Rik Repeat", "repeat")
+        short = self.claim(repeat, "role", "Partner", src=self.source("Rik Repeat, partner", url="https://old.example.org/rik"),
+                           claim_date="2020")
+        topical, _ = self.worker("Tom Topical", "tomt")
+        topic = self.claim(topical, "topic", "export controls", quote="Tom Topical on export controls",
+                           src=self.source("Tom Topical on export controls", url="https://example.org/export"))
+        html = self.stored([(repeat, short, fit("none", [], "inside")), (topical, topic, fit("none", [], "inside"))])
+        self.assertEqual(self.lines(html, repeat)[0], None)
+        self.assertEqual(self.lines(html, topical)[0], "Topic: export controls · example.org")
+
+    def test_the_first_heading_names_belgium_and_no_tie_is_repeated_under_topic_no_known_tie(self):
+        """Tier 1 reads 'Topic and a tie to Flanders or Belgium'; 'No known tie to Flanders' leaves the cards under
+        'Topic, no known tie' and stays under 'Other people found' and on a search without tiers.
+        """
+        self.assertEqual(present.HEADINGS[1], "Topic and a tie to Flanders or Belgium")
+        a, b, c = (self.worker(n, k)[0] for n, k in (("Ann Aa", "aa"), ("Bea Bb", "bb"), ("Cor Cc", "cc")))
+        rows = [(p, None, fit("none", [], "inside")) for p in (a, b, c)]
+        html = self.stored(rows, tiers=[1, 3, 7])
+        self.assertIn("Topic and a tie to Flanders or Belgium", html)
+        self.assertEqual([self.lines(html, p)[1] for p in (a, b, c)],
+                         ["No known tie to Flanders · place unknown", "place unknown", "No known tie to Flanders · place unknown"])
+
+    def test_a_card_under_topic_no_known_tie_keeps_place_unknown(self):
+        """Without the tie words the second line still says 'place unknown' when the role line shows no place."""
+        a = self.worker("Ann Aa", "aa")[0]
+        html = self.stored([(a, None, fit("none", [], "unknown"))], tiers=[3])
+        self.assertEqual(self.lines(html, a)[1], "place unknown")
+
+    def test_a_why_block_with_two_equal_lines_shows_one(self):
+        """A reason that reads like the tie line is left out of the later line: the block shows it once."""
+        job = self.person("Dina Dup", "dup")
+        self.claim(job, "affiliation", "Example Health", relation="works_at", org_id=base.HEALTH.id, claim_date="2024",
+                   src=self.source("Dina Dup works at Example Health", url="https://examplehealth.org/dina"))
+        said = self.claim(job, "role", "No known tie to Flanders", src=self.source("Dina Dup, no known tie", url="https://x.example.org/d"))
+        self.stored([(job, said, fit("none", [], "inside"))])
+        lines = re.findall(r"<li>(.*?)</li>", self.page(job, search="s1", card=job))
+        self.assertEqual(lines.count("No known tie to Flanders"), 1)
 
 
 class BudgetTest(CardLinesCase):
@@ -214,13 +306,13 @@ class MapAndWhyTest(CardLinesCase):
         self.assertIsNone(listed[rows[1][0]]["place_fit"])
 
     def test_the_why_block_sits_between_the_head_and_the_summary_and_needs_a_search(self):
-        """Three lines: the reason without its source, the tie words and the capitalised place; none without search."""
+        """The why block lists the tie words; the reason repeats the role line and the head shows the place; none without search."""
         plain, role, found = self.plain_row()
         self.stored([(plain, role, found)])
         html = self.page(plain, search="s1", card=plain)
         why = re.search(r'<section class="fn-why">(.*?)</section>', html, re.DOTALL).group(0)
         self.assertEqual(re.findall(r"<li>(.*?)</li>", why),
-                         ["Director of robotics, Example Health", "No known tie to Flanders", "In Boston"])
+                         ["No known tie to Flanders"])
         self.assertNotIn("examplehealth.org", why)
         self.assertLess(html.index('class="fn-profile__head"'), html.index('<section class="fn-why">'))
         self.assertLess(html.index('<section class="fn-why">'), html.index('<dl class="fn-summary-list">'))
