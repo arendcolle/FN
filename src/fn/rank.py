@@ -181,12 +181,17 @@ def place_fit(found: "evidence.Evidence", question: Question | None) -> PlaceFit
     return "outside" if found.place.fit == "outside" else "unknown"
 
 
-def tier(found: "evidence.Evidence | None", question: Question | None) -> int:
-    """The tier 1 to 7 of a person: topic before tie, tie before place; a failed role or no evidence is tier 7."""
+def tier(found: "evidence.Evidence | None", question: Question | None, researched: bool = False) -> int:
+    """The tier 1 to 7 of a person: topic before tie, tie before place; a failed role or no evidence is tier 7.
+
+    On a version-2 question, a person the web researcher named for this question (researched) counts as a
+    confirmed match: the researcher chose them for the question, which word matching cannot do.
+    """
     if found is None or found.role.fit == "fails":
         return 7
     tied, fits = found.belgian.grade in TIED, place_fit(found, question) in FITS
-    if confirmed(found, question):
+    current = question is not None and question.chips.version >= 2
+    if confirmed(found, question) or (current and researched):
         return (1 if fits else 2) if tied else (3 if fits else 4)
     if tied:
         return 5 if found.topic.words else 6
@@ -318,7 +323,7 @@ def fuse(search_id: str, entries: list[Entry], statuses: dict[str, ListStatus],
         section: Section = "network" if any(statuses.get(p) == "in_list" for p in hits(e)) else "new"
         entry_parts = parts(e, belgian.get(key)) + extra.get(key, [])
         ev = found.get(key)
-        level = tier(ev, question)
+        level = tier(ev, question, "scout" in e.lane_ranks)
         reason = cut_reason(section, ev, question) if ev else unread_cut(section, e, entry_parts)
         rows.append(Row(BLANK if section == "network" else order_key(ev, question, level), e, section, entry_parts, ev,
                         level, reason))

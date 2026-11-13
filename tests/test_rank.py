@@ -444,6 +444,16 @@ class ConfirmedTest(unittest.TestCase):
                   "topic": (3, found(job="known", **self.HERE))}
         self.assertEqual([(c.person_id, c.tier) for c in ranked(people, ask)], [("both", 1), ("role", 1), ("topic", 1)])
 
+    def test_a_person_the_web_researcher_named_counts_as_confirmed_on_version_2_only(self):
+        """Found by the scout lane, a person without a topic word or a known job is tier 3, or 1 with a tie; not on version 1."""
+        bare = dict(words=(), match=False, **self.HERE)
+        entries = [hit_entry("tied", scout=1), hit_entry("free", scout=2), hit_entry("stored", seeds=1)]
+        evidence_of = {"tied": found(**bare), "free": found(kinds=(), **bare), "stored": found(kinds=(), **bare)}
+        v1 = Question(chips=ASK.chips, area=BOSTON, country="US")
+        for ask, want in ((v2("nice", self.BIZ), {"tied": 1, "free": 3, "stored": 7}), (v1, {"tied": 6, "free": 7, "stored": 7})):
+            got = {c.person_id: c.tier for c in rank.fuse("s", entries, {}, None, evidence_of, ask)}
+            self.assertEqual(got, want)
+
     def test_inside_the_area_stands_before_an_unknown_place_on_version_2_only(self):
         """Within tier 1 a version-2 question puts the inside person first despite the worse score; version 1 keeps score order."""
         people = {"unknown": (1, found(job="known", kinds=("belgian_org", "seed_list"), only_openalex=False)),
