@@ -5,12 +5,12 @@ from fn import network
 from fn.contracts import Candidate, CardFit, Search
 from fn.present import HEADINGS
 from fn.worker import now
-from tests.test_results_page import ResultsPageTest as Base
+from tests.test_results_page import ResultsPageCase
 
 NEW = [*HEADINGS.values()]
 
 
-class ResultsHeadingsTest(Base):
+class ResultsHeadingsTest(ResultsPageCase):
     def listing(self, rows: list[tuple[int | None, str | None]], status: str = "done") -> list[str]:
         """A search s1 of made-up people, one per (tier, tie grade); a grade of None leaves fit empty."""
         people = [self.person(f"Person {n:02}") for n in range(len(rows))]
@@ -64,6 +64,14 @@ class ResultsHeadingsTest(Base):
         network.skip(self.store, [people[2]], now=now())
         self.assertEqual(self.headings(self.page()), [(NEW[0], "2")])
 
+    def test_a_heading_with_nobody_left_shows_no_number(self):
+        """A heading whose only person was skipped on this search still stands above the card, without a number."""
+        people = self.listing([(1, "strong"), (3, "strong")])
+        network.skip(self.store, [people[0]], now=now(), search_id="s1")
+        html = self.page()
+        self.assertIn(f'<h2 class="fn-section text-label">{NEW[0]} </h2>', html)
+        self.assertIn(f'<h2 class="fn-section text-label">{NEW[1]} <span>1</span></h2>', html)
+
     def test_a_running_search_counts_the_whole_list(self):
         """While a search runs, a heading counts every person under it, also past the shown cards."""
         self.listing([(1, "strong")] * 22, status="running")
@@ -83,7 +91,5 @@ class ResultsHeadingsTest(Base):
         self.assertNotIn("strong", text)
         self.assertNotIn("medium", text)
 
-
-del Base
 if __name__ == "__main__":
     unittest.main()

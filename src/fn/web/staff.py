@@ -185,8 +185,8 @@ def person_cards(store: Store, search: Search, shown: int, show_skipped: bool, v
     firsts = {x.first_key: x for x in found.headings}
     sections = [[None if section == "new" and firsts else
                  section_heading(title, counts[section]),
-                 [[section_heading(firsts[c.key].title, firsts[c.key].count) if c.key in firsts else None, result_card(c, search.id, here, shown)]
-                  for c in group]]
+                 [[section_heading(firsts[c.key].title, firsts[c.key].count) if c.key in firsts else None,
+                   result_card(c, search.id, here, shown)] for c in group]]
                 for section, title in SECTIONS.items() if (group := [c for c in found.cards if c.section == section])]
     count = None if active else count_line(found.total, found.not_on_map,
                                            [h.a("Export", href=f"/searches/{search.id}/export.csv")] if found.total else [])
