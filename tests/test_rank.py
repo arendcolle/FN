@@ -210,13 +210,17 @@ ASK = Question(chips=Chips(topics=[Chip(text="wind power", origin="edited")]), a
 
 def found(*, words: tuple[str, ...] = ("wind",), match: bool = True, kinds: tuple[str, ...] = ("belgian_org",),
           years: int = 5, last: int | None = 2024, fit: str = "unknown", km: float | None = None,
-          countries: tuple[str, ...] = (), institution: bool = False, only_openalex: bool = True) -> evidence.Evidence:
+          countries: tuple[str, ...] = (), institution: bool = False, only_openalex: bool = True,
+          grade: str | None = None, role: str = "unknown", related: bool = False) -> evidence.Evidence:
     """Evidence as rank reads it, with every field a test may vary."""
     near = evidence.Place(42.4, -71.1, "Cambridge", "US", "employer", "c-place", 2024) if km is not None else None
     return evidence.Evidence(
-        topic=evidence.Topic(match=match and bool(words), words=words, claim_ids=("c-topic",) if words else ()),
+        topic=evidence.Topic(match=match and bool(words), words=words, claim_ids=("c-topic",) if words else (),
+                            related=related),
         institution=evidence.Institution(match=institution, claim_ids=("c-inst",) if institution else ()),
-        belgian=evidence.Tie(kinds={k: (f"c-{k}",) for k in kinds}, years=years, last=last),
+        belgian=evidence.Tie(kinds={k: (f"c-{k}",) for k in kinds}, years=years, last=last,
+                           grade=grade or ("strong" if kinds else "none")),
+        role=evidence.Role(fit=role),
         place=evidence.Where(fit=fit, km=km, nearest=near, countries=frozenset(countries)),
         only_openalex=only_openalex)
 
@@ -229,8 +233,8 @@ def ranked(cases: dict[str, tuple[int, evidence.Evidence]], ask: Question = ASK,
 
 
 class OrderTest(unittest.TestCase):
-    def test_the_five_bands_come_in_order_whatever_the_lane_score(self):
-        """Group 0 not outside, group 0 outside, group 1 not outside, group 1 outside, then placed only abroad."""
+    def test_the_tiers_come_in_order_whatever_the_lane_score(self):
+        """Tier 1 inside, tier 2 outside, then abroad last in tier 2, then tier 5 (a tie and a word, no full topic match)."""
         out = ranked({
             "abroad": (1, found(countries=("BE",), kinds=("seed_list",), only_openalex=False)),
             "g1out": (2, found(match=False, fit="outside", km=900.0, countries=("US",))),
@@ -239,7 +243,7 @@ class OrderTest(unittest.TestCase):
             "g0in": (5, found(fit="inside", km=5.0, countries=("US",))),
         })
         self.assertEqual([(c.person_id, c.group, c.rank) for c in out],
-                         [("g0in", 0, 1), ("g0out", 0, 2), ("g1", 1, 3), ("g1out", 1, 4), ("abroad", 0, 5)])
+                         [("g0in", 0, 1), ("g0out", 0, 2), ("abroad", 0, 3), ("g1", 1, 4), ("g1out", 1, 5)])
 
     def test_an_unknown_place_moves_nobody_down(self):
         """A group-0 person with no place and a better score stays above a group-0 person inside the area."""
@@ -295,6 +299,171 @@ class OrderTest(unittest.TestCase):
         out = ranked({"one": (1, found(words=("wind",))), "two": (30, found(words=("wind", "power")))},
                      statuses={"one": "in_list", "two": "in_list"})
         self.assertEqual([c.person_id for c in out], ["one", "two"])
+
+
+def v2(tie: str | None = None, *roles: Chip, **flags) -> Question:
+    """A question over the same topic and area as ASK with version-2 chips, and a tie chip of the given need."""
+    chips = Chips(topics=[Chip(text="wind power", origin="edited")], roles=list(roles), version=2,
+                  tie=Chip(text="Flanders", origin="edited", need=tie) if tie else None)
+    return Question(chips=chips, area=BOSTON, country="US", **flags)
+
+
+class TierTest(unittest.TestCase):
+    CASES = {
+        "t1": found(fit="inside", km=5.0, countries=("US",), only_openalex=False),
+        "t2": found(fit="outside", km=900.0, countries=("US",), only_openalex=False),
+        "t3": found(kinds=(), only_openalex=False),
+        "t4": found(kinds=(), fit="outside", km=900.0, countries=("US",), only_openalex=False),
+        "t5": found(match=False, only_openalex=False),
+        "t6_tie": found(match=False, words=(), only_openalex=False),
+        "t6_none": found(match=False, kinds=(), only_openalex=False),
+        "t7": found(match=False, words=(), kinds=(), only_openalex=False),
+    }
+
+    def run_cases(self, ask: Question, cases: dict | None = None, statuses: dict | None = None) -> dict:
+        cases = cases or self.CASES
+        out = ranked({k: (n, ev) for n, (k, ev) in enumerate(reversed(list(cases.items())), 1)}, ask, statuses)
+        return {c.person_id: c for c in out}
+
+    def test_the_eight_cases_of_the_table_come_out_in_tiers_1_to_7_with_their_heading(self):
+        """Topic before tie, tie before place; tier 6 stands under heading 3 with a tie and 4 without, after tier 5."""
+        out = self.run_cases(v2())
+        self.assertEqual([(k, c.tier, c.group, rank.heading(c.tier, c.fit.tie_grade), c.cut_reason) for k, c in out.items()],
+                         [("t1", 1, 0, 1, None), ("t2", 2, 0, 1, None), ("t3", 3, 1, 2, None), ("t4", 4, 1, 2, None),
+                          ("t5", 5, 1, 3, None), ("t6_tie", 6, 1, 3, None), ("t6_none", 6, 1, 4, None), ("t7", 7, 1, 4, None)])
+
+    def test_a_tie_that_is_a_must_cuts_weak_and_no_tie_but_never_the_network(self):
+        """Under a must tie a weak grade and no grade are cut no_tie; a network person with no tie is kept."""
+        cases = dict(self.CASES, weak=found(kinds=("belgian_text",), grade="weak", only_openalex=False))
+        out = self.run_cases(v2("must"), cases, {"t7": "in_list"})
+        self.assertEqual({k: c.cut_reason for k, c in out.items()},
+                         {"t1": None, "t2": None, "t3": "no_tie", "t4": "no_tie", "t5": None, "t6_tie": None,
+                          "t6_none": "no_tie", "t7": None, "weak": "no_tie"})
+        self.assertEqual(out["t7"].section, "network")
+
+    def test_a_tie_that_is_nice_and_version_1_chips_cut_nobody_for_a_missing_tie(self):
+        """Only a version-2 must tie cuts no_tie; a nice tie and version-1 chips keep everyone."""
+        v1 = Question(chips=Chips(topics=[Chip(text="wind power", origin="edited")], tie=Chip(text="x", origin="edited")),
+                      area=BOSTON, country="US")
+        for ask in (v2("nice"), v1):
+            self.assertEqual({c.cut_reason for c in self.run_cases(ask).values()}, {None})
+
+    def test_in_tier_1_role_met_comes_before_unknown_then_own_words_then_strong_before_medium(self):
+        """The met person with a related word and a worse score is first; then own words before a related word;
+        then a strong tie before a medium one."""
+        here = dict(fit="inside", km=5.0, countries=("US",), only_openalex=False)
+        out = ranked({"unknown": (1, found(**here)), "met": (30, found(role="met", related=True, **here))}, v2())
+        self.assertEqual([c.person_id for c in out], ["met", "unknown"])
+        out = ranked({"related": (1, found(related=True, **here)), "own": (30, found(**here))}, v2())
+        self.assertEqual([c.person_id for c in out], ["own", "related"])
+        out = ranked({"medium": (1, found(grade="medium", **here)), "strong": (30, found(**here))}, v2())
+        self.assertEqual([c.person_id for c in out], ["strong", "medium"])
+
+    def test_in_tier_2_outside_comes_before_abroad_whatever_the_role_and_grade(self):
+        """Abroad stands last in tier 2 even with role met and a strong tie against role unknown and a medium tie."""
+        out = ranked({"abroad": (1, found(countries=("BE",), role="met", only_openalex=False)),
+                      "outside": (30, found(fit="outside", km=900.0, countries=("US",), grade="medium", only_openalex=False))},
+                     v2())
+        self.assertEqual([(c.person_id, c.tier) for c in out], [("outside", 2), ("abroad", 2)])
+
+    def test_a_failed_role_is_tier_7_under_heading_4_and_kept_under_a_must_tie(self):
+        """Role fails with a topic and a strong tie: tier 7, heading 4, and not cut by a must tie."""
+        out = ranked({"fails": (1, found(role="fails", fit="inside", km=5.0, countries=("US",), only_openalex=False))},
+                     v2("must"))
+        (c,) = out
+        self.assertEqual((c.tier, rank.heading(c.tier, c.fit.tie_grade), c.cut_reason, c.fit.role), (7, 4, None, "fails"))
+
+    def test_place_fit_for_each_value(self):
+        """none without a place, abroad, inside, outside and unknown; an anywhere_us question has no area."""
+        place = Chips(place=Place(text="Boston", origin="edited"))
+        us = Question(chips=Chips(place=Place(text="the US", origin="edited", kind="anywhere_us")), country="US")
+        self.assertEqual(
+            [rank.place_fit(found(), None), rank.place_fit(found(), Question(chips=Chips())),
+             rank.place_fit(found(countries=("BE",)), Question(chips=place, area=BOSTON, country="US")),
+             rank.place_fit(found(fit="inside", countries=("US",)), Question(chips=place, area=BOSTON, country="US")),
+             rank.place_fit(found(fit="outside", countries=("US",)), Question(chips=place, area=BOSTON, country="US")),
+             rank.place_fit(found(), Question(chips=place, area=BOSTON, country="US")),
+             rank.place_fit(found(countries=("US",)), us), rank.place_fit(found(countries=("US", "BE")), us),
+             rank.place_fit(found(countries=("BE",)), us)],
+            ["none", "none", "abroad", "inside", "outside", "unknown", "inside", "inside", "abroad"])
+
+    def test_the_saved_fit_holds_grade_tie_claims_place_and_role(self):
+        """A candidate stores the tie grade, the tie claims in evidence's order, the place fit and the role fit."""
+        ev = found(kinds=("seed_list", "belgian_org"), role="met", fit="inside", km=5.0, countries=("US",))
+        (c,) = ranked({"a": (1, ev)}, v2())
+        self.assertEqual(c.fit.model_dump(), {"tie_grade": "strong", "tie_claim_ids": list(ev.belgian.claim_ids),
+                                              "place": "inside", "role": "met"})
+        self.assertIsNone(rank.fit_of(None, v2()))
+
+    def test_no_evidence_is_tier_7_and_tier_6_splits_by_the_tie(self):
+        """tier(None, None) is 7; heading(6, grade) is 3 for a strong or medium tie and 4 for weak or none."""
+        self.assertEqual(rank.tier(None, None), 7)
+        self.assertEqual([rank.heading(6, g) for g in ("strong", "medium", "weak", "none")], [3, 3, 4, 4])
+        (c,) = rank.fuse("s", [hit_entry("a", seeds=1)], {})
+        self.assertEqual((c.tier, c.fit), (7, None))
+
+
+class ExemptionTest(unittest.TestCase):
+    def people(self, n: int = 25, **flags) -> dict:
+        base = dict(kinds=(), years=0, last=None, countries=("US",))
+        return {f"p{k:02d}": (k + 1, found(**base | flags)) for k in range(n)}
+
+    def test_twenty_topic_experts_without_belgian_evidence_come_back_and_the_rest_keep_the_cut(self):
+        """With version-2 chips and a nice tie 20 of 25 are kept in order; a must tie cuts all; version 1 cuts all."""
+        out = ranked(self.people(), v2("nice"))
+        self.assertEqual([c.cut_reason for c in out], [None] * 20 + ["no_belgian_evidence"] * 5)
+        self.assertEqual([c.person_id for c in out[:3]], ["p00", "p01", "p02"])
+        self.assertEqual({c.cut_reason for c in ranked(self.people(), v2("must"))}, {"no_belgian_evidence"})
+        v1 = Question(chips=ASK.chips, area=BOSTON, country="US")
+        self.assertEqual({c.cut_reason for c in ranked(self.people(), v1)}, {"no_belgian_evidence"})
+        self.assertEqual({c.cut_reason for c in ranked(self.people(), None)}, {"no_belgian_evidence"})
+
+    def test_abroad_and_people_without_a_topic_match_do_not_come_back(self):
+        """Only a person who matches the topic and is not abroad is let back in."""
+        out = ranked({"abroad": (1, found(kinds=(), years=0, last=None, countries=("BE",))),
+                      "off": (2, found(kinds=(), years=0, last=None, match=False))}, v2("nice"))
+        self.assertEqual({c.person_id: c.cut_reason for c in out}, {"abroad": "no_belgian_evidence", "off": "no_belgian_evidence"})
+
+
+class CapTest(unittest.TestCase):
+    def crowd(self, total: int, openalex: set[int], lanes: dict | None = None) -> list:
+        """Heading 1 people p00.. in tier 1, ordered by score, with the given positions OpenAlex-only."""
+        cases = {f"p{k:02d}": (k + 1, found(fit="inside", km=5.0, countries=("US",), only_openalex=k in openalex))
+                 for k in range(total)}
+        entries = [hit_entry(key, **(lanes or {"seeds": lane})) for key, (lane, _) in cases.items()]
+        return rank.fuse("s", entries, {}, None, {key: ev for key, (_, ev) in cases.items()}, v2("nice"))
+
+    def test_the_sixth_openalex_only_person_in_the_first_20_moves_to_the_end_of_its_heading(self):
+        """Of 8 OpenAlex-only people in the first 20 of a heading of 30, 5 stay and 3 go to the end, in order."""
+        out = self.crowd(30, set(range(2, 10)), {"seeds": 1, "openalex": 2})
+        names = [c.person_id for c in out]
+        self.assertEqual(names[:7], ["p00", "p01", "p02", "p03", "p04", "p05", "p06"])
+        self.assertEqual(names[-3:], ["p07", "p08", "p09"])
+        self.assertEqual([c.rank for c in out], list(range(1, 31)))
+
+    def test_people_who_move_up_into_the_first_20_are_capped_too(self):
+        """OpenAlex-only people at positions 20 to 22 move up when others leave; at most 5 stay in the first 20."""
+        out = self.crowd(30, set(range(2, 10)) | {20, 21, 22}, {"seeds": 1, "openalex": 2})
+        self.assertLessEqual(sum(1 for c in out[:20] if int(c.person_id[1:]) in set(range(2, 10)) | {20, 21, 22}), 5)
+
+    def test_two_capped_people_at_the_edge_of_the_first_20_do_not_loop(self):
+        """A heading of 21 with OpenAlex-only people at 0 to 4, 19 and 20 returns; the one that cannot leave stays."""
+        out = self.crowd(21, set(range(5)) | {19, 20}, {"seeds": 1, "openalex": 2})
+        self.assertEqual(sorted(c.person_id for c in out), [f"p{k:02d}" for k in range(21)])
+
+    def test_a_heading_that_ends_inside_the_first_20_keeps_its_order(self):
+        """Heading 1 of 10 people with 8 OpenAlex-only: moving inside the heading would not leave the first 20, so the order stays."""
+        out = self.crowd(10, set(range(2, 10)), {"seeds": 1, "openalex": 2})
+        self.assertEqual([c.person_id for c in out], [f"p{k:02d}" for k in range(10)])
+
+    def test_the_cap_does_not_apply_to_version_1_chips_or_a_question_for_researchers(self):
+        """Version-1 chips and a research role chip leave the order alone."""
+        cases = {f"p{k:02d}": (k + 1, found(fit="inside", km=5.0, countries=("US",))) for k in range(30)}
+        entries = [hit_entry(key, seeds=lane) for key, (lane, _) in cases.items()]
+        researcher = v2("nice", Chip(text="professor", origin="edited", research=True))
+        for ask in (ASK, researcher):
+            out = rank.fuse("s", entries, {}, None, {key: ev for key, (_, ev) in cases.items()}, ask)
+            self.assertEqual([c.person_id for c in out], [f"p{k:02d}" for k in range(30)])
 
 
 class CutTest(unittest.TestCase):

@@ -1,25 +1,37 @@
 """Reciprocal rank fusion over the lane lists and the evidence lists, the order by evidence and the cuts."""
 import math
 import re
+from typing import NamedTuple
 
 from fn import evidence, geo, orgs, parse
 from fn.contracts import (
     Candidate,
+    CardFit,
     Claim,
     CutReason,
     Entry,
     ListStatus,
     Org,
+    PlaceFit,
     Question,
     RankIn,
     RankOut,
     ScorePart,
     Section,
+    TieGrade,
 )
 from fn.steps import StepContext, as_of
 
 K = 60
 UNDATED = "undated"
+TOP = 20
+EXEMPT_CAP = 20
+OPENALEX_CAP = 5
+TIED = ("strong", "medium")
+ROLES = ("met", "unknown", "fails")
+FITS = ("inside", "unknown", "none")
+PLACES = {"outside": 1, "abroad": 2}
+BLANK = (7, 4, False, 1, False, 2, 0, 0)
 
 
 def year(value: str | None) -> int | None:
@@ -137,20 +149,69 @@ def abroad(found: "evidence.Evidence", question: Question | None) -> bool:
     return bool(country and countries and country not in countries and not found.institution.match)
 
 
-def group(found: "evidence.Evidence | None", question: Question | None) -> int:
-    """0 for a Belgian tie with a topic match, or for a tie alone when no topic chip has content words; else 1."""
-    if found is None or not found.belgian.kinds:
-        return 1
+def has_topic(found: "evidence.Evidence", question: Question | None) -> bool:
+    """Whether the person matches the topic: ev.topic.match, or true when no topic chip has content words."""
     asked = question is not None and any(parse.chip_words(c.text) for c in question.chips.topics)
-    return 0 if found.topic.match or not asked else 1
+    return found.topic.match or not asked
 
 
-def band(section: Section, found: "evidence.Evidence | None", question: Question | None, grp: int) -> int:
-    """The new section's order before score: group 0 then 1, each not outside the area before outside, then the
-    people placed only outside the question's country without an institution match. The network section is one band."""
-    if section == "network" or found is None:
-        return 0
-    return 4 if abroad(found, question) else 2 * grp + (found.place.fit == "outside")
+def place_fit(found: "evidence.Evidence", question: Question | None) -> PlaceFit:
+    """none without a place in the question; abroad, inside or outside by the person's places, else unknown.
+
+    An anywhere_us question has no area, so a place in its country is inside.
+    """
+    if question is None or (question.chips.place is None and question.area is None and question.country is None):
+        return "none"
+    if abroad(found, question):
+        return "abroad"
+    if found.place.fit == "inside" or (question.area is None and question.country in found.place.countries):
+        return "inside"
+    return "outside" if found.place.fit == "outside" else "unknown"
+
+
+def tier(found: "evidence.Evidence | None", question: Question | None) -> int:
+    """The tier 1 to 7 of a person: topic before tie, tie before place; a failed role or no evidence is tier 7."""
+    if found is None or found.role.fit == "fails":
+        return 7
+    tied, fits = found.belgian.grade in TIED, place_fit(found, question) in FITS
+    if has_topic(found, question):
+        return (1 if fits else 2) if tied else (3 if fits else 4)
+    if tied:
+        return 5 if found.topic.words else 6
+    return 6 if found.topic.words else 7
+
+
+def heading(level: int, tie_grade: TieGrade) -> int:
+    """The heading 1 to 4 a tier stands under; tier 6 stands under 3 with a tie and under 4 without."""
+    if level == 6:
+        return 3 if tie_grade in TIED else 4
+    return {1: 1, 2: 1, 3: 2, 4: 2, 5: 3}.get(level, 4)
+
+
+def fit_of(found: "evidence.Evidence | None", question: Question | None) -> CardFit | None:
+    """What the card's lines read: tie grade and claims, place fit and role fit; None without evidence."""
+    if found is None:
+        return None
+    return CardFit(tie_grade=found.belgian.grade, tie_claim_ids=list(found.belgian.claim_ids),
+                   place=place_fit(found, question), role=found.role.fit)
+
+
+def order_key(found: "evidence.Evidence | None", question: Question | None, level: int) -> tuple:
+    """The new section's order before score: tier, heading, abroad last, role met, own words before related words,
+    tie grade, place, then more topic words. Network people and people without evidence share BLANK."""
+    if found is None:
+        return BLANK
+    place = place_fit(found, question)
+    grade = found.belgian.grade
+    return (level, heading(level, grade), place == "abroad", ROLES.index(found.role.fit), found.topic.related,
+            TIED.index(grade) if grade in TIED else len(TIED), PLACES.get(place, 0), -len(found.topic.words))
+
+
+def no_tie(section: Section, found: "evidence.Evidence | None", question: Question | None) -> CutReason | None:
+    """no_tie for a new-section person with evidence and a weak or no tie when the question requires a tie."""
+    if section == "new" and found and question and parse.tie_must(question.chips) and found.belgian.grade not in TIED:
+        return "no_tie"
+    return None
 
 
 def cut_reason(section: Section, found: "evidence.Evidence", question: Question | None) -> CutReason | None:
@@ -179,14 +240,59 @@ def unread_cut(section: Section, entry: Entry, found: list[ScorePart]) -> CutRea
     return None
 
 
+class Row(NamedTuple):
+    key: tuple
+    entry: Entry
+    section: Section
+    parts: list[ScorePart]
+    found: "evidence.Evidence | None"
+    level: int
+    reason: CutReason | None
+
+
+def exempt(rows: list[Row], question: Question | None) -> set[int]:
+    """The indexes of the first EXEMPT_CAP people, in order, whom no_belgian_evidence cuts although they match the
+    topic and are not abroad; only for version-2 chips with a tie that is not a must."""
+    if question is None or question.chips.version < 2 or parse.tie_must(question.chips):
+        return set()
+    back = [n for n, r in enumerate(rows) if r.reason == "no_belgian_evidence" and r.found and r.found.topic.match
+            and not abroad(r.found, question)]
+    return set(back[:EXEMPT_CAP])
+
+
+def capped(kept: list[Row], question: Question | None) -> list[Row]:
+    """Moves the OpenAlex-only people from the sixth on, inside the first TOP, to the end of their own heading.
+
+    Only when the question does not ask for researchers. A person whose heading ends inside the first TOP stays.
+    """
+    if question is None or parse.asks_researchers(question.chips):
+        return kept
+    seen, i, moved = 0, 0, set()
+    while i < min(TOP, len(kept)):
+        r = kept[i]
+        if r.entry.person_ids[0] in moved or not (r.found and r.found.only_openalex):
+            i += 1
+            continue
+        seen += 1
+        rest = kept[:i] + kept[i + 1:]
+        last = [n for n, x in enumerate(rest) if x.key[1] == r.key[1]]
+        if seen > OPENALEX_CAP and last and last[-1] + 1 >= TOP:
+            kept, seen = rest[:last[-1] + 1] + [r] + rest[last[-1] + 1:], seen - 1
+            moved.add(r.entry.person_ids[0])
+        else:
+            i += 1
+    return kept
+
+
 def fuse(search_id: str, entries: list[Entry], statuses: dict[str, ListStatus],
          belgian: dict[str, ScorePart] | None = None, found: dict[str, "evidence.Evidence"] | None = None,
          question: Question | None = None) -> list[Candidate]:
-    """Score each entry by the sum of its parts, order the new section by band, then score, and number each section,
+    """Score each entry by the sum of its parts, order the new section by tier, then score, and number each section,
     kept entries apart from cut ones.
 
     belgian holds the belgian_years parts and found the evidence, by first person id. Section network holds
-    entries with a hit person in the list; equal scores are ordered by the first person id.
+    entries with a hit person in the list; equal scores are ordered by the first person id. People
+    cut for no Belgian evidence who match the topic come back, up to EXEMPT_CAP; OpenAlex-only people are capped.
     """
     belgian, found = belgian or {}, found or {}
     extra = evidence_lists(found)
@@ -196,20 +302,27 @@ def fuse(search_id: str, entries: list[Entry], statuses: dict[str, ListStatus],
         section: Section = "network" if any(statuses.get(p) == "in_list" for p in hits(e)) else "new"
         entry_parts = parts(e, belgian.get(key)) + extra.get(key, [])
         ev = found.get(key)
-        grp = group(ev, question)
+        level = tier(ev, question)
         reason = cut_reason(section, ev, question) if ev else unread_cut(section, e, entry_parts)
-        words = len(ev.topic.words) if ev and section == "new" else 0
-        rows.append((band(section, ev, question, grp), e, section, entry_parts, grp, reason, words))
-    rows.sort(key=lambda r: (r[0], -r[6], -score(r[3]), r[1].person_ids[0]))
+        rows.append(Row(BLANK if section == "network" else order_key(ev, question, level), e, section, entry_parts, ev,
+                        level, reason))
+    rows.sort(key=lambda r: (*r.key, -score(r.parts), r.entry.person_ids[0]))
+    back = exempt(rows, question)
+    rows = [r._replace(reason=None if n in back else r.reason or no_tie(r.section, r.found, question))
+            for n, r in enumerate(rows)]
+    spots = [n for n, r in enumerate(rows) if r.section == "new" and not r.reason]
+    for n, r in zip(spots, capped([rows[n] for n in spots], question), strict=True):
+        rows[n] = r
     counts: dict[tuple[Section, bool], int] = {}
     out = []
-    for _, entry, section, entry_parts, grp, reason, _ in rows:
-        counts[section, reason is not None] = counts.get((section, reason is not None), 0) + 1
+    for r in rows:
+        counts[r.section, r.reason is not None] = counts.get((r.section, r.reason is not None), 0) + 1
         out.append(Candidate(
-            search_id=search_id, person_id=entry.person_ids[0], person_ids=entry.person_ids, section=section,
-            rank=counts[section, reason is not None], score=score(entry_parts),
-            lane_ranks=entry.lane_ranks, reason_claim_ids=entry.claim_ids, score_parts=entry_parts,
-            hit_person_ids=hits(entry), cut_reason=reason, card_person_ids=entry.card_person_ids, group=grp,
+            search_id=search_id, person_id=r.entry.person_ids[0], person_ids=r.entry.person_ids, section=r.section,
+            rank=counts[r.section, r.reason is not None], score=score(r.parts),
+            lane_ranks=r.entry.lane_ranks, reason_claim_ids=r.entry.claim_ids, score_parts=r.parts,
+            hit_person_ids=hits(r.entry), cut_reason=r.reason, card_person_ids=r.entry.card_person_ids,
+            group=int(r.level > 2), tier=r.level, fit=fit_of(r.found, question),
         ))
     return out
 

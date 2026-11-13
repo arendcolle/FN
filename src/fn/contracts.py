@@ -50,9 +50,10 @@ GoldTie = Literal["flemish", "belgian", "none", "unverified"]
 PickVerdict = Literal["found", "event page", "missed", "no lane in slice"]
 GoldGroup = Literal["dev", "held-out", "other"]
 EventKind = Literal["add", "skip", "merge", "not_same", "reject_claim", "edit_contact", "remove", "import", "export", "undo"]
-CutReason = Literal["no_belgian_evidence", "weak_openalex", "no_claim", "outside_country"]
+CutReason = Literal["no_belgian_evidence", "weak_openalex", "no_claim", "outside_country", "no_tie"]
 TieGrade = Literal["strong", "medium", "weak", "none"]
 RoleFit = Literal["met", "fails", "unknown"]
+PlaceFit = Literal["inside", "outside", "abroad", "unknown", "none"]
 AddedVia = Literal["search", "import", "profile"]
 CardState = Literal["network", "new", "name_match", "added", "skipped"]
 LookupKind = Literal["openalex_author", "orcid_employment"]
@@ -415,6 +416,13 @@ class ScorePart(Model):
     detail: str = ""
 
 
+class CardFit(Model):
+    tie_grade: TieGrade = "none"
+    tie_claim_ids: list[str] = []
+    place: PlaceFit = "none"
+    role: RoleFit = "unknown"
+
+
 class Candidate(Model):
     search_id: str
     person_id: str
@@ -428,8 +436,11 @@ class Candidate(Model):
     hit_person_ids: list[str] = []
     cut_reason: CutReason | None = None
     card_person_ids: list[str] = []
-    # 0 for a topic match and a Belgian tie (a tie alone when the question has no topic), else 1.
+    # 0 for tiers 1 and 2, else 1.
     group: int = 1
+    # None for a candidate stored before the tiers.
+    tier: int | None = None
+    fit: CardFit | None = None
 
 
 # One staff decision; detail holds what undo needs, ids and never contact values.
