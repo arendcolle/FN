@@ -282,12 +282,21 @@ def tie(card: dict[str, frozenset[str]], claims: list[Claim], facts: dict[str, O
                grade=next((g for g in GRADE_ORDER if g in grades), "none"))
 
 
+def current(found: list[Place]) -> Place | None:
+    """The place a card shows: the newest dated stated place, else an undated one, else the newest employer's city."""
+    stated = [p for p in found if p.basis == "stated"]
+    return max([p for p in stated if p.year is not None] or stated or found, key=lambda p: p.year or 0, default=None)
+
+
 def where(found: list[Place], question: Question) -> Where:
     """inside when a place lies within the area's radius, outside when there are places and none does, else unknown.
 
     A stated place says where the person is; an employer's city only counts when no place is stated. The countries
-    are those of every place.
+    are those of every place. On a version-2 question only the place the card shows counts (current), so an old
+    stay elsewhere places nobody there.
     """
+    if question.chips.version >= 2:
+        found = [place] if (place := current(found)) else []
     countries = frozenset(p.country for p in found if p.country)
     area = question.area
     found = [p for p in found if p.basis == "stated"] or found

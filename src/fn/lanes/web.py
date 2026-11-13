@@ -87,8 +87,10 @@ def people(ctx: StepContext, pages: list[tuple[int, Source]], considered: list[C
     return list(hits.values())
 
 
-def collect(ctx: StepContext, objective: str, queries: list[str], lane: LaneName) -> LaneOut:
+def collect(ctx: StepContext, objective: str, queries: list[str], lane: LaneName, dated: bool = False) -> LaneOut:
     """Find pages for the queries, store each as a vendor_page source and read the people it names for lane.
+
+    With dated, a page dates its claims: by its publish date, else by the day it was read.
 
     A page's text is the first of Extract full content, Extract excerpts and Search excerpts with plain text left
     after its markdown is stripped; a page with none is skipped. Every person a page names is a hit. Without a
@@ -108,7 +110,9 @@ def collect(ctx: StepContext, objective: str, queries: list[str], lane: LaneName
     stored: list[tuple[int, Source]] = []
     with ctx.store.tx():
         for page in found.pages:
-            built = ((h, page_source(page.url, page.title, md, page.raw, ctx.now(), page.published))
+            when = page.published or (ctx.now().date().isoformat() if dated else None)
+            method = ("page_date" if page.published else "read_date") if dated else None
+            built = ((h, page_source(page.url, page.title, md, page.raw, ctx.now(), when, date_method=method))
                      for h, md in page.texts)
             how, source = next(((h, s) for h, s in built if s.text), ("", None))
             unread = f"; Extract could not read it ({page.unread})" if page.unread else ""
@@ -133,4 +137,4 @@ def run(ctx: StepContext, inp: LaneIn) -> LaneOut:
     chips = inp.chips
     if not has_query(chips):
         return LaneOut(lane=name, query="", total_seen=0, considered=[note(NO_QUERY)])
-    return collect(ctx, objective(chips), websearch.rule_queries(chips), name)
+    return collect(ctx, objective(chips), websearch.rule_queries(chips), name, dated=chips.version >= 2)
