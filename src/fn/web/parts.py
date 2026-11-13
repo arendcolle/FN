@@ -550,7 +550,7 @@ def with_all(here: str, anchor: str) -> str:
 def head_place(group: FactGroup, view: ProfileView) -> bool:
     """Whether the group's only line is the place the head shows."""
     place = view.person.place
-    return bool(place and len(group.facts) == 1 and fold(group.facts[0].what) == fold(f"Lives in {place}"))
+    return bool(place and len(group.facts) == 1 and fold(group.facts[0].what) == fold(f"Based in {place}"))
 
 
 def fact_groups(view: ProfileView, here: str, every: str | None) -> list[Safe]:

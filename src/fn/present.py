@@ -219,7 +219,7 @@ def what_of(claim: Claim, org: Org | None) -> str:
     if claim.kind == "location" and claim.relation == "origin":
         return f"Origin: {claim.value}"
     if claim.kind == "location":
-        return f"{'Born in' if claim.relation == 'born_in' else 'Lives in'} {claim.value}"
+        return f"{'Born in' if claim.relation == 'born_in' else 'Based in'} {claim.value}"
     if claim.kind in FIELDS:
         return f"{FIELDS[claim.kind]}: {claim.value}"
     name = org.name if org else claim.value
@@ -667,7 +667,9 @@ def reason_ids(candidate: Candidate) -> list[str]:
 def fit_words(candidate: Candidate, view: PersonView) -> str | None:
     """The card's second line: the tie in words, left out under the heading 'Topic, no known tie', then the place words."""
     quiet = candidate.tier is not None and heading_of(candidate) == HEADINGS[2]
-    parts = [None if quiet else view.tie or NO_TIE, place_words(view)]
+    # A tie that only says where the person is based repeats the place of the role line.
+    repeat = bool(view.tie and view.place and name_key(view.tie) == name_key(f"Based in {view.place}"))
+    parts = [None if quiet or repeat else view.tie or NO_TIE, place_words(view)]
     return " · ".join(p for p in parts if p) or None
 
 
