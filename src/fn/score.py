@@ -24,10 +24,11 @@ from fn.worker import Worker, code_state, new_id, now
 SCHEMA = 1
 TOP = 20
 FRESH_YEARS = 5
+TIERS = tuple(f"tier_{n}" for n in range(1, 8))
 COMPLETE = ("place", "role", "employer", "tie", "sources2")
 SUMS = ("gold_at_10", "gold_at_20", "gold_at_50", "gold_found", "gold_free_at_10", "gold_free_at_20", "gold_free_at_50",
         "gold_free_found", "gold_by_construction", "doubles_top20", "doubles_top50", "pairs_wrong", "pairs_split",
-        "seed_noise_top20")
+        "seed_noise_top20", *TIERS, "first_heading_under_5")
 PAIRS = ROOT / "data" / "gold" / "identity-pairs.jsonl"
 PAIR_LABELS = ("same", "different", "unclear")
 PAIR_WINDOW = 50
@@ -225,6 +226,9 @@ def card_metrics(store: Store, scored: Search, kept: list, created: date, area: 
     first, out = cards[:TOP], {"doubles_top20": doubles(cards[:20]), "doubles_top50": doubles(cards)}
     out["seed_noise_top20"] = 0 if not words or scored.chips.institutions else sum(
         x["lanes"] == {"seeds"} and not x["topic"] for x in first)
+    tiers = [c.tier for c in kept if c.section == "new" and c.tier is not None]
+    if tiers:
+        out |= {f"tier_{n}": tiers.count(n) for n in range(1, 8)} | {"first_heading_under_5": int(sum(t <= 2 for t in tiers) < 5)}
     flags = {f: lambda x, f=f: x[f] for f in (*COMPLETE, "complete", "fresh")}
     flags |= {f"place_{w}": lambda x, w=w: x["where"] == w for w in ("inside", "outside", "unknown")} if area else {}
     flags |= {"topic": lambda x: x["topic"]} if words else {}

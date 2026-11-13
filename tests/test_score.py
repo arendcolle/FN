@@ -442,6 +442,18 @@ class SeedNoiseTest(unittest.TestCase):
                 found = store.get_search(search_id)
                 self.assertEqual(score.score_search(store, found, found, None, None)["seed_noise_top20"], noise)
 
+    def test_the_tier_sizes_and_the_short_first_heading_count_the_kept_new_section_people(self):
+        """Kept people in tiers 1, 3 and 7 give one each and a first heading under 5; a candidate without a tier counts nowhere."""
+        store = make_db(self)
+        ids = [seed_person(store, f"Tiered Person{n}", f"https://example.org/t{n}", value="Dentist") for n in range(4)]
+        search_id = make_search(store, "t0000000", "Who knows wind power?", Chips(place={"text": "Boston", "origin": "parsed"}))
+        kept = [candidate(search_id, p, n, {"seeds": n}).model_copy(update={"tier": t})
+                for n, (p, t) in enumerate(zip(ids, (1, 3, 7, None), strict=True), 1)]
+        store.save_candidates(search_id, kept, [])
+        found = store.get_search(search_id)
+        row = score.score_search(store, found, found, None, None)
+        self.assertEqual([row[f"tier_{n}"] for n in range(1, 8)] + [row["first_heading_under_5"]], [1, 0, 1, 0, 0, 0, 1, 1])
+
     def test_a_question_without_a_topic_word_has_no_seed_noise(self):
         """A question of only a place lists seed people for their place, so none of them is noise."""
         store = make_db(self)

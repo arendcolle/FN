@@ -316,7 +316,7 @@ class OrgPlacesMigrationTest(MigrationTest):
                      " VALUES ('s1', 'record', 'https://example.org', 'text', 'h', 1)")
         conn.execute("INSERT INTO orgs (id, name, country_code, source_id, fetched_at)"
                      " VALUES ('ror:0aaaaaa11', 'Example Institute', 'BE', 's1', '2026-11-02T00:00:00+00:00')")
-        self.assertEqual(self.store.migrate(), [8, 9, 10, 11])
+        self.assertEqual(self.store.migrate(), [8, 9, 10, 11, 12])
         old = self.store.get_orgs(["ror:0aaaaaa11"])["ror:0aaaaaa11"]
         self.assertEqual((old.name, old.country_code, old.city, old.lat, old.lon), ("Example Institute", "BE", None, None, None))
 

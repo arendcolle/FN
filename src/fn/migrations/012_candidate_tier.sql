@@ -1,0 +1,2 @@
+ALTER TABLE candidates ADD COLUMN tier INTEGER;
+ALTER TABLE candidates ADD COLUMN fit_json TEXT;
