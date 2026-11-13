@@ -285,6 +285,16 @@ class WebLaneTest(unittest.TestCase):
         self.assertEqual(json.loads(sources[NEWS]["raw_json"])["extract"]["error_type"], "fetch_failed")
         self.assertEqual(json.loads(sources[NEWS]["raw_json"])["search"]["publish_date"], "2026-03-02")
 
+    def test_on_a_new_question_a_page_dates_its_claims_by_its_publish_date_or_the_day_it_was_read(self):
+        """Version-2 chips: a page with a publish date is stored as page_date and one without as read_date with
+        today's date, the two methods that date a page's claims. Version-1 chips keep record_field (the test above)."""
+        del self.search["results"][1]["publish_date"]
+        self.extract["results"][1].pop("publish_date", None)
+        self.run_lane(NEW_YORK.model_copy(update={"version": 2}))
+        sources = self.stored()
+        self.assertEqual((sources[EVENT]["date_method"], sources[FACULTY]["date_method"]), ("page_date", "read_date"))
+        self.assertEqual(sources[FACULTY]["source_date"], now().date().isoformat())
+
     def test_a_repeated_url_is_one_source_at_its_first_rank_with_a_dropped_row(self):
         """The fourth result repeats the first URL: one source, no second Extract URL, and a row naming the first rank."""
         out = self.run_lane()

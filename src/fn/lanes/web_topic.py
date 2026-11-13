@@ -28,5 +28,5 @@ def run(ctx: StepContext, inp: LaneIn) -> LaneOut:
     else:
         ctx.log.info("web_topic lane: %d people under the first heading, searched without a tie",
                      inp.first_heading or 0)
-        return web.collect(ctx, web.objective(chips, tie=False), websearch.rule_queries(chips), name)
+        return web.collect(ctx, web.objective(chips, tie=False), websearch.rule_queries(chips), name, dated=True)
     return LaneOut(lane=name, query="", total_seen=0, considered=[web.note(reason)])

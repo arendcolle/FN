@@ -144,6 +144,18 @@ class WhereTest(unittest.TestCase):
         home = of([job("c3", LEUVEN, "2024"), lives("c4", "Boston", 42.36, -71.06)], question(area=BOSTON)).place
         self.assertEqual((home.fit, home.nearest.claim_id), ("inside", "c4"))
 
+    def test_on_a_new_question_only_the_newest_stated_place_counts(self):
+        """Boston in 2010 and Leuven in 2024: a version-2 question reads Leuven alone; version 1 still finds Boston."""
+        old = lives("c1", "Boston", 42.36, -71.06).model_copy(update={"claim_date": "2010"})
+        new = lives("c2", "Leuven", 50.88, 4.7).model_copy(update={"claim_date": "2024"})
+        ask = question(area=BOSTON, country="US")
+        fresh = Question(chips=ask.chips.model_copy(update={"version": 2}), area=BOSTON, country="US")
+        now_ = of([old, new], fresh).place
+        self.assertEqual((now_.fit, now_.nearest.claim_id, now_.countries), ("outside", "c2", {"BE"}))
+        self.assertEqual(of([old, new], ask).place.fit, "inside")
+        undated = of([lives("c3", "Boston", 42.36, -71.06), new], fresh).place
+        self.assertEqual(undated.nearest.claim_id, "c2")
+
     def test_the_countries_of_a_person_with_a_belgian_and_a_us_place(self):
         """A stated place in Leuven and a recent employer in Cambridge give BE and US."""
         found = of([lives("c1", "Leuven", 50.88, 4.7), job("c2", MIT, "2024")])
