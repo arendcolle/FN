@@ -21,6 +21,9 @@ def page(body: str, title: str = "Example page") -> str:
 class PageReadTest(unittest.TestCase):
     def setUp(self):
         pageread.ROBOTS.clear()
+        looked_up = mock.patch.object(pageread, "addresses", side_effect=lambda host: ["10.0.0.7"] if host == "inside.example" else ["93.184.216.34"])
+        looked_up.start()
+        self.addCleanup(looked_up.stop)
         self.settings = make_settings(self).model_copy(update={"http_mode": "live"})
         self.store = make_db(self, self.settings)
         self.sent: list[httpx.Request] = []
@@ -156,6 +159,29 @@ class PageReadTest(unittest.TestCase):
         pageread.ROBOTS.clear()
         [again] = self.reading("https://a.example/p", settings=self.settings.model_copy(update={"http_mode": "replay"}))
         self.assertEqual((again.failed, again.text), (None, live.text))
+
+    def test_a_local_or_private_address_is_never_fetched(self):
+        """Loopback, localhost, a private or link-local IP and a name that resolves to one are refused before any call."""
+        urls = ["http://127.0.0.1:8765/people", "http://localhost/x", "http://10.0.0.5/x", "http://169.254.169.254/latest",
+                "http://[::1]/x", "http://intranet/x", "https://inside.example/x"]
+        got = self.reading(*urls)
+        self.assertEqual({r.failed for r in got}, {"a local or private address"})
+        self.assertEqual(self.sent, [])
+
+    def test_a_redirect_to_a_private_address_or_a_disallowed_page_is_not_followed(self):
+        """Each hop passes the same checks as a first address: no private host, and the new host's robots.txt."""
+        self.serve("https://a.example/start", "x")
+        self.routes["https://a.example/start"] = httpx.Response(302, headers={"location": "http://10.0.0.5/admin"})
+        self.serve("https://b.example/start", "x")
+        self.routes["https://b.example/start"] = httpx.Response(302, headers={"location": "https://c.example/private/page"})
+        self.routes["https://c.example/robots.txt"] = httpx.Response(200, text="User-agent: *\nDisallow: /private/")
+        self.routes["https://c.example/private/page"] = httpx.Response(200, content=page(LONG).encode())
+        with mock.patch("fn.pageread.time.sleep"):
+            first, second = self.reading("https://a.example/start", "https://b.example/start")
+        self.assertIn("a local or private address", first.failed)
+        self.assertIn("robots.txt disallows it", second.failed)
+        self.assertNotIn("https://c.example/private/page", [str(r.url) for r in self.sent])
+        self.assertNotIn("http://10.0.0.5/admin", [str(r.url) for r in self.sent])
 
     def test_a_read_page_carries_its_own_date(self):
         """read passes the date of the page's meta tags on with the text; a page without one has none."""

@@ -335,8 +335,10 @@ def fuse(search_id: str, entries: list[Entry], statuses: dict[str, ListStatus],
         section: Section = "network" if any(statuses.get(p) == "in_list" for p in hits(e)) else "new"
         entry_parts = parts(e, belgian.get(key)) + extra.get(key, [])
         ev = found.get(key)
-        verdict = verdicts.get(key)
-        level = tier(ev, question, "scout" in e.lane_ranks, verdict, bool(verdicts) and key not in unsure)
+        # A merge can change a card's first record, so any of its records may carry the answer.
+        verdict = next((verdicts[p] for p in e.person_ids if p in verdicts), None)
+        checked = bool(verdicts) and section == "new" and not any(p in unsure for p in e.person_ids)
+        level = tier(ev, question, "scout" in e.lane_ranks, verdict, checked)
         reason = cut_reason(section, ev, question) if ev else unread_cut(section, e, entry_parts)
         rows.append(Row(BLANK if section == "network" else order_key(ev, question, level, verdict), e, section, entry_parts, ev,
                         level, reason))

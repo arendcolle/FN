@@ -75,10 +75,6 @@ IMAGE_TOKENS = ("orcid image", "author orcid", "![", "[image")
 MIN_QUOTE_WORDS = 4
 
 
-def job_date(claim: Claim) -> tuple[str, str]:
-    return claim.valid_to or claim.claim_date or "", claim.claim_date or ""
-
-
 def in_city(org: Org | None, place: str | None) -> bool:
     """Whether the organization's city is the place, or the place's first part, as in 'Boston, MA'."""
     return bool(org and org.city and place and (place == org.city or place.startswith(f"{org.city},")))
@@ -160,12 +156,8 @@ def located(claims: list[Claim], facts: dict[str, Org], today: date) -> tuple[st
     Without either, the newest location claim gives its text only, as a stated place.
     """
     found, by_id = places(claims, facts, today), {c.id: c for c in claims}
-    if stated := place_of([by_id[p.claim_id] for p in found if p.basis == "stated"]):
-        return stated.value, stated.lat, stated.lon, "stated"
-    jobs = [(by_id[p.claim_id], p) for p in found if p.basis == "employer"]
-    if jobs:
-        _, job = max(jobs, key=lambda t: (*job_date(t[0]), t[0].id))
-        return job.text, job.lat, job.lon, "employer"
+    if place := ev.shown(found, by_id):
+        return place.text, place.lat, place.lon, place.basis
     text = place_of(claims)
     return (text.value, None, None, "stated") if text else (None, None, None, None)
 

@@ -233,13 +233,15 @@ def drafts(person_id: str, source: Source, located: Located, ctx: StepContext | 
 def _near(text: str, phrase: str, name: str) -> list[tuple[int, int, int]]:
     """Where phrase stands in text, casefolded and on word boundaries, as (distance to the name's last word, start, end).
 
-    Any white space may stand between the phrase's words. The distance is 0 when the text does not hold the name.
+    Any white space may stand between the phrase's words. A text that does not hold the name gives no place.
     """
     words, surnames = phrase.split(), re.findall(r"[^\W_]+", clean_name(name))
     if not words or not surnames:
         return []
     around = [m.start() for m in re.finditer(rf"(?<!\w){re.escape(surnames[-1])}(?!\w)", text, re.IGNORECASE)]
-    return sorted((min((abs(m.start() - at) for at in around), default=0), m.start(), m.end())
+    if not around:
+        return []
+    return sorted((min(abs(m.start() - at) for at in around), m.start(), m.end())
                   for m in re.finditer(rf"(?<!\w){r'\s+'.join(map(re.escape, words))}(?!\w)", text, re.IGNORECASE))
 
 

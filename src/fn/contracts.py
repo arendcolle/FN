@@ -91,7 +91,7 @@ def clean_name(name: str) -> str:
 
 class HttpClient(Protocol):
     def get(self, url: str, params: dict[str, str] | None = None, *, redirects: int = 0,
-            agent: str | None = None) -> httpx.Response: ...
+            agent: str | None = None, check: Callable[[str], None] | None = None) -> httpx.Response: ...
 
     def post(self, url: str, body: dict, params: dict[str, str] | None = None, *, timeout_s: float | None = None,
              cost: Callable[[bytes], float | None] | None = None, keep: Callable[[bytes], bool] | None = None,

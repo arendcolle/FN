@@ -215,8 +215,10 @@ class Client:
             retried = True
 
     def get(self, url: str, params: dict[str, str] | None = None, *, redirects: int = 0,
-            agent: str | None = None) -> httpx.Response:
+            agent: str | None = None, check: Callable[[str], None] | None = None) -> httpx.Response:
         """GET url with params as a recorded call of the running step and return the 2xx response.
+
+        check is called with the address of each redirect hop before it is followed and raises to refuse it.
 
         A 429 or 503 with Retry-After up to 30 s is retried once after that wait. redirects is how many 301, 302,
         303, 307 or 308 hops to follow, each a recorded call; a live final answer is also cached under url. agent
@@ -234,6 +236,8 @@ class Client:
                 if not redirects:
                     raise
                 current = urljoin(str(request.url), moved.location)
+                if check:
+                    check(current)
                 continue
             if hop and self.settings.http_mode != "replay":
                 self._write_cache(cache_file(self.cache, first), response.content)

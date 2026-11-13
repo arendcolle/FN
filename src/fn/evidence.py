@@ -282,21 +282,28 @@ def tie(card: dict[str, frozenset[str]], claims: list[Claim], facts: dict[str, O
                grade=next((g for g in GRADE_ORDER if g in grades), "none"))
 
 
-def current(found: list[Place]) -> Place | None:
-    """The place a card shows: the newest dated stated place, else an undated one, else the newest employer's city."""
+def shown(found: list[Place], by_id: dict[str, Claim]) -> Place | None:
+    """The place a card shows: the newest dated stated place, else an undated one, else the newest employer's city.
+
+    Equal dates go to the greater claim id. The page layer and the ranker both read this, so they agree.
+    """
     stated = [p for p in found if p.basis == "stated"]
-    return max([p for p in stated if p.year is not None] or stated or found, key=lambda p: p.year or 0, default=None)
+    if stated:
+        return max([p for p in stated if by_id[p.claim_id].claim_date] or stated,
+                   key=lambda p: (by_id[p.claim_id].claim_date or "", p.claim_id))
+    return max(found, default=None, key=lambda p: (by_id[p.claim_id].valid_to or by_id[p.claim_id].claim_date or "",
+                                                   by_id[p.claim_id].claim_date or "", p.claim_id))
 
 
-def where(found: list[Place], question: Question) -> Where:
+def where(found: list[Place], question: Question, by_id: dict[str, Claim] | None = None) -> Where:
     """inside when a place lies within the area's radius, outside when there are places and none does, else unknown.
 
     A stated place says where the person is; an employer's city only counts when no place is stated. The countries
-    are those of every place. On a version-2 question only the place the card shows counts (current), so an old
-    stay elsewhere places nobody there.
+    are those of every place. On a version-2 question only the place the card shows counts (shown), so an old
+    stay elsewhere places nobody there; by_id holds the claims of the places.
     """
-    if question.chips.version >= 2:
-        found = [place] if (place := current(found)) else []
+    if question.chips.version >= 2 and by_id is not None:
+        found = [place] if (place := shown(found, by_id)) else []
     countries = frozenset(p.country for p in found if p.country)
     area = question.area
     found = [p for p in found if p.basis == "stated"] or found
@@ -316,7 +323,7 @@ def of(card: dict[str, frozenset[str]], claims: list[Claim], facts: dict[str, Or
     found = places(own, facts, today, names)
     return Evidence(
         topic=topic(own, question.chips.topics, card), institution=institution(own, question),
-        belgian=tie(card, own, facts, found), role=role(own, card, question), place=where(found, question),
+        belgian=tie(card, own, facts, found), role=role(own, card, question), place=where(found, question, {c.id: c for c in own}),
         sources=len({c.source_id for c in own}), only_openalex=only_openalex(card),
         job=job(own, card, today),
     )

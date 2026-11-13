@@ -670,6 +670,15 @@ class VerdictTest(unittest.TestCase):
         out = {c.person_id: c.tier for c in rank.fuse("s", entries, {}, None, people, v2(), {"x": "yes"}, unsure=["lost"])}
         self.assertEqual(out, {"plain": 5, "lost": 1})
 
+    def test_a_verdict_is_found_by_any_record_of_the_card_and_a_network_person_is_not_demoted(self):
+        """A card whose first record changed keeps its yes; a person in the network is not sent, so no verdict costs them nothing."""
+        merged = Entry(name_key="m", person_ids=["new-first", "old-first"], hit_person_ids=["new-first"], lane_ranks={"openalex": 1})
+        member = hit_entry("member", openalex=2)
+        people = {"new-first": found(**self.HERE), "member": found(**self.HERE)}
+        out = {c.person_id: c for c in rank.fuse("s", [merged, member], {"member": "in_list"}, None, people, v2(),
+                                                 {"old-first": "yes"})}
+        self.assertEqual((out["new-first"].tier, out["member"].tier), (1, 1))
+
     def test_rank_run_passes_the_verdicts_of_its_input_to_fuse(self):
         """RankIn.verdicts reaches the ranking."""
         store = make_db(self)
