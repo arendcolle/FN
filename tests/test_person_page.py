@@ -75,8 +75,8 @@ class PersonPageTest(unittest.TestCase):
         self.assertIn('<p class="fn-profile__role text-body">Example Labs · Gent</p>', html)
         self.assertIn(f"In your network since {EARLIER.astimezone().day} {EARLIER.astimezone():%B %Y}", html)
         self.assertEqual(html.count("Not provided"), 2)
-        headings = re.findall(r'<h2 class="fn-section text-label"[^>]*>([^<]+)</h2>', html)
-        self.assertEqual(headings, ["Contact", "Ties to Belgium", "Work", "Places"])
+        headings = re.findall(r'<h2 class="fn-section text-title">([^<]+)</h2>', html)
+        self.assertEqual(headings, ["Work", "Contact"])
         self.assertIn("Studied at Gent University", html)
         self.assertNotIn("Found as", html)
 
@@ -86,7 +86,7 @@ class PersonPageTest(unittest.TestCase):
         self.claim(ada, "affiliation", "Example Labs", relation="works_at", title="Older page", claim_date="2019")
         self.claim(ada, "affiliation", "Example Labs", relation="works_at", title="Newer page", claim_date="2024")
         html = self.page(ada)
-        self.assertEqual(html.count("Works at Example Labs"), 1)
+        self.assertEqual(html.count('text-body">Works at Example Labs'), 1)
         self.assertIn('Works at Example Labs, <span class="text-year">2019, 2024</span>', html)
         self.assertIn(">Newer page</a>, 2024", html)
         self.assertNotIn("Older page", html)
@@ -126,7 +126,7 @@ class PersonPageTest(unittest.TestCase):
             (ada, f"/people/{ada}/contact", {"kind": "email", "value": "ada@example.org"}, " · Saved ", "Not provided"),
             (ada, f"/people/{ada}/not-same", {"other": twin}, "Marked as a different person", ">Different person<"),
             (ada, f"/people/{ada}/merge", {"other": twin}, "Merged into this profile", ">Same person<"),
-            (ada, f"/claims/{fact}/reject", {}, "Field: Tidal energy · Removed", ">Remove</button>"),
+            (ada, f"/claims/{fact}/reject", {}, "Field: Tidal energy</span><span>· Removed", ">Not correct</button>"),
         ]
         for person_id, path, fields, done, restored in cases:
             with self.subTest(path=path):
@@ -206,25 +206,25 @@ class PersonPageTest(unittest.TestCase):
         self.assertEqual(self.post(f"/people/{ada}/remove", next="/people?q=ada"), "/people?q=ada")
 
     def test_a_long_group_shows_ten_facts_and_all_with_all_1(self):
-        """A group with 40 facts shows 10 and 'Show 30 more'; ?all=1 shows every fact."""
+        """A group with 40 facts shows 3 and 'Show 37 more'; ?all=1 shows every fact."""
         ada = self.person("Ada Example", "ada")
         for n in range(40):
             self.claim(ada, "topic", f"Topic {n:02}")
         html = self.page(ada)
-        self.assertEqual(html.count('class="fn-claim"'), 10)
-        self.assertIn('<span>10 of 40 shown</span><a class="fn-btn fn-btn--quiet text-control" '
-                      f'href="/people/{ada}?all=1#work">Show 30 more</a>', html)
+        self.assertEqual(html.count('class="fn-claim"'), 3)
+        self.assertIn(f'<a class="fn-link" href="/people/{ada}?all=work#work">Show 37 more</a>', html)
+        self.assertNotIn("of 40 shown", html)
         self.assertEqual(self.page(ada, all="1").count('class="fn-claim"'), 40)
 
     def test_a_person_with_two_records_can_separate_one(self):
-        """Found as lists each record's source; Not this person separates it and both pages exist afterwards."""
+        """Sources lists each record's source; Not this person separates it and both pages exist afterwards."""
         ada, twin = self.person("Ada Example", "ada"), self.person("Ada Example", "ada-2", member=False)
         self.claim(ada, "topic", "Tidal energy", title="Ada page")
         self.claim(twin, "topic", "Wind energy", title="Twin page")
         self.claim(twin, "topic", "Solar energy", title="Twin page")
         network.merge(self.store, [twin], ada, now=now())
         html = self.page(ada)
-        self.assertIn("Found as", html)
+        self.assertIn("Sources", html)
         self.assertEqual(html.count(">Not this person</button>"), 2)
         self.assertIn('Twin page</a> <span class="fn-line__meta text-meta">· 1 fact</span>', html)
         self.post(f"/people/{ada}/not-same", other=twin, next=f"/people/{ada}")

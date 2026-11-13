@@ -240,8 +240,9 @@ class WayBackTest(unittest.TestCase):
         self.claim(twin, "topic", "Wind energy")
         self.search([twin])
         html = self.get(f"/people/{twin}", search="s1", card=twin)
-        merge = re.search(rf'action="/people/{ada}/merge">.*?name="next" value="([^"]+)"', html).group(1)
-        self.assertEqual(merge, f"/people/{ada}?search=s1&card={twin}")
+        same = re.search(rf'action="/searches/s1/people/{twin}/same">(.*?)</form>', html, re.DOTALL).group(1)
+        self.assertIn(f'name="match" value="{ada}"', same)
+        self.assertIn(f'name="next" value="/people/{twin}?search=s1&card={twin}"', same)
 
     def test_the_results_geo_answer_links_each_person_with_the_search(self):
         people = self.named(2)

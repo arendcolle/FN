@@ -130,7 +130,7 @@ class ResultsPageTest(unittest.TestCase):
         self.assertIn(f"Paper: {title.strip()}", self.page(f"/people/{ada}"))
 
     def test_the_combined_line_shows_for_two_records_not_merged_into_one(self):
-        """A card of two separate records links 'Combined from 2 records' to the first one's Possible matches; a card of
+        """A card of two separate records links 'Combined from 2 records' to the first one's Sources; a card of
         one record, or of two records merged into one person, has no such line."""
         ada, twin = self.person("Ada Fictief"), self.person("Ada Fictief 2")
         bea = self.person("Bea Fictief")
@@ -138,7 +138,7 @@ class ResultsPageTest(unittest.TestCase):
         network.merge(self.store, [merged], cas, now=now())
         self.search([([ada, twin], []), ([bea], []), ([cas, merged], [])])
         html = self.page()
-        self.assertIn(f'<p class="fn-card__combined text-small"><a href="/people/{ada}?search=s1&card={ada}&from=card#matches">'
+        self.assertIn(f'<p class="fn-card__combined text-small"><a href="/people/{ada}?search=s1&card={ada}&from=card#sources">'
                       'Combined from 2 records'
                       '</a></p>', self.card(html, ada))
         self.assertNotIn("Combined from", self.card(html, bea))

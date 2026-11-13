@@ -1,12 +1,13 @@
 """The HTML of each design-system part: search box, recent searches, person card, network row, filter bar and notices."""
 from datetime import date
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode
 
 from fn.contracts import (
     BackLink,
     CardView,
     ClaimView,
     ContactView,
+    FactGroup,
     ImportPreview,
     ImportRow,
     LastView,
@@ -17,9 +18,11 @@ from fn.contracts import (
     ProfileView,
     QuoteView,
     Search,
+    SummaryRow,
     name_key,
 )
-from fn.present import FIELDS, RESULTS_STEP, cut, days_ago, plural
+from fn.present import FIELDS, RESULTS_STEP, UNKNOWN_DATE, cut, days_ago, plural
+from fn.store import fold
 from fn.web.html import Safe, h, page
 
 NETWORK_STEP = 200
@@ -145,7 +148,7 @@ def person_card(view: PersonView, search_id: str | None = None, acts: object = N
     evidence = view.evidence
     key = card_id.removeprefix("card-") if card_id else None
     href = person_href(view.person_id, search_id, shown, key, "card")
-    combined = h.p(h.a(f"Combined from {view.records} records", href=f"{href}#matches"),
+    combined = h.p(h.a(f"Combined from {view.records} records", href=f"{href}#sources"),
                    class_="fn-card__combined text-small") if view.records > 1 else None
     return h.article(
         h.h3(h.a(view.name, href=href), class_="fn-card__name text-name"),
@@ -339,8 +342,7 @@ def nobody_matches(flt: NetworkFilter, import_name: str | None, everyone: int) -
                  h.p(why, class_="text-body") if why else None, class_="fn-notice")
 
 
-FACT_STEP = 10
-GROUP_IDS = {"Ties to Belgium": "belgium", "Work": "work", "Places": "places"}
+FACT_STEP = 3
 MATCH_NOTE = "These have the same name, but nothing in FN links them to this person for sure."
 
 
@@ -377,8 +379,11 @@ def profile_banner(view: ProfileView, refused: bool, here: str) -> Safe | None:
     return None
 
 
-def profile_state(view: ProfileView, here: str) -> Safe | list[Safe]:
-    """The head's network state: since when with Remove, the done line of Add or Skip, else the buttons."""
+def profile_state(view: ProfileView, here: str, route: str | None = None) -> Safe | list[Safe]:
+    """The head's network state: since when with Remove from network, the done line of Add or Skip, else the buttons.
+
+    With a route (a card's /searches/<id>/people/<key>) the buttons decide for every record on the card.
+    """
     person, last, pid = view.person, view.last, view.person.person_id
     if last and last.kind in ("add", "skip"):
         done = h.span(last.words, class_="fn-done text-strong" if last.kind == "add" else "text-strong")
@@ -386,18 +391,22 @@ def profile_state(view: ProfileView, here: str) -> Safe | list[Safe]:
     if person.status == "in_list":
         since = f"In your network since {person.added}" if person.added else "In your network"
         return h.form(h.span(since), h.input(type="hidden", name="next", value=here),
-                      h.button("Remove", type="submit", class_="fn-link text-meta"),
+                      h.button("Remove from network", type="submit", class_="fn-link text-meta"),
                       method="post", action=f"/people/{pid}/remove", class_="fn-profile__status text-meta")
     quiet = "fn-btn fn-btn--quiet text-control"
-    skip = post_form(f"/people/{pid}/skip", "Skip", quiet, here)
+    skip = post_form(f"{route or f'/people/{pid}'}/skip", "Skip", quiet, here)
     if match := view.name_match:
         theirs, query = f"/people/{match.person_id}", here.partition("?")[2]
-        return [h.p("Same name as ", h.a(match.name, href=with_back(theirs, here)), " in your network",
-                    class_="fn-card__match text-body"),
-                h.div(post_form(f"{theirs}/merge", "Same person", quiet, f"{theirs}?{query}" if query else theirs, other=pid),
-                      post_form(f"/people/{pid}/add", "Add as new", quiet, here, not_same=match.person_id), skip,
-                      class_="fn-profile__acts")]
-    return h.div(post_form(f"/people/{pid}/add", "Add", "fn-btn fn-btn--add text-control", here), skip,
+        line = h.p("Same name as ", h.a(match.name, href=with_back(theirs, here)), " in your network",
+                   class_="fn-card__match text-body")
+        if route:
+            same = post_form(f"{route}/same", "Same person", quiet, here, match=match.person_id)
+            new = post_form(f"{route}/new", "Add as new", quiet, here, match=match.person_id)
+        else:
+            same = post_form(f"{theirs}/merge", "Same person", quiet, f"{theirs}?{query}" if query else theirs, other=pid)
+            new = post_form(f"/people/{pid}/add", "Add as new", quiet, here, not_same=match.person_id)
+        return [line, h.div(same, new, skip, class_="fn-profile__acts")]
+    return h.div(post_form(f"{route or f'/people/{pid}'}/add", "Add", "fn-btn fn-btn--add text-control", here), skip,
                  class_="fn-profile__acts")
 
 
@@ -414,12 +423,15 @@ def back_line(back: BackLink | None, place: ListPlace | None) -> list[Safe]:
     return lines
 
 
-def profile_head(view: ProfileView, back: BackLink | None, place: ListPlace | None, here: str) -> list[Safe]:
-    """The back link and walk line, then the name, the role line and the network state."""
+def profile_head(view: ProfileView, back: BackLink | None, place: ListPlace | None, here: str,
+                 route: str | None = None) -> list[Safe]:
+    """The back link and walk line, then the name, the role line, the combined line and the network state."""
     return [*back_line(back, place),
             h.div(h.h1(view.person.name, class_="fn-profile__name text-name"),
                   h.p(role_line(view.person), class_="fn-profile__role text-body") if role_line(view.person) else None,
-                  profile_state(view, here),
+                  h.p(h.a(f"Combined from {view.records} records", href="#sources"), class_="fn-profile__combined text-small")
+                  if view.records > 1 else None,
+                  profile_state(view, here, route),
                   class_="fn-profile__head")]
 
 
@@ -442,7 +454,7 @@ def contact_edit(view: ProfileView, contact: ContactView, here: str, error: str 
 
 
 def contact_block(view: ProfileView, here: str, edit: str | None, error: str | None = None,
-                  typed: str | None = None) -> list[Safe]:
+                  typed: str | None = None) -> Safe:
     """Email and phone, each with its value and where it came from, or 'Not provided', with Edit; edit opens one."""
     rows = []
     for contact in view.contact:
@@ -463,43 +475,85 @@ def contact_block(view: ProfileView, here: str, edit: str | None, error: str | N
         edit_href = f"{here}{'&' if '?' in here else '?'}edit={contact.kind}"
         rows.append(h.div(h.dt(label, class_="text-label"), h.dd(shown), h.dd(h.a("Edit", class_="text-meta", href=edit_href)),
                           class_="fn-contact__row"))
-    return [h.h2("Contact", class_="fn-section text-label", id="contact"), h.dl(rows, class_="fn-contact")]
+    return h.section(h.h2("Contact", class_="fn-section text-title"), h.dl(rows, class_="fn-contact"),
+                     class_="fn-profile__section", id="contact")
+
+
+def summary_list(rows: list[SummaryRow]) -> Safe | None:
+    """The SummaryList under the head: each row's key and value with its years; contact values link, none reads 'Not found'."""
+    def value(row: SummaryRow) -> Safe:
+        if row.key == "Contact":
+            if not row.claim_ids:
+                return h.dd(row.value, class_="fn-contact__none text-body")
+            return h.dd(joined([h.a(x, href=f"{'mailto' if '@' in x else 'tel'}:{x}") for x in row.value.split(" · ")]),
+                        class_="text-body")
+        return h.dd(row.value, [", ", h.span(row.years, class_="text-year")] if row.years else None, class_="text-body")
+
+    return h.dl([h.div(h.dt(row.key, class_="text-label"), value(row), class_="fn-summary-list__row") for row in rows],
+                class_="fn-summary-list") if rows else None
+
+
+def cite_line(view: ClaimView, back: str) -> Safe:
+    """The page title or record label as a link to the source page, the date when known, and Original page."""
+    when = f", {view.date}" if view.date != UNKNOWN_DATE else None
+    original = [" · ", h.a("Original page", href=view.url)] if view.url else None
+    return h.p(h.a(view.label, href=with_back(view.href, back)), when, original, class_="fn-cite text-small")
 
 
 def claim_line(view: ClaimView, last: LastView | None, here: str) -> Safe:
-    """A fact as the Claim part: New, the fact and its years with Remove, then its quote or citation.
+    """A fact as the Claim part: New, the fact and its years, the source name that opens its proof, and Not correct.
 
     The fact the latest decision removed shrinks to one line with Undo.
     """
     anchor = f"claim-{view.claim_id}"
-    if last and last.kind == "reject_claim" and last.claim_id == view.claim_id:
-        return h.div(undo_form(last, h.span(last.words), "fn-skipline text-body", f"{here}#{anchor}"),
-                     class_="fn-claim fn-claim--removed", id=anchor)
     years = [", ", h.span(view.years, class_="text-year")] if view.years else None
+    if last and last.kind == "reject_claim" and last.claim_id == view.claim_id:
+        return h.div(undo_form(last, [h.span(view.what, years), h.span("· Removed")], "fn-skipline text-body",
+                               f"{here}#{anchor}"), class_="fn-claim fn-claim--removed", id=anchor)
     new = h.span("New", class_="fn-new text-label") if view.is_new else None
-    head = h.div(h.p(new, view.what, years, class_="fn-claim__what text-body"),
-                 post_form(f"/claims/{view.claim_id}/reject", "Remove", "fn-link text-meta", f"{here}#{anchor}"),
-                 class_="fn-claim__head")
     back = f"{here}#{anchor}"
-    cite = h.p(h.a(view.label, href=with_back(view.href, back)), f", {view.date}", class_="fn-cite text-small")
-    return h.div(head, quote(view.quote, back) if view.quote else cite, class_="fn-claim", id=anchor)
+    proof = h.details(
+        h.summary(view.source, class_="fn-proof__name text-small", aria_label=f"Source for {view.what}: {view.source}"),
+        h.div(h.blockquote(view.quote.text, class_="fn-quote text-quote") if view.quote else None, cite_line(view, back),
+              class_="fn-proof__body"),
+        class_="fn-proof")
+    head = h.div(h.div(h.span(new, view.what, years, class_="fn-claim__what text-body"), " ", proof,
+                       class_="fn-claim__line"),
+                 post_form(f"/claims/{view.claim_id}/reject", "Not correct", "fn-link text-meta", back),
+                 class_="fn-claim__head")
+    return h.div(head, class_="fn-claim", id=anchor)
 
 
-def fact_groups(view: ProfileView, here: str, all_facts: bool) -> list[object]:
-    """Each fact group under its heading, its first ten facts unless all_facts, then 'Show n more' for the rest."""
-    out: list[object] = []
-    every = f"{here}{'&' if '?' in here else '?'}all=1"
+def with_all(here: str, anchor: str) -> str:
+    """The page's path and query with all=<anchor> set in place of any all."""
+    path, _, query = here.partition("?")
+    return f"{path}?{urlencode([*(q for q in parse_qsl(query) if q[0] != 'all'), ('all', anchor)])}"
+
+
+def head_place(group: FactGroup, view: ProfileView) -> bool:
+    """Whether the group's only line is the place the head shows."""
+    place = view.person.place
+    return bool(place and len(group.facts) == 1 and fold(group.facts[0].what) == fold(f"Based in {place}"))
+
+
+def fact_groups(view: ProfileView, here: str, every: str | None) -> list[Safe]:
+    """Each fact section under its heading, its first three facts unless every is 1 or the section's id, then Show n more.
+
+    A section is left out when all its lines stand in the summary, and Places when its only line is the head's place.
+    """
+    covered = {i for row in view.summary for i in row.claim_ids}
+    out = []
     for group in view.facts:
-        shown = group.facts if all_facts else group.facts[:FACT_STEP]
-        more, anchor = len(group.facts) - len(shown), GROUP_IDS[group.title]
-        out += [h.h2(group.title, class_="fn-section text-label", id=anchor),
-                h.div([claim_line(c, view.last, here) for c in shown]),
-                h.div(h.span(f"{len(shown):,} of {len(group.facts):,} shown"),
-                      h.a(f"Show {more:,} more", class_="fn-btn fn-btn--quiet text-control", href=f"{every}#{anchor}"),
-                      class_="fn-more text-meta") if more else None]
-    if not any(group.title == "Places" for group in view.facts):
-        out += [h.h2("Places", class_="fn-section text-label", id=GROUP_IDS["Places"]),
-                h.p("Not provided", class_="fn-contact__none text-body")]
+        anchor = group.title.split()[0].lower()
+        if all(c.claim_id in covered for c in group.facts) or (group.title == "Places" and head_place(group, view)):
+            continue
+        shown = group.facts if every in ("1", anchor) else group.facts[:FACT_STEP]
+        more = len(group.facts) - len(shown)
+        out.append(h.section(
+            h.h2(group.title, class_="fn-section text-title"), h.div([claim_line(c, view.last, here) for c in shown]),
+            h.p(h.a(f"Show {more:,} more", class_="fn-link", href=f"{with_all(here, anchor)}#{anchor}"),
+                class_="fn-more text-meta") if more else None,
+            class_="fn-profile__section", id=anchor))
     return out
 
 
@@ -507,19 +561,20 @@ def done_line(last: LastView, here: str) -> Safe:
     return h.div(h.div(undo_form(last, last.words, "text-body", here), class_="fn-line__main"), class_="fn-line fn-line--done")
 
 
-def found_as_block(view: ProfileView, here: str) -> list[Safe] | None:
-    """Found as: each record's source with its fact count and Not this person; the canonical record has no button."""
+def found_as_block(view: ProfileView, here: str) -> Safe | None:
+    """Sources: each record's source with its fact count and Not this person where the record can be separated."""
     pid, last = view.person.person_id, view.last
     rows = [h.div(
         h.div(h.p(h.a(r.label, href=with_back(r.href, here)), " ",
                   h.span(f"· {plural(r.facts, 'fact', 'facts')}", class_="fn-line__meta text-meta"), class_="text-body"),
               class_="fn-line__main"),
         post_form(f"/people/{pid}/not-same", "Not this person", "fn-link text-meta", here, other=r.record_id)
-        if r.record_id != pid else None,
+        if r.separate else None,
         class_="fn-line") for r in view.found_as]
     if last and last.separated:
         rows.append(done_line(last, here))
-    return [h.h2("Found as", class_="fn-section text-label"), h.div(rows, class_="fn-lines")] if rows else None
+    return h.section(h.h2("Sources", class_="fn-section text-title"), h.div(rows, class_="fn-lines"),
+                     class_="fn-profile__section", id="sources") if rows else None
 
 
 def possible_line(match: PersonView, person_id: str, here: str) -> Safe:
@@ -538,7 +593,7 @@ def possible_line(match: PersonView, person_id: str, here: str) -> Safe:
     )
 
 
-def possible_block(view: ProfileView, here: str) -> list[Safe] | None:
+def possible_block(view: ProfileView, here: str) -> Safe | None:
     """Possible matches under their note, and the done line of the latest merge or different-person decision."""
     last = view.last
     rows = [possible_line(m, view.person.person_id, here) for m in view.possible]
@@ -546,8 +601,11 @@ def possible_block(view: ProfileView, here: str) -> list[Safe] | None:
         rows.append(done_line(last, here))
     if not rows:
         return None
-    return [h.h2("Possible matches", class_="fn-section text-label", id="matches"),
-            h.p(MATCH_NOTE, class_="fn-note text-small"), h.div(rows, class_="fn-lines")]
+    return h.section(h.h2("Possible matches", class_="fn-section text-title"),
+                     h.p(MATCH_NOTE, class_="fn-note text-small"), h.div(rows, class_="fn-lines"),
+                     class_="fn-profile__section", id="matches")
+
+
 def banner(text: str, link: tuple[str, str] | None = None) -> Safe:
     """One line on what an action changed elsewhere, with the next step as a link; link is (label, href)."""
     return h.p(h.span(text), h.a(link[0], href=link[1]) if link else None, class_="fn-banner text-body", role="status")
