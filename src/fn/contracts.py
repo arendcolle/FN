@@ -53,6 +53,7 @@ EventKind = Literal["add", "skip", "merge", "not_same", "reject_claim", "edit_co
 CutReason = Literal["no_belgian_evidence", "weak_openalex", "no_claim", "outside_country", "no_tie"]
 TieGrade = Literal["strong", "medium", "weak", "none"]
 RoleFit = Literal["met", "fails", "unknown"]
+JobFit = Literal["known", "employer", "none"]
 PlaceFit = Literal["inside", "outside", "abroad", "unknown", "none"]
 AddedVia = Literal["search", "import", "profile"]
 CardState = Literal["network", "new", "name_match", "added", "skipped"]

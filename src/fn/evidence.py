@@ -10,6 +10,7 @@ from fn.contracts import (
     Chip,
     Claim,
     Identifier,
+    JobFit,
     Org,
     Question,
     RoleFit,
@@ -100,6 +101,7 @@ class Evidence:
     place: Where = field(default_factory=Where)
     sources: int = 0
     only_openalex: bool = False
+    job: JobFit = "none"
 
 
 def recent(stamp: str | None, today: date) -> bool:
@@ -227,6 +229,18 @@ def only_openalex(card: dict[str, frozenset[str]]) -> bool:
     return bool(card) and all(schemes <= OPENALEX_SCHEMES for schemes in card.values())
 
 
+def job(claims: list[Claim], card: dict[str, frozenset[str]], today: date) -> JobFit:
+    """What the card shows of the person's work today: known with a role (one without a relation) and an employer,
+    employer with an employer alone, else none. An affiliation counts as an employer when undated or recent."""
+    def current(claim: Claim) -> bool:
+        years = rank.units(claim) - {rank.UNDATED}
+        return not years or max(map(int, years)) >= today.year - RECENT_YEARS
+
+    has_role = any(usable_role(card, c) and c.relation is None for c in claims)
+    has_employer = any(c.relation == "works_at" or (c.relation == "affiliated_with" and current(c)) for c in claims)
+    return "known" if has_role and has_employer else "employer" if has_employer else "none"
+
+
 def institution(claims: list[Claim], question: Question) -> Institution:
     """The claims at the organization of an institution chip."""
     wanted = {orgs.org_id(chip.text) or chip.ref for chip in question.chips.institutions} - {None}
@@ -295,4 +309,5 @@ def of(card: dict[str, frozenset[str]], claims: list[Claim], facts: dict[str, Or
         topic=topic(own, question.chips.topics, card), institution=institution(own, question),
         belgian=tie(card, own, facts, found), role=role(own, card, question), place=where(found, question),
         sources=len({c.source_id for c in own}), only_openalex=only_openalex(card),
+        job=job(own, card, today),
     )
