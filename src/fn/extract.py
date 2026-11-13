@@ -27,6 +27,9 @@ TASK = "extract"
 CHUNK_CHARS = 6_000
 # A relation quote is looked for this far from the start of its mention quote, so each speaker keeps their own line.
 NEAR_CHARS = 1_500
+# A lead's place stands this near the lead's name on a page, and its quote is cut to this many characters.
+NAME_REACH = 1_000
+QUOTE_CHARS = 300
 PLACES: frozenset[Relation] = frozenset({"born_in", "lives_in", "origin"})
 PARAGRAPH = re.compile(r"[^\n]+(?:\n[^\n]+)*")
 LINE = re.compile(r"[^\n]+")
@@ -211,6 +214,32 @@ def drafts(person_id: str, source: Source, located: Located, ctx: StepContext | 
                                     value=normalize(rel.org), **base))
     found += [ClaimDraft(kind="topic", value=topic, **quoted(span)) for topic, span in located.topics]
     return found
+
+
+def stated_place(person_id: str, source: Source, name: str, place: str, ctx: StepContext | None) -> ClaimDraft | None:
+    """A lives_in claim for place when its city stands within NAME_REACH characters of the name's last word, else None.
+
+    The city is the part of place before its first comma, compared casefolded on word boundaries. The quote is
+    the line of the text that holds it, cut to QUOTE_CHARS characters around it.
+    """
+    text, city = source.text, place.split(",")[0].strip()
+    surnames = re.findall(r"[^\W_]+", clean_name(name))
+    if not city or not surnames:
+        return None
+    around = [m.start() for m in re.finditer(rf"(?<!\w){re.escape(surnames[-1])}(?!\w)", text, re.IGNORECASE)]
+    found = next((m for m in re.finditer(rf"(?<!\w){r'\s+'.join(map(re.escape, city.split()))}(?!\w)", text, re.IGNORECASE)
+                  if any(abs(m.start() - at) <= NAME_REACH for at in around)), None)
+    if found is None:
+        return None
+    start, end = text.rfind("\n", 0, found.start()) + 1, text.find("\n", found.end())
+    end = len(text) if end < 0 else end
+    if end - start > QUOTE_CHARS:
+        start = max(start, min(found.start() - (QUOTE_CHARS - len(found.group())) // 2, end - QUOTE_CHARS))
+        end = min(end, start + QUOTE_CHARS)
+    where = geo.coordinates(ctx.http, normalize(place), ctx.log) if ctx else None
+    lat, lon = where or (None, None)
+    return ClaimDraft(person_id=person_id, kind="location", relation="lives_in", value=normalize(place), lat=lat, lon=lon,
+                      quote=text[start:end], quote_start=start, quote_end=end, source=source)
 
 
 def locate_stored(store: Store, names: geo.Names) -> int:

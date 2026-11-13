@@ -26,7 +26,7 @@ def make_settings(test: unittest.TestCase) -> Settings:
     var_dir = Path(tempfile.mkdtemp(prefix="fn-test-"))
     test.addCleanup(shutil.rmtree, var_dir, ignore_errors=True)
     return Settings(var_dir=var_dir, env="test", llm_mode="replay", http_mode="replay",
-                    openalex_api_key=SecretStr(SECRET))
+                    openalex_api_key=SecretStr(SECRET), scout=False)
 
 
 def make_db(test: unittest.TestCase, settings: Settings | None = None) -> Store:

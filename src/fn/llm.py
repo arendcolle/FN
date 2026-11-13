@@ -19,7 +19,8 @@ from fn.steps import current_recorder
 PROMPTS = Path(__file__).parent / "prompts"
 CLI_ENV = ("PATH", "HOME", "USER", "LANG", "TMPDIR")
 TIMEOUT_S = 60
-TIMEOUTS = {"extract": 120}
+TIMEOUTS = {"extract": 120, "scout": 420}
+TOOLS = {"scout": "WebSearch,WebFetch"}
 MODEL = "haiku"
 DATA_NAME = re.compile(r"[a-z][a-z_]*")
 
@@ -79,10 +80,11 @@ class ClaudeCli:
             raise RuntimeError("ClaudeCli refuses to run under FN_ENV=test; use FixtureLLM in replay mode")
         self.model = model
 
-    def argv(self, system: str, schema_text: str) -> list[str]:
+    def argv(self, system: str, schema_text: str, tools: str = "") -> list[str]:
         return [
             "claude", "-p", "--model", self.model, "--output-format", "json", f"--json-schema={schema_text}",
-            "--tools=", "--setting-sources=", "--strict-mcp-config", "--no-session-persistence",
+            f"--tools={tools}", *(["--allowedTools", *tools.split(",")] if tools else []),
+            "--setting-sources=", "--strict-mcp-config", "--no-session-persistence",
             f"--system-prompt={system}",
         ]
 
@@ -107,7 +109,7 @@ class ClaudeCli:
         env = {k: os.environ[k] for k in CLI_ENV if k in os.environ}
         try:
             proc = Popen(
-                self.argv(system, schema_text), stdin=PIPE, stdout=PIPE, stderr=PIPE,
+                self.argv(system, schema_text, TOOLS.get(task, "")), stdin=PIPE, stdout=PIPE, stderr=PIPE,
                 text=True, env=env, start_new_session=True,
             )
         except OSError as exc:

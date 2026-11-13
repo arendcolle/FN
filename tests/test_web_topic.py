@@ -59,6 +59,13 @@ class WebTopicTest(unittest.TestCase):
                 self.assertEqual(self.sent, [])
                 self.assertEqual(([c.reason for c in out.considered], out.hits, out.lane), ([reason], [], "web_topic"))
 
+    def test_with_web_research_on_the_lane_notes_and_makes_no_call(self):
+        """The scout lane finds people without a tie, so this lane's paid search does not run beside it."""
+        self.settings = self.settings.model_copy(update={"scout": True})
+        out = self.run_lane(chips(), 0)
+        self.assertEqual(self.sent, [])
+        self.assertEqual([c.reason for c in out.considered], ["the web research lane looks for people without a tie"])
+
     def test_under_the_gate_one_search_without_belgium_and_hits_carry_the_lane(self):
         """With 19 or no count under the first heading, the Search objective has no Belgium and every hit is web_topic."""
         for heading in (None, 0, 19):

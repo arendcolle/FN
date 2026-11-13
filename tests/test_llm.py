@@ -11,6 +11,7 @@ from fn import config
 from fn.contracts import Chips
 from fn.llm import (
     TIMEOUTS,
+    TOOLS,
     ClaudeCli,
     FixtureLLM,
     FixtureMissing,
@@ -207,7 +208,7 @@ class LLMTest(unittest.TestCase):
 
     def test_each_task_waits_for_its_own_timeout_and_the_message_names_it(self):
         """A task listed in TIMEOUTS waits that many seconds, any other task waits 60 s, and a timeout names the seconds it waited."""
-        self.assertEqual(TIMEOUTS, {"extract": 120})
+        self.assertEqual(TIMEOUTS, {"extract": 120, "scout": 420})
         for table, expected in (({}, 60), ({"parse": 7}, 7)):
             proc = FakeProc(json.dumps(GOOD))
             with mock.patch.dict(TIMEOUTS, table), mock.patch("fn.llm.Popen", proc):
@@ -217,6 +218,21 @@ class LLMTest(unittest.TestCase):
                 mock.patch("fn.llm.os.killpg"), self.assertLogs("fn.worker", "ERROR"):
             search = self.search_with(self.worker_for(ClaudeCli(self.dev)))
         self.assertIn("timed out after 7s", self.store.list_steps(search.id)[0].error_message)
+
+    def test_only_the_scout_task_gets_web_tools_in_its_argv(self):
+        """The scout argv lists the two tools after --tools and as --allowedTools values; the parse argv has no tools."""
+        scout = ClaudeCli(self.dev).argv("system", "{}", TOOLS["scout"])
+        at = scout.index("--tools=WebSearch,WebFetch")
+        self.assertEqual(scout[at + 1:at + 4], ["--allowedTools", "WebSearch", "WebFetch"])
+        parse = ClaudeCli(self.dev).argv("system", "{}")
+        self.assertIn("--tools=", parse)
+        self.assertNotIn("--allowedTools", parse)
+        self.assertEqual(TOOLS, {"scout": "WebSearch,WebFetch"})
+        proc = FakeProc(json.dumps(GOOD))
+        with mock.patch("fn.llm.Popen", proc):
+            self.search_with(self.worker_for(ClaudeCli(self.dev)), "--dangerously-skip-permissions")
+        self.assertIn("--tools=", proc.argv)
+        self.assertNotIn("--allowedTools", proc.argv)
 
 
 if __name__ == "__main__":

@@ -217,6 +217,15 @@ class ScoreTest(unittest.TestCase):
         with self.assertLogs("fn.worker", "ERROR"):
             self.assertEqual(self.run_score("replay", "lenient", "--allow-degraded")[0], 0)
 
+    def test_a_replay_of_version_2_chips_with_no_recorded_research_is_not_degraded(self):
+        """The scout lane finds no fixture for any angle and ends ok with a note, so the replayed search is not degraded."""
+        chips = Chips(place=Place(text="Chicago", origin="parsed", kind="metro"), version=2)
+        make_search(self.store, "99999999", QUESTION, chips)
+        shutil.rmtree(self.snap)
+        score.snapshot(self.settings, self.snap, [])
+        _, result = self.run_score("replay", "scouted", "--allow-degraded")
+        self.assertNotIn("99999999", result["meta"]["degraded"])
+
     def test_rerank_runs_the_steps_after_the_lanes_on_the_stored_lane_outputs(self):
         """A search stored with a lane hit and no candidates has none under rescore and one under rerank."""
         person = add_person(self.store, "Kai Rerank")

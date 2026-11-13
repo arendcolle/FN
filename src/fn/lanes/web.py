@@ -1,5 +1,7 @@
 """Web lane: one Parallel Search and one Extract call per search, each page stored and every person it names a hit."""
 
+from collections.abc import Callable
+
 from fn import extract, websearch
 from fn.contracts import (
     Chips,
@@ -53,9 +55,11 @@ def listed(claim: Claim) -> str:
     return " ".join([claim.relation or claim.kind, repr(claim.value), *filter(None, (claim.org_id, claim.claim_date))])
 
 
-def people(ctx: StepContext, pages: list[tuple[int, Source]], considered: list[Considered],
-           lane: LaneName) -> list[LaneHit]:
+def people(ctx: StepContext, pages: list[tuple[int, Source]], considered: list[Considered], lane: LaneName,
+           focus: Callable[[Source, str], bool] | None = None) -> list[LaneHit]:
     """One hit per person the pages name, in page order, then mention order, with every mention's claims stored.
+
+    With focus, a person for whom focus(source, name) is false is not stored and gets a dropped mention row.
 
     A person named twice on a page is one hit with the claims of both mentions. Each kept mention, and each
     mention, relation or chunk dropped, is added to considered.
@@ -68,6 +72,10 @@ def people(ctx: StepContext, pages: list[tuple[int, Source]], considered: list[C
         with ctx.store.tx():
             for located in found:
                 ident = extract.identifier(source.url, located.name)
+                if focus and not focus(source, located.name):
+                    considered.append(Considered(person_key=ident.value, name=located.name, stage="mention", kept=False,
+                                                 reason=f"{page}: {located.name} is not a lead"))
+                    continue
                 person = ctx.store.resolve_person([ident], located.name)
                 claims = [ctx.store.upsert_claim(d, ctx.now()) for d in extract.drafts(person.id, source, located, ctx)]
                 hit = hits.get(person.id) or LaneHit(person_id=person.id, name_key=person.name_key, lane=lane,
