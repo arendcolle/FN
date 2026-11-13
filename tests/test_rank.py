@@ -646,21 +646,22 @@ class VerdictTest(unittest.TestCase):
         out = self.fused(v1, {"tied": "no", "bare": "no"}, tied=tied, bare=bare)
         self.assertEqual({k: c.tier for k, c in out.items()}, {"tied": 1, "bare": 3})
 
-    def test_a_partly_verdict_keeps_the_tier_after_yes_and_an_unchecked_word_match_loses_it(self):
-        """Once the check ran, a person it did not look at is no confirmed match (tier 5 with a tie), unless they
-        meet the asked role; a partly person keeps the tier and stands after a yes person, whatever the score."""
-        people = dict(partly=found(**self.HERE), yes=found(**self.HERE), plain=found(**self.HERE),
+    def test_only_a_yes_confirms_a_word_match_and_partly_leads_the_unconfirmed(self):
+        """Once the check ran, a partly person and one it did not look at are tier 5 with a tie, partly first and
+        a no last; a person who meets the asked role keeps tier 1 with a partly verdict, after the yes person."""
+        people = dict(partly=found(**self.HERE), yes=found(**self.HERE), plain=found(**self.HERE), nope=found(**self.HERE),
                       met=found(role="met", **self.HERE))
-        out = self.fused(v2(None, Chip(text="founders", origin="edited", research=False)), {"partly": "partly", "yes": "yes"}, **people)
-        self.assertEqual({k: c.tier for k, c in out.items()}, {"partly": 1, "yes": 1, "plain": 5, "met": 1})
-        self.assertEqual(sorted((k for k in out if out[k].tier == 1), key=lambda k: out[k].rank), ["met", "yes", "partly"])
+        ask = v2(None, Chip(text="founders", origin="edited", research=False))
+        out = self.fused(ask, {"partly": "partly", "yes": "yes", "nope": "no", "met": "partly"}, **people)
+        self.assertEqual({k: c.tier for k, c in out.items()}, {"partly": 5, "yes": 1, "plain": 5, "nope": 5, "met": 1})
+        self.assertEqual(sorted(out, key=lambda k: out[k].rank), ["met", "yes", "partly", "plain", "nope"])
         equal = self.fused(v2(), {"partly": "partly"}, partly=found(role="met", **self.HERE), met=found(role="met", **self.HERE))
         self.assertEqual(sorted(equal, key=lambda k: equal[k].rank), ["met", "partly"])
         unchecked = self.fused(v2(), {}, plain=found(**self.HERE))
         self.assertEqual(unchecked["plain"].tier, 1)
         v1 = Question(chips=ASK.chips, area=BOSTON, country="US")
         out = self.fused(v1, {"partly": "partly", "yes": "yes"}, **people)
-        self.assertEqual(sorted(out, key=lambda k: out[k].rank), ["met", "partly", "yes", "plain"])
+        self.assertEqual({c.tier for c in out.values()}, {1})
 
     def test_a_person_the_check_sent_without_a_verdict_keeps_the_tier(self):
         """A person in unsure (failed batch, skipped line) is not demoted as an unchecked word match."""

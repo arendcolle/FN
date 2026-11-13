@@ -188,15 +188,16 @@ def tier(found: "evidence.Evidence | None", question: Question | None, researche
 
     On a version-2 question, a person the web researcher named for this question (researched) counts as a
     confirmed match: the researcher chose them for the question, which word matching cannot do. For anyone else
-    a verdict of "no" takes the match away, and once the fit check ran (checked) a word match the check did not
-    look at is no confirmed match either, unless the person meets the asked role.
+    a verdict of "no" takes the match away. Unless the person meets the asked role, so does "partly", and so
+    does having no verdict once the fit check ran (checked): only a "yes" confirms a word match.
     """
     if found is None or found.role.fit == "fails":
         return 7
     tied, fits = found.belgian.grade in TIED, place_fit(found, question) in FITS
     current = question is not None and question.chips.version >= 2
     match = confirmed(found, question)
-    if current and (verdict == "no" or (checked and verdict is None and found.role.fit != "met")):
+    unsure = verdict == "partly" or (checked and verdict is None)
+    if current and (verdict == "no" or (unsure and found.role.fit != "met")):
         match = False
     if match or (current and researched):
         return (1 if fits else 2) if tied else (3 if fits else 4)
@@ -222,18 +223,17 @@ def fit_of(found: "evidence.Evidence | None", question: Question | None) -> Card
 
 def order_key(found: "evidence.Evidence | None", question: Question | None, level: int,
               verdict: FitVerdict | None = None) -> tuple:
-    """The new section's order before score: tier, heading, abroad last, role met (with the topic first, a "partly"
-    verdict after "yes"), own words before related words, tie grade, place, then more topic words. BLANK is for
-    people without evidence."""
+    """The new section's order before score: tier, heading, abroad last, role met (then the fit verdict, then the
+    topic), own words before related words, tie grade, place, then more topic words. BLANK is for people without
+    evidence. In tiers 1 to 4 a "partly" verdict stands last; below them "partly" stands first and "no" last."""
     if found is None:
         return BLANK
     place = place_fit(found, question)
     grade = found.belgian.grade
     legacy = question is None or question.chips.version < 2
     spot = PLACES.get(place, 0) if legacy else SPOTS.get(place, 0)
-    # Version 2: within a role fit, a person who also matches the topic stands first, and a "partly" verdict after "yes".
-    role = ROLES.index(found.role.fit) if legacy else (
-        4 * ROLES.index(found.role.fit) + 2 * (verdict == "partly") + (not found.topic.match))
+    doubt = int(verdict == "partly") if level <= 4 else {"partly": 0, "no": 2}.get(verdict, 1)
+    role = ROLES.index(found.role.fit) if legacy else 6 * ROLES.index(found.role.fit) + 2 * doubt + (not found.topic.match)
     return (level, heading(level, grade), place == "abroad", role, found.topic.related,
             TIED.index(grade) if grade in TIED else len(TIED), spot, -len(found.topic.words))
 
