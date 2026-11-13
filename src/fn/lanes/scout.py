@@ -19,6 +19,7 @@ from fn.steps import StepContext
 name: LaneName = "scout"
 MAX_PAGES = 40
 PAGES_PER_LEAD = 2
+JOBS = ("works_at", "worked_at", "affiliated_with")
 
 
 def same_person(lead: str, found: str) -> bool:
@@ -147,7 +148,11 @@ def add_stated(ctx: StepContext, hits: list[LaneHit], matched: list[tuple[Source
         for hit in hits:
             claim_ids = list(hit.claim_ids)
             for lead in by_person.get(hit.person_id, {}).values():
-                have = {c.relation for c in map(ctx.store.get_claim, claim_ids) if c}
+                claims = [c for c in map(ctx.store.get_claim, claim_ids) if c]
+                have = {c.relation for c in claims}
+                # A job the page reader gave, also a past or unclear one at this employer, is never restated as current.
+                if any(c.relation in JOBS and name_key(lead.employer) in name_key(c.value) for c in claims):
+                    have.add("works_at")
                 sources = [s for url in lead.pages[:PAGES_PER_LEAD] if (s := pages.get(scout.page_key(url)))]
                 for relation, word, value in (("lives_in", "place", lead.place), ("works_at", "employer", lead.employer)):
                     if not value or relation in have:

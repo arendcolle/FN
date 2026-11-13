@@ -214,6 +214,18 @@ class ScoutLaneTest(unittest.TestCase):
         _, found = self.employer_claims(text, "Cafe Test", relation("works_at", "Bakery Voorbeeld", "He works at Bakery Voorbeeld."))
         self.assertEqual([c.value for c in found], ["Bakery Voorbeeld"])
 
+    def test_a_past_job_at_the_employer_is_not_restated_as_current(self):
+        """The page reader read 'previously worked at Cafe Test'; the lead's employer Cafe Test adds no works_at claim."""
+        text = "Jan Peeters is head chef.\nHe previously worked at Cafe Test."
+        past = relation("worked_at", "Cafe Test", "He previously worked at Cafe Test.")
+        self.assertEqual(self.employer_claims(text, "Cafe Test", past)[1], [])
+
+    def test_an_employer_far_from_the_name_and_a_one_word_rest_of_a_legal_form_add_nothing(self):
+        """A line 1,500 characters from the name is someone else's; 'Baker LLP' is never cut to the word 'baker'."""
+        far = "Jan Peeters is head chef.\n" + "x " * 750 + "\nCafe Test hired a new manager."
+        self.assertEqual(self.employer_claims(far, "Cafe Test")[1], [])
+        self.assertEqual(self.employer_claims("Jan Peeters is head chef.\nThe head baker left.", "Baker LLP")[1], [])
+
     def test_claims_carry_the_pages_own_date_or_the_day_it_was_read(self):
         """An undated page dates its claims by the day FN read it; a page with a date of its own by that date."""
         out = self.run_lane([lead("Jan Peeters", JAN)], {JAN: JAN_TEXT}, {"Jan Peeters is": [head("Jan Peeters", "Jan Peeters is head chef at Cafe Test.")]})

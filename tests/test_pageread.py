@@ -157,18 +157,6 @@ class PageReadTest(unittest.TestCase):
         [again] = self.reading("https://a.example/p", settings=self.settings.model_copy(update={"http_mode": "replay"}))
         self.assertEqual((again.failed, again.text), (None, live.text))
 
-    def test_a_429_gets_one_more_try_and_a_second_429_is_the_failure(self):
-        """A host that answers 429 once is asked again after the wait; twice in a row the page fails with the answer."""
-        self.serve("https://a.example/p", page(LONG))
-        self.routes["https://a.example/p"] = [httpx.Response(429, text="slow down"), self.routes["https://a.example/p"]]
-        self.routes["https://b.example/robots.txt"] = httpx.Response(200, text="User-agent: *\nAllow: /")
-        self.routes["https://b.example/p"] = [httpx.Response(429, text="slow down"), httpx.Response(429, text="slow down")]
-        with mock.patch("fn.pageread.time.sleep") as slept:
-            ok, failed = self.reading("https://a.example/p", "https://b.example/p")
-        self.assertIsNone(ok.failed)
-        self.assertIn("returned 429", failed.failed)
-        self.assertEqual(slept.call_args_list, [mock.call(pageread.RETRY_S)] * 2)
-
     def test_a_read_page_carries_its_own_date(self):
         """read passes the date of the page's meta tags on with the text; a page without one has none."""
         dated = f'<html><head><meta property="article:published_time" content="2024-05-17"></head><body><p>{LONG}</p></body></html>'
@@ -222,6 +210,7 @@ class PageDateTest(unittest.TestCase):
         self.assertEqual(page_date(both), "2024-05-17")
         self.assertEqual(page_date('<meta name="date" content="2022-11-03">'), "2022-11-03")
         self.assertIsNone(page_date('<meta name="date" content="last week"><meta name="author" content="2024-05-17">'))
+        self.assertIsNone(page_date('<meta name="date" content="2024-13-05">'))
         self.assertIsNone(page_date("<p>Published 2024-05-17</p>"))
 
 

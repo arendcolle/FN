@@ -270,17 +270,20 @@ def stated_place(person_id: str, source: Source, name: str, place: str, ctx: Ste
 
 
 def stated_employer(person_id: str, source: Source, name: str, employer: str) -> ClaimDraft | None:
-    """A works_at claim for employer when the source's text prints its name, else None.
+    """A works_at claim for employer when the source's text prints its name near the person or in its title line.
 
-    The name is tried as given and without trailing legal forms such as LLP or Inc. Of several places the one
-    nearest to the person's name counts. The value is the name as the page writes it, the quote its line.
+    The name is tried as given, then without trailing legal forms such as LLP or Inc when two or more words
+    remain. A place counts within NAME_REACH characters of the person's name, or on the first line when that is
+    the page's title. The value is the name as the page writes it, the quote its line.
     """
     words = employer.split()
-    while len(words) > 1 and name_key(words[-1]).replace(" ", "") in LEGAL_FORMS:
+    while len(words) > 2 and name_key(words[-1]).replace(" ", "") in LEGAL_FORMS:
         words = words[:-1]
+    title_end = len(source.text.split("\n", 1)[0]) if source.title and source.text.startswith(source.title) else 0
     for phrase in dict.fromkeys((employer, " ".join(words))):
-        if found := _near(source.text, phrase, name):
-            _, a, b = found[0]
+        for far, a, b in _near(source.text, phrase, name):
+            if far > NAME_REACH and b > title_end:
+                continue
             start, end = _line(source.text, a, b)
             value = normalize(source.text[a:b])
             return ClaimDraft(person_id=person_id, kind="affiliation", relation="works_at", org_id=orgs.org_id(value),
