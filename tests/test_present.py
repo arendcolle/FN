@@ -39,16 +39,16 @@ class ClaimViewTest(unittest.TestCase):
              "Studied at KU Leuven"),
             (claim(relation="works_at", value="Columbia University"), None, "Works at Columbia University"),
             (claim(relation="worked_at", value="imec"), None, "Worked at imec"),
-            (claim(relation="affiliated_with"), None, "Affiliated with KU Leuven"),
+            (claim(relation="affiliated_with"), None, "Named at KU Leuven"),
             (claim(relation="hosted_by", value="MIT"), None, "Hosted by MIT"),
             (claim(relation="member_of", value="KVAB"), None, "Member of KVAB"),
             (claim(relation="fellow_of", value="Example Foundation"), None, "Fellow of Example Foundation"),
             (claim(relation="consul_for", value="Belgium"), None, "Honorary consul for Belgium"),
             (claim("role", "Research scientist", relation="fellow_of"), None, "Research scientist"),
-            (claim("topic", "6G"), None, "Field: 6G"),
+            (claim("topic", "6G"), None, "Topic: 6G"),
             (claim("location", "Leuven", relation="born_in"), None, "Born in Leuven"),
-            (claim("location", "Boston", relation="lives_in"), None, "Based in Boston"),
-            (claim("location", "Boston"), None, "Based in Boston"),
+            (claim("location", "Boston", relation="lives_in"), None, "Lives in Boston"),
+            (claim("location", "Boston"), None, "Lives in Boston"),
             (claim("email", "anne@example.org"), None, "Email: anne@example.org"),
             (claim("phone", "+1 555 0100"), None, "Phone: +1 555 0100"),
             (claim("availability", "Open to mentoring"), None, "Open to mentoring"),
@@ -76,9 +76,9 @@ class ClaimViewTest(unittest.TestCase):
         self.assertEqual(present.claim_view(claim(), source(title=None), None).label, "example.org")
 
     def test_years_read_as_runs(self):
-        """A span reads 'from–to', separate years are joined by a comma, and an undated claim has no years."""
+        """A span reads 'from–to', also for separate years, and an undated claim has no years."""
         self.assertEqual(present.claim_view(claim(valid_from="2008", valid_to="2013"), source(), None).years, "2008–2013")
-        self.assertEqual(present.claim_view(claim(years=[2001, 2008]), source(), None).years, "2001, 2008")
+        self.assertEqual(present.claim_view(claim(years=[2001, 2008]), source(), None).years, "2001–2008")
         self.assertEqual(present.claim_view(claim(), source(), None).years, "")
 
     def test_a_claim_is_new_only_when_stored_after_seen_at(self):

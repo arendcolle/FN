@@ -118,14 +118,15 @@ class ProfilePageTest(unittest.TestCase):
         self.assertNotIn("Not provided", self.section(html, "Places"))
 
     def test_a_section_whose_only_fact_is_the_studied_row_or_the_head_place_is_left_out(self):
-        """One study fact is the Studied row, so Education is left out; one place the head shows leaves Places out."""
+        """One study fact is the tie row, so Education is left out; one place the head shows leaves Places out."""
         ada = self.person("Ada Fictief", "ada")
         self.claim(ada, "affiliation", "Gent University", relation="studied_at", org_id=GENT_UNI.id, claim_date="2012")
         self.claim(ada, "location", "Gent", relation="lives_in")
         self.claim(ada, "topic", "Wind energy")
         html = self.page(ada)
         self.assertEqual(HEADING.findall(html), ["Work"])
-        self.assertIn('<dt class="text-label">Studied</dt>', html)
+        self.assertIn('<dt class="text-label">Tie to Flanders</dt>', html)
+        self.assertNotIn('<dt class="text-label">Studied</dt>', html)
         self.assertIn("Gent</p>", html.split('class="fn-profile__role text-body">', 1)[1])
 
     def test_each_fact_stands_in_one_section_only(self):
@@ -160,21 +161,21 @@ class ProfilePageTest(unittest.TestCase):
                  (made("location", "born_in", "Ghent"), src, "Ties to Flanders and Belgium"),
                  (made("location", "born_in", "Paris"), src, "Places"), (made("location", "lives_in"), seed, "Places"),
                  (made("affiliation", "member_of", org_id=GENT_UNI.id), src, "Ties to Flanders and Belgium"),
-                 (made("affiliation", "member_of"), src, "Work"), (made("topic", None), seed, "Ties to Flanders and Belgium"),
+                 (made("affiliation", "member_of"), src, "Work"), (made("topic", None), seed, "Work"),
                  (made("topic", None), src, "Work")]
         for claim, source, group in cases:
             with self.subTest(claim=claim.kind, relation=claim.relation, source=source.kind):
                 self.assertEqual(group_of(claim, facts, source), group)
 
     def test_the_summary_has_the_newest_study_the_tie_and_the_contact_or_not_found(self):
-        """Studied is the newest study with its years, Tie is a Belgian claim, Contact links or reads Not found."""
+        """Studied is the newest study with its years unless it is the tie; Contact links or reads Not found."""
         ada = self.person("Ada Fictief", "ada")
         self.claim(ada, "affiliation", "Example College", relation="studied_at", claim_date="2006")
         self.claim(ada, "affiliation", "Gent University", relation="studied_at", org_id=GENT_UNI.id, claim_date="2012")
         html = self.page(ada)
-        self.assertIn('<div class="fn-summary-list__row"><dt class="text-label">Studied</dt><dd class="text-body">'
-                      'Gent University, <span class="text-year">2012</span></dd></div>', html)
-        self.assertIn('<dt class="text-label">Tie to Flanders</dt><dd class="text-body">Studied at Gent University</dd>', html)
+        self.assertNotIn('<dt class="text-label">Studied</dt>', html)
+        self.assertIn('<dt class="text-label">Tie to Flanders</dt><dd class="text-body">Studied at Gent University, '
+                      '<span class="text-year">2012</span></dd>', html)
         self.assertIn('<dt class="text-label">Contact</dt><dd class="fn-contact__none text-body">Not found</dd>', html)
         self.claim(ada, "email", "ada@example.org")
         self.claim(ada, "phone", "+32 9 555 01 00")
@@ -193,7 +194,7 @@ class ProfilePageTest(unittest.TestCase):
         html = self.page(ada, search="s1", card=ada)
         self.assertIn('<p class="fn-profile__combined text-small"><a href="#sources">Combined from 2 records</a></p>', html)
         self.assertEqual(self.facts(html, "Work").count(mine) + self.facts(html, "Work").count(theirs), 2)
-        self.assertEqual(re.findall(r'name="other" value="([^"]+)"', self.section(html, "Sources")), [twin, twin])
+        self.assertEqual(re.findall(r'name="other" value="([^"]+)"', self.section(html, "Sources")), [twin])
         self.assertIsNone(self.section(html, "Possible matches"))
         alone = self.page(ada)
         self.assertNotIn("Wind energy", alone)
@@ -261,7 +262,7 @@ class ProfilePageTest(unittest.TestCase):
         self.assertEqual(self.post(f"/claims/{fact}/reject", next=f"{here}#claim-{fact}"), f"{here}#claim-{fact}")
         html = self.page(ada, search="s1", card=ada)
         self.assertRegex(html, rf'<div class="fn-claim fn-claim--removed" id="claim-{fact}"><form [^>]*undo[^>]*>'
-                               r"<span>Field: Wind energy</span><span>· Removed</span> .*?>Undo</button>")
+                               r"<span>Topic: Wind energy</span><span>· Removed</span> .*?>Undo</button>")
 
     def test_show_more_keeps_the_search_and_card(self):
         """The link adds all=<section> to the page's own query, before the section anchor."""
@@ -283,16 +284,17 @@ class ProfilePageTest(unittest.TestCase):
         self.assertEqual(after, before)
 
     def test_quotes_that_are_page_debris_are_left_out_and_the_title_link_stays(self):
-        """A key: value line, a name with page words and a sentence without the name show no quote."""
+        """A field label after a list mark and author-list tokens show no quote; a sentence without the name does."""
         ada = self.person("Ada Fictief", "ada")
-        for text in ("* company name: Example Corp, a harbour authority with many staff members",
-                     "Ada Fictief 1, 2 Author Orcid Image",
-                     "The offshore wind turbines group studies coastal grids for the harbour authority."):
+        for topic, text in (("Wind energy", "* company name: Example Corp, a harbour authority with many staff members"),
+                            ("Tidal energy", "Ada Fictief 1, 2 Author Orcid Image"),
+                            ("Solar energy", "The offshore wind turbines group studies coastal grids for the harbour authority.")):
             with self.subTest(text=text):
-                self.claim(ada, "topic", "Wind energy", quote=text, title="Staff page")
+                self.claim(ada, "topic", topic, quote=text, title="Staff page")
         html = self.page(ada)
-        self.assertNotIn("<blockquote", html)
-        self.assertEqual(html.count(">Staff page</a>"), 1)
+        self.assertEqual(html.count("<blockquote"), 1)
+        self.assertIn("The offshore wind turbines group studies coastal grids", html)
+        self.assertEqual(html.count(">Staff page</a>"), 3)
 
     def test_proof_quote_unescapes_cuts_around_the_match_and_marks_the_cut(self):
         """&amp; reads &; 300 words give at most 25 around the first matched word, with … at each cut end."""
@@ -310,12 +312,15 @@ class ProfilePageTest(unittest.TestCase):
         self.assertIsNone(proof_quote(claim, source.model_copy(update={"kind": "record"}), "Ada Fictief", []))
 
     def test_debris_rules(self):
-        """A key: value start, fewer than 6 words besides the name and numbers, and no word of the last name are debris."""
+        """A field label after a list mark, image or author-list tokens, a markup entity and under 4 words are debris."""
         good = "Ada Fictief leads the offshore wind turbines group at the harbour authority"
-        self.assertFalse(debris(good, "Ada Fictief"))
-        self.assertTrue(debris("- company name: " + good, "Ada Fictief"))
-        self.assertTrue(debris("Ada Fictief 2019 2020 leads the group", "Ada Fictief"))
-        self.assertTrue(debris("The offshore wind turbines group leads the harbour authority", "Ada Fictief"))
+        self.assertFalse(debris(good))
+        self.assertFalse(debris("She leads the lab."))
+        self.assertFalse(debris("Name: the group leads the harbour authority"))
+        for text in ("- company name: " + good, "* Name: Ada Fictief", "Ann", "Ada Fictief 1, 2 Author Orcid Image",
+                     "![Ada Fictief portrait at the harbour authority]", "Ada Fictief&amp;nbsp;leads the group at the harbour"):
+            with self.subTest(text=text):
+                self.assertTrue(debris(text))
 
     def test_a_quote_escapes_once_and_the_proof_holds_title_date_and_original_link(self):
         """The raw page has &amp; once; a dated claim cites 'title, date · Original page'; an undated one has no date."""
@@ -351,8 +356,8 @@ class ProfilePageTest(unittest.TestCase):
         fact = self.claim(ada, "topic", "Wind energy", quote=SENTENCE, title="Lab page")
         html = self.page(ada)
         self.assertRegex(html, rf'<div class="fn-claim__head"><div class="fn-claim__line"><span class="fn-claim__what '
-                               rf'text-body">Field: Wind energy</span> <details class="fn-proof"><summary class="fn-proof__name '
-                               rf'text-small" aria-label="Source for Field: Wind energy: example.org">example.org</summary>'
+                               rf'text-body">Topic: Wind energy</span> <details class="fn-proof"><summary class="fn-proof__name '
+                               rf'text-small" aria-label="Source for Topic: Wind energy: example.org">example.org</summary>'
                                rf'<div class="fn-proof__body"><blockquote class="fn-quote text-quote">'
                                rf'“{SENTENCE}”</blockquote>'
                                rf'.*?</details></div><form method="post" action="/claims/{fact}/reject">')

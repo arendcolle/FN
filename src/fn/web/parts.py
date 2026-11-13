@@ -8,6 +8,7 @@ from fn.contracts import (
     ClaimView,
     ContactView,
     FactGroup,
+    FoldView,
     ImportPreview,
     ImportRow,
     LastView,
@@ -21,7 +22,15 @@ from fn.contracts import (
     SummaryRow,
     name_key,
 )
-from fn.present import FIELDS, RESULTS_STEP, UNKNOWN_DATE, cut, days_ago, plural
+from fn.present import (
+    FIELDS,
+    FOLD_SHOWN,
+    RESULTS_STEP,
+    UNKNOWN_DATE,
+    cut,
+    days_ago,
+    plural,
+)
 from fn.store import fold
 from fn.web.html import Safe, h, page
 
@@ -514,14 +523,27 @@ def claim_line(view: ClaimView, last: LastView | None, here: str) -> Safe:
     back = f"{here}#{anchor}"
     proof = h.details(
         h.summary(view.source, class_="fn-proof__name text-small", aria_label=f"Source for {view.what}: {view.source}"),
-        h.div(h.blockquote(view.quote.text, class_="fn-quote text-quote") if view.quote else None, cite_line(view, back),
-              class_="fn-proof__body"),
+        h.div(h.blockquote(view.quote.text, class_="fn-quote text-quote") if view.quote else None,
+              h.p(f"Years: {view.all_years}", class_="fn-cite text-small") if view.all_years else None,
+              cite_line(view, back), class_="fn-proof__body"),
         class_="fn-proof")
     head = h.div(h.div(h.span(new, view.what, years, class_="fn-claim__what text-body"), " ", proof,
                        class_="fn-claim__line"),
-                 post_form(f"/claims/{view.claim_id}/reject", "Not correct", "fn-link text-meta", back),
+                 post_form(f"/claims/{view.claim_id}/reject", "Not correct", "fn-link text-meta", back,
+                           **({"also": view.joined_claim_id} if view.joined_claim_id else {})),
                  class_="fn-claim__head")
     return h.div(head, class_="fn-claim", id=anchor)
+
+
+def fold_line(fold: FoldView) -> Safe:
+    """The last Work line, Also named at n other organizations: a proof that lists them, and no Not correct."""
+    what = f"Also named at {plural(fold.count, 'other organization', 'other organizations')}"
+    listed = " · ".join(fold.orgs[:FOLD_SHOWN]) + (" · …" if len(fold.orgs) > FOLD_SHOWN else "")
+    proof = h.details(
+        h.summary(fold.source, class_="fn-proof__name text-small", aria_label=f"Source for {what}: {fold.source}"),
+        h.div(h.p(listed, class_="fn-cite text-small"), class_="fn-proof__body"), class_="fn-proof")
+    return h.div(h.div(h.div(h.span(what, class_="fn-claim__what text-body"), " ", proof, class_="fn-claim__line"),
+                       class_="fn-claim__head"), class_="fn-claim", id="work-fold")
 
 
 def with_all(here: str, anchor: str) -> str:
@@ -533,7 +555,7 @@ def with_all(here: str, anchor: str) -> str:
 def head_place(group: FactGroup, view: ProfileView) -> bool:
     """Whether the group's only line is the place the head shows."""
     place = view.person.place
-    return bool(place and len(group.facts) == 1 and fold(group.facts[0].what) == fold(f"Based in {place}"))
+    return bool(place and len(group.facts) == 1 and fold(group.facts[0].what) == fold(f"Lives in {place}"))
 
 
 def fact_groups(view: ProfileView, here: str, every: str | None) -> list[Safe]:
@@ -545,12 +567,14 @@ def fact_groups(view: ProfileView, here: str, every: str | None) -> list[Safe]:
     out = []
     for group in view.facts:
         anchor = group.title.split()[0].lower()
-        if all(c.claim_id in covered for c in group.facts) or (group.title == "Places" and head_place(group, view)):
+        if (all(c.claim_id in covered for c in group.facts) and not group.fold) or (
+                group.title == "Places" and head_place(group, view)):
             continue
-        shown = group.facts if every in ("1", anchor) else group.facts[:FACT_STEP]
-        more = len(group.facts) - len(shown)
+        items = [claim_line(c, view.last, here) for c in group.facts] + ([fold_line(group.fold)] if group.fold else [])
+        shown = items if every in ("1", anchor) else items[:FACT_STEP]
+        more = len(items) - len(shown)
         out.append(h.section(
-            h.h2(group.title, class_="fn-section text-title"), h.div([claim_line(c, view.last, here) for c in shown]),
+            h.h2(group.title, class_="fn-section text-title"), h.div(shown),
             h.p(h.a(f"Show {more:,} more", class_="fn-link", href=f"{with_all(here, anchor)}#{anchor}"),
                 class_="fn-more text-meta") if more else None,
             class_="fn-profile__section", id=anchor))
@@ -558,6 +582,7 @@ def fact_groups(view: ProfileView, here: str, every: str | None) -> list[Safe]:
 
 
 def done_line(last: LastView, here: str) -> Safe:
+    """A done line whose Undo returns to here, anchor included."""
     return h.div(h.div(undo_form(last, last.words, "text-body", here), class_="fn-line__main"), class_="fn-line fn-line--done")
 
 
@@ -566,20 +591,21 @@ def found_as_block(view: ProfileView, here: str) -> Safe | None:
     pid, last = view.person.person_id, view.last
     rows = [h.div(
         h.div(h.p(h.a(r.label, href=with_back(r.href, here)), " ",
-                  h.span(f"· {plural(r.facts, 'fact', 'facts')}", class_="fn-line__meta text-meta"), class_="text-body"),
+                  h.span(f"· {plural(r.facts, 'fact', 'facts') if r.facts else 'no facts'}", class_="fn-line__meta text-meta"),
+                  class_="text-body"),
               class_="fn-line__main"),
-        post_form(f"/people/{pid}/not-same", "Not this person", "fn-link text-meta", here, other=r.record_id)
+        post_form(f"/people/{pid}/not-same", "Not this person", "fn-link text-meta", f"{here}#sources", other=r.record_id)
         if r.separate else None,
         class_="fn-line") for r in view.found_as]
     if last and last.separated:
-        rows.append(done_line(last, here))
+        rows.append(done_line(last, f"{here}#sources"))
     return h.section(h.h2("Sources", class_="fn-section text-title"), h.div(rows, class_="fn-lines"),
                      class_="fn-profile__section", id="sources") if rows else None
 
 
 def possible_line(match: PersonView, person_id: str, here: str) -> Safe:
     """A same-name person with enough to decide, and Same person and Different person."""
-    quiet, shown = "fn-btn fn-btn--quiet text-control", match.evidence
+    quiet, shown, here = "fn-btn fn-btn--quiet text-control", match.evidence, f"{here}#matches"
     return h.div(
         h.div(h.p(h.a(match.name, href=with_back(f"/people/{match.person_id}", here)), class_="text-popup"),
               h.p(role_line(match), class_="text-body"),
@@ -598,7 +624,7 @@ def possible_block(view: ProfileView, here: str) -> Safe | None:
     last = view.last
     rows = [possible_line(m, view.person.person_id, here) for m in view.possible]
     if last and (last.kind == "merge" or (last.kind == "not_same" and not last.separated)):
-        rows.append(done_line(last, here))
+        rows.append(done_line(last, f"{here}#matches"))
     if not rows:
         return None
     return h.section(h.h2("Possible matches", class_="fn-section text-title"),

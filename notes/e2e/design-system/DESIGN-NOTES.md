@@ -62,6 +62,14 @@ Round 11 (UI-0, the quality2 round):
 - MapMarker. Task: reach the people at one place with the keyboard, and open the map on the people shown (U9). Follows: MapLibre's own clustering and native buttons. Leaves out: focusable single dots (their cards are in the list).
 - Header. Task: know which part of FN you are in from a person or source page. Search is current whenever the address carries a search. Leaves out: a third link.
 
+Round 12 (UI-6a, after the second walkthrough, V1 to V21):
+
+- Claim. Task: read a fact in the same words every time, with years that belong to it (V2, V3, V4, V17, V20). Follows: one relation list with an example line each, as GOV.UK writes one pattern once. A stated role joins its organization, a list entry reads as its relation, and a gap in the years shows in the proof. Leaves out: "Affiliated with", "Based in", "Field:", a page's title as a line, a record's place for an institution, and a changed-or-read day as a year. Not correct on a joined line hides role and organization together.
+- Profile. Task: open on the current job and keep ties to ties (V1, V5, V8, V11, V12, V14, V15, V16, V18). Follows: the order a recruiter reads a CV, current job first, then stated roles, Belgian organizations and the rest, with one-year affiliations folded into one line. Sources has one row per record; actions return to the section they came from. Leaves out: a head line that is not a job, folding Belgian one-year affiliations, and forms in the 90-word budget.
+- SummaryList. Task: show the one strongest tie once (V6, V13, V21). Follows: GOV.UK summary list; the key says Flanders or Belgium by where the organization is. Leaves out: a Studied row that repeats the tie, and weak ties.
+- Quote. Task: keep evidence that is a sentence (V7, V9, V19). Follows: Wikipedia's reference preview, where only page furniture is dropped. Leaves out: field labels after a list mark, author-list tokens, markup entities, fragments under four words, and any quote from a LinkedIn profile.
+- SourceText. Task: say which source the sentence comes from (V3, V9, V10). Follows: the cite line already in Claim. Long words wrap, so an address never widens the page at 390 px. Leaves out: a passage for a LinkedIn record, and the page's title as a sentence.
+
 - PersonCard: the database statement replaces raw record lines that today show as quotes (design.md, "What works today"). Same person and Add as new are both quiet, because D5 says nothing is preselected. The match line stays after the choice, so the card keeps its height. A card without a place says nothing about it, because the count line already gives the number (D15). The why line names the matching words and the evidence is the fact that holds them, so staff see why a person is listed ("Show where each fact came from" in principles). "Combined from 2 records" is the one record count a card shows, a link to where staff split a record off.
 - NetworkRow: the "new facts" mark is an outlined word, not a dot, because a dot that never clears teaches users to ignore it and colour alone fails (patterns, section 6). Rows align their text with the filter box's text.
 - SectionHeading: action links on the right. The Network heading carries Import only. It drops its count, because the count line one line below gives the filtered count.
@@ -93,6 +101,11 @@ Round 11 (UI-0, the quality2 round):
 - Person, v11 (`preview/page-person-v11.html`): a person opened from a search, combined from 2 records, with one proof open and one removed fact.
 - Source, v11 (`preview/page-source-v11.html`): the readable page for a web page source, stored record closed.
 - Results, v11 (`preview/page-results-v11.html`): the results mockup with the new cards under two of the tier headings.
+
+## Pages, round 12
+
+- Person, v12 (`preview/page-person-v12.html`): Elke Voorbeeld, a researcher whose Work opens on her current professorship, with Show more closed and open, and the folded "Also named at" line.
+- Source, v12 (`preview/page-source-v12.html`): Jonas Testman's page, "The page names Jonas Testman.", the cite line and a passage with a long email address that wraps at 390 px.
 
 ## Where I depart from a written decision
 

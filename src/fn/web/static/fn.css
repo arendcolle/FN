@@ -293,8 +293,9 @@ button.fn-marker--count { border: 0; }
 .fn-source__text { max-width: var(--measure); margin: var(--space-6) 0 0; white-space: pre-wrap; }
 .fn-header + .fn-source { margin-top: var(--space-5); border-top: 1px solid var(--rule); }
 .fn-source__title + .fn-source__lead { margin-top: var(--space-3); }
-.fn-source__lead { margin: 0 0 var(--space-4); max-width: var(--measure); }
-.fn-source__passage { margin: 0 0 var(--space-3); max-width: var(--measure); }
+.fn-source__lead { margin: 0 0 var(--space-4); max-width: var(--measure); overflow-wrap: anywhere; }
+.fn-source__passage { margin: 0 0 var(--space-3); max-width: var(--measure); overflow-wrap: anywhere; }
+.fn-source__cite { margin: calc(-1 * var(--space-3)) 0 var(--space-4); color: var(--muted); max-width: var(--measure); overflow-wrap: anywhere; }
 .fn-source__stored { margin: var(--space-8) 0 0; }
 .fn-source__stored > summary { width: max-content; max-width: 100%; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; list-style: none; }
 .fn-source__stored > summary::-webkit-details-marker { display: none; }

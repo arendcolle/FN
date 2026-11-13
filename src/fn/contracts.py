@@ -482,6 +482,10 @@ class ClaimView(Model):
     is_new: bool = False
     source: str = ""
     url: str | None = None
+    # The years in full when they have gaps, such as '2009, 2011–2012'.
+    all_years: str = ""
+    # The role claim a joined role line hides together with its own claim.
+    joined_claim_id: str | None = None
 
 
 class OrgView(Model):
@@ -575,9 +579,16 @@ class ContactView(Model):
     claim: ClaimView | None = None
 
 
+class FoldView(Model):
+    count: int
+    source: str
+    orgs: list[str]
+
+
 class FactGroup(Model):
     title: str
     facts: list[ClaimView]
+    fold: FoldView | None = None
 
 
 class RecordView(Model):
@@ -590,7 +601,7 @@ class RecordView(Model):
 
 
 class SummaryRow(Model):
-    key: Literal["Studied", "Tie to Flanders", "Contact"]
+    key: Literal["Studied", "Tie to Flanders", "Tie to Belgium", "Contact"]
     value: str
     years: str = ""
     claim_ids: list[str] = []
