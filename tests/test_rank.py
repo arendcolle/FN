@@ -628,5 +628,49 @@ class CardRecordsTest(unittest.TestCase):
                          [("Boston", "employer")])
 
 
+class VerdictTest(unittest.TestCase):
+    HERE = dict(fit="inside", km=5.0, countries=("US",), only_openalex=False, job="known")
+
+    def fused(self, ask: Question, verdicts: dict, **people) -> dict:
+        entries = [hit_entry(k, openalex=n) for n, k in enumerate(people, 1)]
+        return {c.person_id: c for c in rank.fuse("s", entries, {}, None, people, ask, verdicts)}
+
+    def test_a_no_verdict_drops_a_confirmed_person_to_the_tie_branch_on_version_2_only(self):
+        """A confirmed person with verdict no is tier 5 with a tie and a topic word, 6 without a tie; version 1 ignores it."""
+        tied, bare = found(**self.HERE), found(kinds=(), **self.HERE)
+        out = self.fused(v2(), {"tied": "no", "bare": "no"}, tied=tied, bare=bare)
+        self.assertEqual({k: c.tier for k, c in out.items()}, {"tied": 5, "bare": 6})
+        words = self.fused(v2(), {"none": "no"}, none=found(kinds=(), words=(), **self.HERE))
+        self.assertEqual(words["none"].tier, 7)
+        v1 = Question(chips=ASK.chips, area=BOSTON, country="US")
+        out = self.fused(v1, {"tied": "no", "bare": "no"}, tied=tied, bare=bare)
+        self.assertEqual({k: c.tier for k, c in out.items()}, {"tied": 1, "bare": 3})
+
+    def test_a_partly_verdict_keeps_the_tier_after_yes_and_an_unchecked_word_match_loses_it(self):
+        """Once the check ran, a person it did not look at is no confirmed match (tier 5 with a tie), unless they
+        meet the asked role; a partly person keeps the tier and stands after a yes person, whatever the score."""
+        people = dict(partly=found(**self.HERE), yes=found(**self.HERE), plain=found(**self.HERE),
+                      met=found(role="met", **self.HERE))
+        out = self.fused(v2(None, Chip(text="founders", origin="edited", research=False)), {"partly": "partly", "yes": "yes"}, **people)
+        self.assertEqual({k: c.tier for k, c in out.items()}, {"partly": 1, "yes": 1, "plain": 5, "met": 1})
+        self.assertEqual(sorted((k for k in out if out[k].tier == 1), key=lambda k: out[k].rank), ["met", "yes", "partly"])
+        unchecked = self.fused(v2(), {}, plain=found(**self.HERE))
+        self.assertEqual(unchecked["plain"].tier, 1)
+        v1 = Question(chips=ASK.chips, area=BOSTON, country="US")
+        out = self.fused(v1, {"partly": "partly", "yes": "yes"}, **people)
+        self.assertEqual(sorted(out, key=lambda k: out[k].rank), ["met", "partly", "yes", "plain"])
+
+    def test_rank_run_passes_the_verdicts_of_its_input_to_fuse(self):
+        """RankIn.verdicts reaches the ranking."""
+        store = make_db(self)
+        person = store.resolve_person([Identifier(scheme="openalex", value="A1")], "Ann Example")
+        ctx = StepContext(search_id="s", store=store, llm=None, http=None, now=now, new_id=new_id,
+                          log=logging.getLogger("fn.step"), settings=make_settings(self))
+        with mock.patch.object(rank, "fuse", return_value=[]) as fuse:
+            rank.run(ctx, RankIn(entries=[Entry(name_key="a", person_ids=[person.id], lane_ranks={"openalex": 1})], chips=Chips(),
+                                 verdicts={person.id: "no"}))
+        self.assertEqual(fuse.call_args.args[-1], {person.id: "no"})
+
+
 if __name__ == "__main__":
     unittest.main()

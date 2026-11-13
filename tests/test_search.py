@@ -6,7 +6,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from fn.contracts import Chip, Chips, Identifier, LaneHit, LaneIn, LaneOut
+from fn.contracts import Chip, Chips, FitAnswer, FitRow, Identifier, LaneHit, LaneIn, LaneOut, RankIn
 from fn import search
 from fn.lanes import scout as scout_lane
 from fn.steps import StepContext
@@ -14,6 +14,19 @@ from fn.worker import Worker, new_id, now
 from tests.helpers import StubHttp, StubLLM, make_db, make_settings
 
 CHIPS = Chips(topics=[Chip(text="wind", origin="edited")])
+V2 = Chips(topics=[Chip(text="wind", origin="edited")], version=2)
+
+
+class FitLLM:
+    """Says "partly" for every numbered line of a fit call and counts the calls."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def structured(self, task, data, schema):
+        self.calls += 1
+        rows = [FitRow(n=n, fit="partly") for n in range(1, len(data["people"].splitlines()) + 1)]
+        return type("Result", (), {"value": FitAnswer(people=rows)})()
 
 
 class SearchStepsTest(unittest.TestCase):
@@ -70,7 +83,7 @@ class SearchStepsTest(unittest.TestCase):
         self.assertEqual(self.store.search_progress(search_id).model_dump(),
                          {"status": "done", "people": 2, "version": 2})
         self.assertEqual([s.step for s in self.store.list_steps(search_id)],
-                         ["parse", "lane:seeds", "publish", "lane:web", "resolve", "rank", "save"])
+                         ["parse", "lane:seeds", "publish", "lane:web", "resolve", "rank", "save", "fit"])
 
     def run_with(self, given: Chips, lanes) -> str:
         search_id = self.worker.create_search("Who knows wind?", given, "edited").id
@@ -164,6 +177,58 @@ class SearchStepsTest(unittest.TestCase):
     def context(self, search_id: str) -> StepContext:
         return StepContext(search_id=search_id, store=self.store, llm=None, http=None, now=now,
                            new_id=new_id, log=mock.Mock(), settings=self.settings)
+
+    def fitted(self, lanes, fit_run=None) -> str:
+        """Run a version-2 search over lanes with tier 2 for everybody and a model that says partly."""
+        llm = FitLLM()
+        worker = Worker(self.store, self.settings, llm=llm, http=StubHttp())
+        self.addCleanup(worker.shutdown)
+        search_id = worker.create_search("Who knows wind?", V2, "edited").id
+        with mock.patch("fn.search.LANES", lanes), mock.patch("fn.rank.tier", return_value=2):
+            if fit_run:
+                with mock.patch("fn.fitcheck.run", fit_run):
+                    worker.execute(search_id)
+            else:
+                worker.execute(search_id)
+        self.llm = llm
+        return search_id
+
+    def rank_verdicts(self, search_id: str) -> list[dict]:
+        return [RankIn.model_validate_json(self.store.get_payload(s.id)[0]).verdicts
+                for s in self.store.list_steps(search_id) if s.step == "rank"]
+
+    def test_the_fit_step_runs_once_after_the_first_save_and_the_search_ranks_again_with_its_verdicts(self):
+        """Publishes between lanes run no fit step; after the first save fit runs, then rank and save run again."""
+        search_id = self.fitted([self.finds("seeds", "Ann Smith"), self.finds("web", "Pat Lee")])
+        steps = [(s.step, s.status) for s in self.store.list_steps(search_id)]
+        self.assertEqual([s for s, _ in steps], ["parse", "lane:seeds", "publish", "lane:web", "resolve", "rank", "save",
+                                                 "fit", "rank", "save"])
+        self.assertEqual(self.llm.calls, 1)
+        ids = {c.person_id for c in self.store.list_candidates(search_id)}
+        self.assertEqual(self.rank_verdicts(search_id), [{}, {i: "partly" for i in ids}])
+        self.assertEqual(self.store.get_search(search_id).status, "done")
+
+    def test_refinish_ranks_with_the_stored_verdicts_and_makes_no_model_call(self):
+        """A rerank reads the verdicts of the last fit step that ended ok and runs no fit step of its own."""
+        search_id = self.fitted([self.finds("seeds", "Ann Smith"), self.finds("web", "Pat Lee")])
+        ids = {c.person_id for c in self.store.list_candidates(search_id)}
+        llm = mock.Mock()
+        ctx = self.context(search_id)
+        ctx = StepContext(**{**ctx.__dict__, "llm": llm})
+        search.refinish(ctx, self.store.get_search(search_id))
+        llm.structured.assert_not_called()
+        self.assertEqual(self.rank_verdicts(search_id)[-1], {i: "partly" for i in ids})
+        self.assertEqual([s.step for s in self.store.list_steps(search_id)].count("fit"), 1)
+
+    def test_a_fit_step_that_raises_leaves_the_search_done_with_the_first_ranking(self):
+        """The error stays on the fit step row; no second rank runs and the first candidates stay saved."""
+        search_id = self.fitted([self.finds("seeds", "Ann Smith")], mock.Mock(side_effect=ConnectionError("model is down")))
+        steps = [(s.step, s.status) for s in self.store.list_steps(search_id)]
+        self.assertEqual(steps[-4:], [("resolve", "ok"), ("rank", "ok"), ("save", "ok"), ("fit", "error")])
+        self.assertEqual(self.store.get_search(search_id).status, "done")
+        self.assertEqual(len(self.store.list_candidates(search_id)), 1)
+        search.refinish(self.context(search_id), self.store.get_search(search_id))
+        self.assertEqual(self.rank_verdicts(search_id)[-1], {})
 
     def test_refinish_gives_back_the_stored_candidates_and_a_search_without_lane_outputs_raises(self):
         """Running the steps after the lanes on the stored outputs saves the same candidates; no lane output raises ValueError."""

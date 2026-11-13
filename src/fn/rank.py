@@ -10,6 +10,7 @@ from fn.contracts import (
     Claim,
     CutReason,
     Entry,
+    FitVerdict,
     ListStatus,
     Org,
     PlaceFit,
@@ -181,17 +182,23 @@ def place_fit(found: "evidence.Evidence", question: Question | None) -> PlaceFit
     return "outside" if found.place.fit == "outside" else "unknown"
 
 
-def tier(found: "evidence.Evidence | None", question: Question | None, researched: bool = False) -> int:
+def tier(found: "evidence.Evidence | None", question: Question | None, researched: bool = False,
+         verdict: FitVerdict | None = None, checked: bool = False) -> int:
     """The tier 1 to 7 of a person: topic before tie, tie before place; a failed role or no evidence is tier 7.
 
     On a version-2 question, a person the web researcher named for this question (researched) counts as a
-    confirmed match: the researcher chose them for the question, which word matching cannot do.
+    confirmed match: the researcher chose them for the question, which word matching cannot do. For anyone else
+    a verdict of "no" takes the match away, and once the fit check ran (checked) a word match the check did not
+    look at is no confirmed match either, unless the person meets the asked role.
     """
     if found is None or found.role.fit == "fails":
         return 7
     tied, fits = found.belgian.grade in TIED, place_fit(found, question) in FITS
     current = question is not None and question.chips.version >= 2
-    if confirmed(found, question) or (current and researched):
+    match = confirmed(found, question)
+    if current and not researched and (verdict == "no" or (checked and verdict is None and found.role.fit != "met")):
+        match = False
+    if match or (current and researched):
         return (1 if fits else 2) if tied else (3 if fits else 4)
     if tied:
         return 5 if found.topic.words else 6
@@ -213,17 +220,20 @@ def fit_of(found: "evidence.Evidence | None", question: Question | None) -> Card
                    place=place_fit(found, question), role=found.role.fit)
 
 
-def order_key(found: "evidence.Evidence | None", question: Question | None, level: int) -> tuple:
-    """The new section's order before score: tier, heading, abroad last, role met (with the topic first), own
-    words before related words, tie grade, place, then more topic words. BLANK is for people without evidence."""
+def order_key(found: "evidence.Evidence | None", question: Question | None, level: int,
+              verdict: FitVerdict | None = None) -> tuple:
+    """The new section's order before score: tier, heading, abroad last, role met (with the topic first, a "partly"
+    verdict after "yes"), own words before related words, tie grade, place, then more topic words. BLANK is for
+    people without evidence."""
     if found is None:
         return BLANK
     place = place_fit(found, question)
     grade = found.belgian.grade
     legacy = question is None or question.chips.version < 2
     spot = PLACES.get(place, 0) if legacy else SPOTS.get(place, 0)
-    # Version 2: within a role fit, a person who also matches the topic stands first.
-    role = ROLES.index(found.role.fit) if legacy else 2 * ROLES.index(found.role.fit) + (not found.topic.match)
+    # Version 2: within a role fit, a person who also matches the topic stands first, and a "partly" verdict after "yes".
+    role = ROLES.index(found.role.fit) if legacy else (
+        4 * ROLES.index(found.role.fit) + 2 * (verdict == "partly") + (not found.topic.match))
     return (level, heading(level, grade), place == "abroad", role, found.topic.related,
             TIED.index(grade) if grade in TIED else len(TIED), spot, -len(found.topic.words))
 
@@ -307,15 +317,15 @@ def capped(kept: list[Row], question: Question | None) -> list[Row]:
 
 def fuse(search_id: str, entries: list[Entry], statuses: dict[str, ListStatus],
          belgian: dict[str, ScorePart] | None = None, found: dict[str, "evidence.Evidence"] | None = None,
-         question: Question | None = None) -> list[Candidate]:
+         question: Question | None = None, verdicts: dict[str, FitVerdict] | None = None) -> list[Candidate]:
     """Score each entry by the sum of its parts, order the new section by tier, then score, and number each section,
     kept entries apart from cut ones.
 
-    belgian holds the belgian_years parts and found the evidence, by first person id. Section network holds
+    belgian holds the belgian_years parts, found the evidence and verdicts the fit check's answers, by first person id. Section network holds
     entries with a hit person in the list; equal scores are ordered by the first person id. People
     cut for no Belgian evidence who match the topic come back, up to EXEMPT_CAP; OpenAlex-only people are capped.
     """
-    belgian, found = belgian or {}, found or {}
+    belgian, found, verdicts = belgian or {}, found or {}, verdicts or {}
     extra = evidence_lists(found)
     rows = []
     for e in entries:
@@ -323,9 +333,10 @@ def fuse(search_id: str, entries: list[Entry], statuses: dict[str, ListStatus],
         section: Section = "network" if any(statuses.get(p) == "in_list" for p in hits(e)) else "new"
         entry_parts = parts(e, belgian.get(key)) + extra.get(key, [])
         ev = found.get(key)
-        level = tier(ev, question, "scout" in e.lane_ranks)
+        verdict = verdicts.get(key)
+        level = tier(ev, question, "scout" in e.lane_ranks, verdict, bool(verdicts))
         reason = cut_reason(section, ev, question) if ev else unread_cut(section, e, entry_parts)
-        rows.append(Row(BLANK if section == "network" else order_key(ev, question, level), e, section, entry_parts, ev,
+        rows.append(Row(BLANK if section == "network" else order_key(ev, question, level, verdict), e, section, entry_parts, ev,
                         level, reason))
     rows.sort(key=lambda r: (*r.key, -score(r.parts), r.entry.person_ids[0]))
     back = exempt(rows, question)
@@ -379,4 +390,4 @@ def run(ctx: StepContext, inp: RankIn) -> RankOut:
         found[e.person_ids[0]] = evidence.of({p: schemes.get(p, frozenset()) for p in on_card},
                                              [c for p in on_card for c in by_person.get(p, [])], facts, question, today, names)
     return RankOut(candidates=fuse(ctx.search_id, inp.entries, statuses, belgian_list(inp.entries, claims, facts),
-                                   found, question))
+                                   found, question, inp.verdicts))

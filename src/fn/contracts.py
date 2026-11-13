@@ -54,6 +54,7 @@ CutReason = Literal["no_belgian_evidence", "weak_openalex", "no_claim", "outside
 TieGrade = Literal["strong", "medium", "weak", "none"]
 RoleFit = Literal["met", "fails", "unknown"]
 JobFit = Literal["known", "employer", "none"]
+FitVerdict = Literal["yes", "partly", "no"]
 PlaceFit = Literal["inside", "outside", "abroad", "unknown", "none"]
 AddedVia = Literal["search", "import", "profile"]
 CardState = Literal["network", "new", "name_match", "added", "skipped"]
@@ -803,10 +804,31 @@ class ResolveOut(Model):
 class RankIn(Model):
     entries: list[Entry]
     chips: Chips
+    verdicts: dict[str, FitVerdict] = {}
 
 
 class RankOut(Model):
     candidates: list[Candidate]
+
+
+# The fit step: the model says which stored people fit the question; verdicts are keyed by candidate person_id.
+class FitIn(Model):
+    question: str
+    chips: Chips
+
+
+class FitOut(Model):
+    verdicts: dict[str, FitVerdict] = {}
+    note: str = ""
+
+
+class FitRow(Model):
+    n: int
+    fit: FitVerdict
+
+
+class FitAnswer(Model):
+    people: list[FitRow] = []
 
 
 class SaveIn(Model):
