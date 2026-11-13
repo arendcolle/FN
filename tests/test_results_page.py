@@ -96,26 +96,9 @@ class ResultsPageTest(ResultsPageCase):
         found = [p for p in (ROOT / "src").rglob("*") if p.is_file() and b"location not found" in p.read_bytes()]
         self.assertEqual(found, [])
 
-    def test_the_why_line_names_the_topic_words_and_an_employer_place(self):
-        """The why line reads the topic part's words, adds 'Place from the employer' when the place is the city of a
-        recent employer, reads 'Based in' for a place part alone, and is absent for a candidate without parts."""
-        self.org("ror:0fict0001", "Fictional University", "US", "Boston", 42.36, -71.06)
-        ada, bea, cas = self.person("Ada Fictief"), self.person("Bea Fictief"), self.person("Cas Fictief")
-        self.claim(ada, "affiliation", "Fictional University", relation="works_at", org_id="ror:0fict0001",
-                   claim_date=YEAR)
-        topic = ScorePart(feature="topic", rank=1, points=0.1, detail="tidal, energy")
-        place = ScorePart(feature="place", rank=1, points=0.1, detail="stated: Gent, Flanders, Belgium")
-        self.search([([ada], [topic]), ([bea], [place]), ([cas], [])])
-        html = self.page()
-        self.assertIn('<p class="fn-card__why text-small">Matches: tidal, energy · Place from the employer</p>',
-                      self.card(html, ada))
-        self.assertIn("Fictional University · Boston", self.card(html, ada))
-        self.assertIn('<p class="fn-card__why text-small">Based in Gent, Flanders, Belgium</p>', self.card(html, bea))
-        self.assertNotIn("fn-card__why", self.card(html, cas))
-
     def test_the_evidence_is_the_topic_claim_and_a_work_reads_as_a_paper(self):
-        """With a topic part the card shows its first claim, not the Belgian tie; an OpenAlex work reads 'Paper: ' and
-        its title with the year, cited 'OpenAlex work', cut on the card and whole on the profile."""
+        """With a topic part the card's reason line is its first claim, not the Belgian tie; an OpenAlex work reads 'Paper: '
+        and its title with the year, sourced 'OpenAlex work', cut on the card and whole on the profile."""
         self.org("ror:0fict0002", "Fictional Hogeschool", "BE")
         ada = self.person("Ada Fictief")
         self.claim(ada, "affiliation", "Fictional Hogeschool", relation="worked_at", org_id="ror:0fict0002",
@@ -125,10 +108,11 @@ class ResultsPageTest(ResultsPageCase):
                           claim_date="2023", date_precision="year")
         self.search([([ada], [ScorePart(feature="topic", rank=1, points=0.1, claim_ids=[work], detail="tidal")])])
         card = self.card(self.page(), ada)
-        self.assertIn('<p class="fn-fact text-body">Paper: Tidal energy and coastal grids', card)
-        self.assertIn('…, <span class="text-year">2023</span></p>', card)
-        self.assertIn(">OpenAlex work</a>, 2023</p>", card)
-        self.assertNotIn("Worked at Fictional Hogeschool", card)
+        reason = re.search(r'<p class="fn-card__reason text-body">.*?</p>', card).group(0)
+        self.assertTrue(reason.startswith('<p class="fn-card__reason text-body">Paper: Tidal energy and coastal grids'))
+        self.assertIn('grids…, 2023 · <a href="/sources/', reason)
+        self.assertIn('class="fn-card__source">OpenAlex work</a></p>', reason)
+        self.assertNotIn("Worked at Fictional Hogeschool", reason)
         self.assertIn(f"Paper: {title.strip()}", self.page(f"/people/{ada}"))
 
     def test_the_combined_line_shows_for_two_records_not_merged_into_one(self):

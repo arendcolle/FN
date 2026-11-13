@@ -42,6 +42,7 @@ from fn.present import (
     source_sentence,
     sources_read,
     walk,
+    why_view,
 )
 from fn.store import Store, fold
 from fn.web.html import Safe, h, page
@@ -80,6 +81,7 @@ from fn.web.parts import (
     status_note,
     summary_list,
     upload_form,
+    why_block,
 )
 from fn.web.requests import first, form_of, store_of, worker_of
 from fn.worker import now
@@ -254,15 +256,17 @@ def geo_features(store: Store, search: Search, shown: int = RESULTS_STEP) -> dic
     """GeoJSON of the search's people who are not skipped: one point per person with a place with coordinates.
 
     It also says, per person, whether the first shown cards hold them, the list link that opens at their card and
-    the link to their page.
+    the link to their page, and the place fit the ranker stored for their card (None for a search stored without one).
     """
     found = results(store, search, now().astimezone().date(), shown=0)
+    fits = {c.person_id: c.fit for c in store.list_candidates(search.id, kept_only=True)}
     listed: dict[str, dict] = {}
     # A person behind two cards links to the first of them.
     for n, (person, key) in enumerate(found.order):
         listed.setdefault(person, {
             "shown": n < shown, "href": f"/searches/{search.id}?shown={(n // RESULTS_STEP + 1) * RESULTS_STEP}#card-{key}",
-            "profile": person_href(person, search.id, shown_for(n + 1, shown), key, "popup")})
+            "profile": person_href(person, search.id, shown_for(n + 1, shown), key, "popup"),
+            "place_fit": fits[key].place if fits[key] else None})
     return geo(found.network + found.new, listed)
 
 
@@ -479,7 +483,7 @@ async def card_action(request: Request, search_id: str, person_id: str, action: 
     here = here if here.split("?")[0] in (f"/searches/{search_id}", f"/searches/{search_id}/map") else f"/searches/{search_id}"
     if request.headers.get("x-requested-with") == "fetch":
         shown = shown_of(parse_qs(urlsplit(here).query).get("shown", [""])[0])
-        return HTMLResponse(result_card(card(store, candidate, now().astimezone().date()), search_id, here, shown))
+        return HTMLResponse(result_card(card(store, get_search(request, search_id), candidate, now().astimezone().date()), search_id, here, shown))
     return RedirectResponse(f"{here}#card-{person_id}", 303)
 
 
@@ -596,8 +600,11 @@ def person_page(store: Store, person_id: str, params: dict[str, str], error: str
     shown, key = shown_of(params.get("shown", "")), params.get("card", "")
     candidate = card_candidate(store, search.id, person_id, key) if search and key else None
     topic = next((p.detail for p in candidate.score_parts if p.feature == "topic"), "") if candidate else ""
-    view = profile(store, person_id, now().astimezone().date(), identity.on_card(store, candidate) if candidate else None,
+    today = now().astimezone().date()
+    view = profile(store, person_id, today, identity.on_card(store, candidate) if candidate else None,
                    topic.split(", ") if topic else [], fit_tie(candidate.fit) if candidate else None)
+    if candidate:
+        view = view.model_copy(update={"why": why_view(store, search, candidate, today)})
     here = person_here(person_id, params)
     route = f"/searches/{search.id}/people/{candidate.person_id}" if candidate else None
     back = search_back(search, shown, key) if search else back_link(store, params.get("back", ""))
@@ -607,7 +614,8 @@ def person_page(store: Store, person_id: str, params: dict[str, str], error: str
     text = page(
         view.person.name,
         profile_banner(view, params.get("undo") == "refused", here),
-        h.main(h.div(profile_head(view, back, place, here, route), summary_list(view.summary),
+        h.main(h.div(profile_head(view, back, place, here, route), why_block(view.why) if view.why else None,
+                     summary_list(view.summary),
                      fact_groups(view, here, params.get("all")),
                      contact_block(view, here, edit, error, typed) if member else None, found_as_block(view, here),
                      possible_block(view, here), class_="fn-column"), class_="fn-page"),

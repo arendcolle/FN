@@ -17,9 +17,10 @@ from fn.contracts import (
     OrgView,
     PersonView,
     ProfileView,
-    QuoteView,
+    ReasonView,
     Search,
     SummaryRow,
+    WhyView,
     name_key,
 )
 from fn.present import (
@@ -79,19 +80,6 @@ def orgs_line(found: list[OrgView], more: int) -> list[object]:
     return parts + ([f" · +{more} more"] if more else [])
 
 
-def quote(view: QuoteView, back: str | None = None) -> Safe:
-    """The quote with its source as a link and its date under it; back is the page the source page returns to."""
-    return h.blockquote(view.text, h.cite(h.a(view.label, href=with_back(view.href, back)), f", {view.date}",
-                                          class_="fn-quote__cite text-small"), class_="fn-quote text-quote")
-
-
-def statement(view: ClaimView, back: str | None = None) -> list[Safe]:
-    """A claim from a record as a plain statement with its years, and its citation under it."""
-    years = [", ", h.span(view.years, class_="text-year")] if view.years else None
-    return [h.p(view.what, years, class_="fn-fact text-body"),
-            h.p(h.a(view.label, href=with_back(view.href, back)), f", {view.date}", class_="fn-cite text-small")]
-
-
 def notice(search: Search, read: int) -> Safe:
     """What the page says instead of people: that the search stopped before it found anyone, with Try again, or that
     it found nobody.
@@ -147,14 +135,14 @@ def with_back(href: str, back: str | None) -> str:
 
 
 def person_card(view: PersonView, search_id: str | None = None, acts: object = None, card_id: str | None = None,
-                why: str | None = None, shown: int = RESULTS_STEP, back: str | None = None) -> Safe:
-    """The person's card: the name linking to their page, role and place, Belgian organizations, the why line, the
-    evidence and the combined line.
+                reason: ReasonView | None = None, fit: str | None = None, shown: int = RESULTS_STEP,
+                back: str | None = None) -> Safe:
+    """The person's card: the name linking to their page, role and place, the reason line, the tie and place line and
+    the combined line.
 
     search_id is the search the card shows on and shown its shown count, which the Person page links back to; acts
-    follow the combined line; back is the page the card's source links return to.
+    follow the combined line; back is the page the reason's source link returns to.
     """
-    evidence = view.evidence
     key = card_id.removeprefix("card-") if card_id else None
     href = person_href(view.person_id, search_id, shown, key, "card")
     combined = h.p(h.a(f"Combined from {view.records} records", href=f"{href}#sources"),
@@ -162,13 +150,20 @@ def person_card(view: PersonView, search_id: str | None = None, acts: object = N
     return h.article(
         h.h3(h.a(view.name, href=href), class_="fn-card__name text-name"),
         h.p(role_line(view), class_="fn-card__role text-body") if role_line(view) else None,
-        h.p(orgs_line(view.orgs, view.more_orgs), class_="fn-card__ties text-body") if view.orgs else None,
-        h.p(why, class_="fn-card__why text-small") if why else None,
-        (quote(evidence.quote, back) if evidence.quote else statement(evidence, back)) if evidence else None,
+        h.p(reason.text, " · ", h.a(reason.source, href=with_back(reason.href, back), class_="fn-card__source"),
+            class_="fn-card__reason text-body") if reason else None,
+        h.p(fit, class_="fn-card__fit text-small") if fit else None,
         combined,
         acts,
         class_="fn-card", id=card_id, data_person=view.person_id,
     )
+
+
+def why_block(why: WhyView) -> Safe:
+    """The Person page's why block: the reason without its source, the tie in words and the place, one line each."""
+    lines = [why.reason.text if why.reason else None, why.tie, why.place]
+    return h.section(h.h2("Why for this search", class_="fn-section text-label"),
+                     h.ul([h.li(line) for line in lines if line], class_="fn-why__lines text-body"), class_="fn-why")
 
 
 def results_href(search_id: str, shown: int, skipped: bool, view: str = "list") -> str:
@@ -218,7 +213,7 @@ def result_card(card: CardView, search_id: str, here: str, shown: int = RESULTS_
         acts = [match_line(card.match, anchored) if card.match else None,
                 undo_form(card.undo_event, done, "fn-card__acts", anchored) if card.undo_event
                 else h.div(done, class_="fn-card__acts")]
-    return person_card(view, search_id, acts, card_id, card.why, shown, anchored)
+    return person_card(view, search_id, acts, card_id, card.reason, card.fit, shown, anchored)
 
 
 def network_href(flt: NetworkFilter, limit: int = NETWORK_STEP, view: str = "list", path: str = "/people") -> str:
