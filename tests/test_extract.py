@@ -88,6 +88,22 @@ class ExtractTest(unittest.TestCase):
                  d.date_precision, d.date_method, d.lat, d.lon)
                 for located in found for d in extract.drafts("p", source, located)]
 
+    def test_a_page_fn_read_dates_its_claims_and_stated_years_still_win(self):
+        """A claim without stated years takes the read page's date and method; a vendor page leaves it undated."""
+        text = "Jan Peeters, PhD, KU Leuven, studied at Ghent University from 1990 to 1994"
+        people = [mention("Jan Peeters", text, "PhD", relation("works_at", "KU Leuven", "PhD, KU Leuven"),
+                          relation("studied_at", "Ghent University", "studied at Ghent University from 1990 to 1994", 1990, 1994))]
+        read = page_source(URL, "Team", text, {}, READ, "2026-11-13", kind="page", plain=True, date_method="read_date")
+        dates = [(d.relation, d.claim_date, d.date_precision, d.date_method) for d in
+                 (row for row in self.dated(people, read))]
+        self.assertEqual(dates, [(None, "2026-11-13", "day", "read_date"), ("works_at", "2026-11-13", "day", "read_date"),
+                                 ("studied_at", "1994", "year", "stated_in_quote")])
+        self.assertEqual({d.claim_date for d in self.dated(people, self.source(text, "Team"))}, {None, "1994"})
+
+    def dated(self, people: list[dict], source: Source) -> list:
+        found, _ = self.mentions(people, source)
+        return [d for located in found for d in extract.drafts("p", source, located)]
+
     def test_locate_finds_exact_text_across_line_breaks_with_curly_apostrophes_and_only_inside_its_range(self):
         """Offsets point into the text, so text[start:end] is the quote as stored, whatever spacing the model used.
 

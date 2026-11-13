@@ -92,7 +92,7 @@ This list holds every user-facing string the new and changed parts introduce, gr
 - Years with gaps, in the proof before the cite: "Years: 2009, 2011–2012, 2019, 2021–2026"
 - Folded line, last in Work: "Also named at `{n}` other organizations", source name "OpenAlex record", proof "`{organization}`, `{year}` · `{organization}`, `{year}` · …". No Not correct
 - Source name, accessible name: "Source for `{fact}`: `{source short name}`"
-- Opened proof: the quote, at most 25 words, then "`{page title}`, `{Month yyyy}` · Original page". No date: "`{page title}` · Original page". A record: "`{source label}`, `{year}` · Original page"; a url that starts with `fn:`: "`{source label}`, `{d Month yyyy}`"
+- Opened proof: the quote, at most 25 words, then "`{page title}`, `{Month yyyy}` · Original page". No date: "`{page title}` · Original page". A page FN read itself that states no date: "`{page title}`, read `{d Month yyyy}` · Original page". A record: "`{source label}`, `{year}` · Original page"; a url that starts with `fn:`: "`{source label}`, `{d Month yyyy}`"
 - Fact: "New", "Not correct". After Not correct: "`{fact}`", "· Removed", "Undo"
 - Contact kinds: "Email", "Phone". Empty value: "Not provided". Link: "Edit"
 - Contact citations: "From import `{file name}`, row `{n}`, `{d Month yyyy}`", "Entered in FN, `{d Month yyyy}`"
@@ -108,7 +108,7 @@ This list holds every user-facing string the new and changed parts introduce, gr
 - Back link: "Back to `{person name}`"
 - Title: `{person name}`; opened without a fact: `{source label}`
 - Sentence: "The page says: `{fact}`." for a web page; "The page names `{name}`." for a page that only names the person; "The record lists: `{fact}`." for a record, an import or an entry in FN
-- Cite line under the sentence: "`{source label}`, `{date}`", the date left out when unknown: "BAEF Belgian Fellows, 2015", "columbia.edu, May 2024", "OpenAlex record, 2025"
+- Cite line under the sentence: "`{source label}`, `{date}`", the date left out when unknown: "BAEF Belgian Fellows, 2015", "columbia.edu, May 2024", "OpenAlex record, 2025", and the day FN read an undated page: "kslaw.com, read 13 November 2026"
 - Passage: about 60 words each side of the quote, "…" at a cut end
 - Link: "Open the original page", left out for `fn:` urls
 - Disclosure: "Show the stored record"

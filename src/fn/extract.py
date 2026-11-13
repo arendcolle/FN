@@ -28,8 +28,10 @@ CHUNK_CHARS = 6_000
 # A relation quote is looked for this far from the start of its mention quote, so each speaker keeps their own line.
 NEAR_CHARS = 1_500
 # A lead's place stands this near the lead's name on a page, and its quote is cut to this many characters.
+PAGE_DATES = ("page_date", "read_date")
 NAME_REACH = 1_000
 QUOTE_CHARS = 300
+LEGAL_FORMS = frozenset({"llp", "llc", "inc", "ltd", "plc", "pllc", "pc", "corp", "co", "nv", "sa", "bv"})
 PLACES: frozenset[Relation] = frozenset({"born_in", "lives_in", "origin"})
 PARAGRAPH = re.compile(r"[^\n]+(?:\n[^\n]+)*")
 LINE = re.compile(r"[^\n]+")
@@ -185,16 +187,28 @@ def stated(year: int | None, quote: str) -> str | None:
     return str(year)
 
 
+def page_dated(source: Source) -> dict:
+    """The date fields of a claim from a page FN read itself: the page's own date, else the day it was read.
+
+    Empty for any other source, whose claims stay undated unless their quote states a year.
+    """
+    if source.date_method not in PAGE_DATES or not source.source_date:
+        return {}
+    precision = ("year", "month", "day")[min(source.source_date.count("-"), 2)]
+    return {"claim_date": source.source_date, "date_precision": precision, "date_method": source.date_method}
+
+
 def drafts(person_id: str, source: Source, located: Located, ctx: StepContext | None = None) -> list[ClaimDraft]:
     """A role claim quoting the mention, then one claim per kept relation quoting its own passage, then one per topic.
 
     The role is the mention's, else the page title, else the URL's host. born_in and origin give a location claim
     without coordinates, lives_in one with the coordinates geo finds when ctx is given, any other relation an
-    affiliation claim at the alias file's org id. Only the years a relation's quote states date its claim.
+    affiliation claim at the alias file's org id. The years a relation's quote states date its claim; without
+    them a claim from a page FN read itself takes the page's date (page_dated).
     """
     def quoted(span: Span) -> dict:
         return {"person_id": person_id, "quote": source.text[span.start:span.end], "quote_start": span.start,
-                "quote_end": span.end, "source": source}
+                "quote_end": span.end, "source": source} | page_dated(source)
 
     role = located.role or source.title or urlsplit(source.url).hostname or source.url
     found = [ClaimDraft(kind="role", value=role, **quoted(located.span))]
@@ -216,30 +230,66 @@ def drafts(person_id: str, source: Source, located: Located, ctx: StepContext | 
     return found
 
 
+def _near(text: str, phrase: str, name: str) -> list[tuple[int, int, int]]:
+    """Where phrase stands in text, casefolded and on word boundaries, as (distance to the name's last word, start, end).
+
+    Any white space may stand between the phrase's words. The distance is 0 when the text does not hold the name.
+    """
+    words, surnames = phrase.split(), re.findall(r"[^\W_]+", clean_name(name))
+    if not words or not surnames:
+        return []
+    around = [m.start() for m in re.finditer(rf"(?<!\w){re.escape(surnames[-1])}(?!\w)", text, re.IGNORECASE)]
+    return sorted((min((abs(m.start() - at) for at in around), default=0), m.start(), m.end())
+                  for m in re.finditer(rf"(?<!\w){r'\s+'.join(map(re.escape, words))}(?!\w)", text, re.IGNORECASE))
+
+
+def _line(text: str, start: int, end: int) -> tuple[int, int]:
+    """The line of text that holds [start, end), cut to QUOTE_CHARS characters around it."""
+    first, last = text.rfind("\n", 0, start) + 1, text.find("\n", end)
+    last = len(text) if last < 0 else last
+    if last - first > QUOTE_CHARS:
+        first = max(first, min(start - (QUOTE_CHARS - (end - start)) // 2, last - QUOTE_CHARS))
+        last = min(last, first + QUOTE_CHARS)
+    return first, last
+
+
 def stated_place(person_id: str, source: Source, name: str, place: str, ctx: StepContext | None) -> ClaimDraft | None:
     """A lives_in claim for place when its city stands within NAME_REACH characters of the name's last word, else None.
 
     The city is the part of place before its first comma, compared casefolded on word boundaries. The quote is
     the line of the text that holds it, cut to QUOTE_CHARS characters around it.
     """
-    text, city = source.text, place.split(",")[0].strip()
-    surnames = re.findall(r"[^\W_]+", clean_name(name))
-    if not city or not surnames:
-        return None
-    around = [m.start() for m in re.finditer(rf"(?<!\w){re.escape(surnames[-1])}(?!\w)", text, re.IGNORECASE)]
-    found = next((m for m in re.finditer(rf"(?<!\w){r'\s+'.join(map(re.escape, city.split()))}(?!\w)", text, re.IGNORECASE)
-                  if any(abs(m.start() - at) <= NAME_REACH for at in around)), None)
+    found = next(((a, b) for far, a, b in _near(source.text, place.split(",")[0].strip(), name) if far <= NAME_REACH), None)
     if found is None:
         return None
-    start, end = text.rfind("\n", 0, found.start()) + 1, text.find("\n", found.end())
-    end = len(text) if end < 0 else end
-    if end - start > QUOTE_CHARS:
-        start = max(start, min(found.start() - (QUOTE_CHARS - len(found.group())) // 2, end - QUOTE_CHARS))
-        end = min(end, start + QUOTE_CHARS)
+    start, end = _line(source.text, *found)
     where = geo.coordinates(ctx.http, normalize(place), ctx.log) if ctx else None
     lat, lon = where or (None, None)
     return ClaimDraft(person_id=person_id, kind="location", relation="lives_in", value=normalize(place), lat=lat, lon=lon,
-                      quote=text[start:end], quote_start=start, quote_end=end, source=source)
+                      quote=source.text[start:end], quote_start=start, quote_end=end, source=source, **page_dated(source))
+
+
+def stated_employer(person_id: str, source: Source, name: str, employer: str) -> ClaimDraft | None:
+    """A works_at claim for employer when the source's text prints its name near the person or in its title line.
+
+    The name is tried as given, then without trailing legal forms such as LLP or Inc when two or more words
+    remain. A place counts within NAME_REACH characters of the person's name, or on the first line when that is
+    the page's title. The value is the name as the page writes it, the quote its line.
+    """
+    words = employer.split()
+    while len(words) > 2 and name_key(words[-1]).replace(" ", "") in LEGAL_FORMS:
+        words = words[:-1]
+    title_end = len(source.text.split("\n", 1)[0]) if source.title and source.text.startswith(source.title) else 0
+    for phrase in dict.fromkeys((employer, " ".join(words))):
+        for far, a, b in _near(source.text, phrase, name):
+            if far > NAME_REACH and b > title_end:
+                continue
+            start, end = _line(source.text, a, b)
+            value = normalize(source.text[a:b])
+            return ClaimDraft(person_id=person_id, kind="affiliation", relation="works_at", org_id=orgs.org_id(value),
+                              value=value, quote=source.text[start:end], quote_start=start, quote_end=end, source=source,
+                              **page_dated(source))
+    return None
 
 
 def locate_stored(store: Store, names: geo.Names) -> int:

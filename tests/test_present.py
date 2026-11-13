@@ -29,6 +29,13 @@ def claim(kind: str = "affiliation", value: str = "KU Leuven", **fields) -> Clai
 
 
 class ClaimViewTest(unittest.TestCase):
+    def test_the_day_an_undated_page_was_read_says_read(self):
+        """A read date reads 'read 13 November 2026'; a page's own date and a record's date read as the date alone."""
+        day = dict(claim_date="2026-11-13", date_precision="day")
+        self.assertEqual(present.date_words(claim(date_method="read_date", **day)), "read 13 November 2026")
+        self.assertEqual(present.date_words(claim(date_method="page_date", **day)), "13 November 2026")
+        self.assertEqual(present.date_words(claim(**day)), "13 November 2026")
+
     def test_each_kind_and_relation_reads_as_one_plain_line(self):
         """A relation reads as its verb and the stored org's name, else the value; other kinds as the table says.
 

@@ -102,11 +102,14 @@ def evidence(claims: list[Claim], facts: dict[str, Org], matched: list[str], top
 
 
 def date_words(claim: Claim) -> str:
-    """The claim's date as people write it: 2025, March 2024, 3 March 2024 or UNKNOWN_DATE."""
+    """The claim's date as people write it: 2025, March 2024, 3 March 2024 or UNKNOWN_DATE.
+
+    The day FN read an undated page reads "read 3 March 2024", so it is not taken for the page's own date.
+    """
     parts = [int(p) for p in (claim.claim_date or "").split("-") if p.isdigit()]
     precision = claim.date_precision or ("year", "month", "day")[min(len(parts), 3) - 1] if parts else None
     if precision == "day" and len(parts) == 3:
-        return f"{parts[2]} {month_name[parts[1]]} {parts[0]}"
+        return ("read " if claim.date_method == "read_date" else "") + f"{parts[2]} {month_name[parts[1]]} {parts[0]}"
     if precision in ("month", "day") and len(parts) >= 2:
         return f"{month_name[parts[1]]} {parts[0]}"
     return str(parts[0]) if parts else UNKNOWN_DATE

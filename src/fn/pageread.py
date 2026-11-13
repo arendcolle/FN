@@ -1,7 +1,9 @@
 """Reads a web page itself: robots.txt first, a fetch through net.Client, then the page's text with the standard library."""
 import re
 import threading
+import time
 from dataclasses import dataclass
+from datetime import date
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
 from urllib.robotparser import RobotFileParser
@@ -13,12 +15,14 @@ MAX_CHARS = 40_000
 MIN_CHARS = 300
 MAX_REDIRECTS = 3
 WORKERS = 6
+PAUSE_S = 0.5
 AGENT = "FN"
 USER_AGENT = "FN/0.1"
 SKIP = {"script", "style", "noscript", "nav", "header", "footer", "aside", "form", "svg", "template", "iframe"}
 BLOCKS = {"p", "div", "li", "br", "tr", "td", "dd", "dt", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article",
           "main", "blockquote"}
 MAIN = {"main", "article"}
+DATE_KEYS = ("article:modified_time", "og:updated_time", "datemodified", "article:published_time", "datepublished", "date")
 ROBOTS: dict[str, RobotFileParser] = {}
 _LOCK = threading.Lock()
 _HOST_LOCKS: dict[str, threading.Lock] = {}
@@ -31,6 +35,7 @@ class Read:
     text: str | None
     failed: str | None
     truncated: bool = False
+    published: str | None = None
 
 
 class _Text(HTMLParser):
@@ -135,6 +140,38 @@ def allowed(ctx: StepContext, url: str) -> str | None:
     return None if parser.can_fetch(AGENT, url) else "robots.txt disallows it"
 
 
+class _Dates(HTMLParser):
+    """Collects the dates a page states about itself in its meta tags, by key."""
+
+    def __init__(self):
+        super().__init__()
+        self.found: dict[str, str] = {}
+
+    def handle_starttag(self, tag, attrs):
+        if tag != "meta":
+            return
+        given = dict(attrs)
+        key = (given.get("property") or given.get("name") or given.get("itemprop") or "").casefold()
+        when = re.match(r"\d{4}-\d{2}-\d{2}", given.get("content") or "")
+        if key in DATE_KEYS and when and _is_day(when.group(0)):
+            self.found.setdefault(key, when.group(0))
+
+
+def _is_day(text: str) -> bool:
+    """Whether text is a calendar day between 1990 and 2100."""
+    try:
+        return 1990 <= date.fromisoformat(text).year <= 2100
+    except ValueError:
+        return False
+
+
+def page_date(html: str) -> str | None:
+    """The day a page says it was changed or published, as YYYY-MM-DD from its meta tags, or None."""
+    parser = _Dates()
+    parser.feed(html)
+    return next((parser.found[key] for key in DATE_KEYS if key in parser.found), None)
+
+
 def read(ctx: StepContext, url: str) -> Read:
     """Fetch url after the robots.txt check and return its text, or the reason it could not be read."""
     if reason := allowed(ctx, url):
@@ -152,14 +189,37 @@ def read(ctx: StepContext, url: str) -> Read:
     title, text = html_text(html)
     if len(text) < MIN_CHARS:
         return Read(url, title, None, f"{len(text)} characters of text, under {MIN_CHARS}")
-    return Read(url, title, text[:MAX_CHARS], None, len(text) > MAX_CHARS)
+    return Read(url, title, text[:MAX_CHARS], None, len(text) > MAX_CHARS, page_date(html))
 
 
 def read_all(ctx: StepContext, urls: list[str]) -> list[Read]:
-    """read for each url on WORKERS threads, in url order; an exception becomes that url's failure."""
-    results = fan_out(lambda url: read(ctx, url), urls, WORKERS)
-    return [Read(url, None, None, f"{type(r).__name__}: {r}") if isinstance(r, Exception) else r
-            for url, r in zip(urls, results)]
+    """read for each url, in url order; an exception becomes that url's failure.
+
+    Hosts are read side by side on WORKERS threads. The pages of one host are read one after another with
+    PAUSE_S seconds between them, so a site is not asked for several pages at once; a replay sends nothing and
+    does not pause.
+    """
+    hosts: dict[str, list[int]] = {}
+    for at, url in enumerate(urls):
+        hosts.setdefault(urlsplit(url).netloc, []).append(at)
+
+    def one_host(places: list[int]) -> list[Read]:
+        found = []
+        for n, at in enumerate(places):
+            if n and ctx.settings.http_mode != "replay":
+                time.sleep(PAUSE_S)
+            try:
+                found.append(read(ctx, urls[at]))
+            except Exception as exc:  # noqa: BLE001 one page's error must not lose the host's other pages
+                found.append(Read(urls[at], None, None, f"{type(exc).__name__}: {exc}"))
+        return found
+
+    reads: dict[int, Read] = {}
+    for places, result in zip(hosts.values(), fan_out(one_host, list(hosts.values()), WORKERS)):
+        for n, at in enumerate(places):
+            reads[at] = (Read(urls[at], None, None, f"{type(result).__name__}: {result}")
+                         if isinstance(result, Exception) else result[n])
+    return [reads[at] for at in range(len(urls))]
 
 
 def _last_word(name: str) -> str | None:

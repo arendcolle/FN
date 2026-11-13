@@ -1,6 +1,7 @@
 """Scout lane: a web researcher names people and pages, FN reads the pages itself and keeps only the leads on them."""
 from fn import extract, pageread, scout
 from fn.contracts import (
+    ClaimDraft,
     Considered,
     LaneHit,
     LaneIn,
@@ -18,6 +19,7 @@ from fn.steps import StepContext
 name: LaneName = "scout"
 MAX_PAGES = 40
 PAGES_PER_LEAD = 2
+JOBS = ("works_at", "worked_at", "affiliated_with")
 
 
 def same_person(lead: str, found: str) -> bool:
@@ -35,6 +37,12 @@ def note(ctx: StepContext, inp: LaneIn) -> str | None:
     if inp.chips.version == 1:
         return "chips stored before this round, so no web research"
     return None if inp.question else "no question text"
+
+
+def titled(title: str | None, text: str) -> str:
+    """The text with the page's title as its first line: a firm's bio page often names the firm only there."""
+    title = " ".join((title or "").split())
+    return f"{title}\n{text}" if title and title not in text else text
 
 
 def to_read(leads: list[ScoutLead]) -> tuple[dict[str, str], list[Considered]]:
@@ -79,9 +87,10 @@ def run(ctx: StepContext, inp: LaneIn) -> LaneOut:
     with ctx.store.tx():
         for read in reads:
             names = [lead.name for lead in givers[scout.page_key(read.url)]]
-            text = None if read.failed or not read.text else pageread.windows(read.text, names)
+            text = None if read.failed or not read.text else titled(read.title, pageread.windows(read.text, names))
             source = text and page_source(read.url, read.title, text, {"scout": {"leads": names, "truncated": read.truncated}},
-                                          ctx.now(), None, kind="page", plain=True)
+                                          ctx.now(), read.published or ctx.now().date().isoformat(), kind="page", plain=True,
+                                          date_method="page_date" if read.published else "read_date")
             if not source or not source.text:
                 reason = f"FN could not read it ({read.failed})" if read.failed else "no text"
                 considered.append(Considered(person_key=read.url, name="", stage="page", kept=False,
@@ -100,7 +109,7 @@ def run(ctx: StepContext, inp: LaneIn) -> LaneOut:
         return bool(leads_here)
 
     hits = web.people(ctx, stored, considered, name, focus=focus)
-    hits = add_places(ctx, hits, matched, stored, considered)
+    hits = add_stated(ctx, hits, matched, stored, considered)
     named = {lead.name for _, _, lead in matched}
     for lead in leads:
         keys = [scout.page_key(p) for p in lead.pages[:PAGES_PER_LEAD] if scout.page_key(p) in wanted]
@@ -114,9 +123,20 @@ def run(ctx: StepContext, inp: LaneIn) -> LaneOut:
     return LaneOut(lane=name, query=query, total_seen=len(leads), hits=hits, considered=considered)
 
 
-def add_places(ctx: StepContext, hits: list[LaneHit], matched: list[tuple[Source, str, ScoutLead]],
+def stated(ctx: StepContext, relation: str, person_id: str, source: Source, lead: ScoutLead) -> ClaimDraft | None:
+    """The claim for the lead's place or employer when the source prints it, else None."""
+    if relation == "lives_in":
+        return extract.stated_place(person_id, source, lead.name, lead.place, ctx)
+    return extract.stated_employer(person_id, source, lead.name, lead.employer)
+
+
+def add_stated(ctx: StepContext, hits: list[LaneHit], matched: list[tuple[Source, str, ScoutLead]],
                stored: list[tuple[int, Source]], considered: list[Considered]) -> list[LaneHit]:
-    """Give each hit whose lead has a place and no lives_in claim the place the lead's first fitting page states."""
+    """Give each hit the place and the employer its lead names when a page of the lead prints them.
+
+    Only what the page reader left out is added: a place without a lives_in claim, an employer without a
+    works_at claim. Each comes from the lead's first page that prints it.
+    """
     ids = ctx.store.person_ids_by_identifier("mention", [extract.identifier(s.url, f).value for s, f, _ in matched])
     by_person: dict[str, dict[str, ScoutLead]] = {}
     for source, found, lead in matched:
@@ -128,15 +148,19 @@ def add_places(ctx: StepContext, hits: list[LaneHit], matched: list[tuple[Source
         for hit in hits:
             claim_ids = list(hit.claim_ids)
             for lead in by_person.get(hit.person_id, {}).values():
-                if not lead.place or any(c and c.relation == "lives_in" for c in map(ctx.store.get_claim, claim_ids)):
-                    continue
-                for url in lead.pages[:PAGES_PER_LEAD]:
-                    source = pages.get(scout.page_key(url))
-                    if source and (draft := extract.stated_place(hit.person_id, source, lead.name, lead.place, ctx)):
+                claims = [c for c in map(ctx.store.get_claim, claim_ids) if c]
+                have = {c.relation for c in claims}
+                # A job the page reader gave, also a past or unclear one at this employer, is never restated as current.
+                if any(c.relation in JOBS and name_key(lead.employer) in name_key(c.value) for c in claims):
+                    have.add("works_at")
+                sources = [s for url in lead.pages[:PAGES_PER_LEAD] if (s := pages.get(scout.page_key(url)))]
+                for relation, word, value in (("lives_in", "place", lead.place), ("works_at", "employer", lead.employer)):
+                    if not value or relation in have:
+                        continue
+                    if draft := next(filter(None, (stated(ctx, relation, hit.person_id, s, lead) for s in sources)), None):
                         claim_ids.append(ctx.store.upsert_claim(draft, ctx.now()).id)
-                        considered.append(Considered(person_key=extract.identifier(source.url, lead.name).value,
+                        considered.append(Considered(person_key=extract.identifier(draft.source.url, lead.name).value,
                                                      name=lead.name, stage="mention", kept=True,
-                                                     reason=f"{lead.name}: place {lead.place} from the page line"))
-                        break
+                                                     reason=f"{lead.name}: {word} {value} from the page line"))
             out.append(hit.model_copy(update={"claim_ids": claim_ids}))
     return out
