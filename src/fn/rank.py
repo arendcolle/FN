@@ -233,7 +233,7 @@ def run(ctx: StepContext, inp: RankIn) -> RankOut:
     records = list(dict.fromkeys(p for e in inp.entries for p in card(e)))
     claims = ctx.store.claims_of(records)
     facts = ctx.store.get_orgs(list(dict.fromkeys(c.org_id for c in claims if c.org_id)))
-    schemes = {p: frozenset(i.scheme for i in found) for p, found in ctx.store.identifiers_of(records).items()}
+    schemes = evidence.card_of(ctx.store.identifiers_of(records), records)
     today = as_of(ctx)
     question, names = question_of(ctx, inp)
     by_person: dict[str, list[Claim]] = {}
