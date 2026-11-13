@@ -33,11 +33,11 @@ ANGLES = {
 
 
 def angles(chips: Chips) -> list[str]:
-    """The angle keys for the question: a must tie, a wished tie or no tie chip each get their own four."""
+    """The angle keys for the question: four for a must tie, six for a wished tie, four without a tie chip."""
     if parse.tie_must(chips):
         return ["press", "lists", "born", "place_tied"]
     if chips.tie is not None:
-        return ["press", "lists", "born", "place"]
+        return ["press", "lists", "born", "place", "speakers", "boards"]
     return ["place", "speakers", "boards", "lists"]
 
 

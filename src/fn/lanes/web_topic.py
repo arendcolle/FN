@@ -11,8 +11,8 @@ GATE = 20
 def run(ctx: StepContext, inp: LaneIn) -> LaneOut:
     """Search the web without the Belgian tie, or return a note and make no call.
 
-    Notes: no topic, role or institution chip; chips stored before version 2; the tie is a must; GATE or more
-    people under the first heading. Raises as web.collect does.
+    Notes: no topic, role or institution chip; chips stored before version 2; the tie is a must; the scout lane
+    is on; GATE or more people under the first heading. Raises as web.collect does.
     """
     chips = inp.chips
     if not web.has_query(chips):
@@ -21,6 +21,8 @@ def run(ctx: StepContext, inp: LaneIn) -> LaneOut:
         reason = "chips stored before this round, so no search without a tie"
     elif parse.tie_must(chips):
         reason = "the tie is a must, so no search without it"
+    elif ctx.settings.scout:
+        reason = "the web research lane looks for people without a tie"
     elif (first := inp.first_heading or 0) >= GATE:
         reason = f"{first} people under the first heading, so no search without a tie"
     else:

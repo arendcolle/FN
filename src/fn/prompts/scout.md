@@ -13,6 +13,6 @@ How to work:
 
 Return an object with two fields.
 - searches: the searches you ran, as you typed them.
-- people: at most 8 people, best first. Each has name (the full name as the page writes it), role and employer as a page states them today, place (city and state, or "" when no page states it), and pages: one to three addresses of pages you opened. First the page that states the current role and employer: the employer's own site, or a page from the last two years, and when you can choose, one that also states the city the person works in. Then the page that states the tie to Flanders or Belgium when there is one, then a page that shows the person knows the question's subject. Give each address exactly as you opened it.
+- people: at most 8 people, best first. Each has name (the full name as the page writes it), role and employer as a page states them today, place (city and state, or "" when no page states it), and pages: one to three addresses of pages you opened. First the page that states the current role and employer, and when you can choose, one that also states the city the person works in. Then the page that states the tie to Flanders or Belgium when there is one, then a page that shows the person knows the question's subject. Give each address exactly as you opened it.
 
 Never report a person from memory alone, an organization as a person, a person whose tie you only guess from a surname, or a person who has died or retired.

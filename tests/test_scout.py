@@ -48,9 +48,9 @@ class ScoutTest(unittest.TestCase):
         return {k: answer for k in scout.angles(chips)}
 
     def test_the_angles_depend_on_the_tie_chip(self):
-        """A must tie, a wished tie and no tie chip each give their own four angles."""
+        """A must tie gives four angles, a wished tie six, no tie chip four."""
         self.assertEqual(scout.angles(MUST), ["press", "lists", "born", "place_tied"])
-        self.assertEqual(scout.angles(WISH), ["press", "lists", "born", "place"])
+        self.assertEqual(scout.angles(WISH), ["press", "lists", "born", "place", "speakers", "boards"])
         self.assertEqual(scout.angles(NO_TIE), ["place", "speakers", "boards", "lists"])
 
     def test_one_call_per_angle_carries_the_question_and_the_angle_text(self):
@@ -106,8 +106,8 @@ class ScoutTest(unittest.TestCase):
     def test_every_angle_failing_raises_the_first_error(self):
         """When no angle answered, the first angle's error is raised so the step ends in error."""
         with self.assertRaises(TimeoutError) as raised:
-            self.find(WISH, {"press": TimeoutError("first"), "lists": ValueError("second"), "born": ValueError("third"),
-                             "place": ValueError("fourth")})
+            self.find(MUST, {"press": TimeoutError("first"), "lists": ValueError("second"), "born": ValueError("third"),
+                             "place_tied": ValueError("fourth")})
         self.assertEqual(str(raised.exception), "first")
 
     def test_every_angle_missing_its_recording_gives_a_note_and_no_error(self):
@@ -115,13 +115,13 @@ class ScoutTest(unittest.TestCase):
         leads, rows = self.find(WISH, self.every(WISH, FixtureMissing("no LLM fixture")))
         self.assertEqual(leads, [])
         self.assertEqual(rows[-1].reason, "no recorded web research for this question")
-        self.assertEqual(sum(not r.kept for r in rows), 5)
+        self.assertEqual(sum(not r.kept for r in rows), len(scout.angles(WISH)) + 1)
 
     def test_a_mix_of_missing_recordings_and_another_error_raises(self):
         """The note is only for all-missing recordings; a mix with a real error still raises."""
         with self.assertRaises(FixtureMissing):
-            self.find(WISH, {"press": FixtureMissing("x"), "lists": RuntimeError("y"), "born": RuntimeError("y"),
-                             "place": RuntimeError("y")})
+            self.find(MUST, {"press": FixtureMissing("x"), "lists": RuntimeError("y"), "born": RuntimeError("y"),
+                             "place_tied": RuntimeError("y")})
 
     def test_fn_scout_turns_the_setting_off_only_for_0_or_false(self):
         """FN_SCOUT unset keeps the lane on; 0 and false turn it off; any other text keeps it on."""

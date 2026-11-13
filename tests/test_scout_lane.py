@@ -77,12 +77,12 @@ class ScoutLaneTest(unittest.TestCase):
                              "Eva Maes is": [head("Eva Maes", "Eva Maes is pastry chef at Cafe Test.")]})
         self.assertEqual([(h.lane, h.name_key) for h in out.hits], [("scout", "jan peeters"), ("scout", "eva maes")])
         self.assertEqual(out.total_seen, 2)
-        self.assertEqual(out.query, "press; lists; born; place")
+        self.assertEqual(out.query, "press; lists; born; place; speakers; boards")
         kinds = {s.kind for h in out.hits for c in h.claim_ids
                  for s in self.store.get_sources([self.store.get_claim(c).source_id]).values()}
         self.assertEqual(kinds, {"page"})
         self.assertEqual(sorted(map(sorted, self.windowed)), [["Eva Maes"], ["Jan Peeters"], ["Jan Peeters"]])
-        self.assertEqual(self.llm.calls.count("scout"), 4)
+        self.assertEqual(self.llm.calls.count("scout"), 6)
 
     def test_a_person_the_page_names_who_is_not_a_lead_is_not_stored(self):
         """A second name on the page gets a dropped row and no stored person."""
@@ -211,7 +211,7 @@ class ScoutLaneTest(unittest.TestCase):
         """When the researcher names nobody, the lane returns its angle rows only."""
         out = self.run_lane([], {})
         self.assertEqual((out.hits, out.total_seen, self.urls), ([], 0, []))
-        self.assertEqual(len(out.considered), 4)
+        self.assertEqual(len(out.considered), 6)
 
     def test_without_an_llm_or_http_client_the_lane_raises(self):
         """The check comes after the notes."""
