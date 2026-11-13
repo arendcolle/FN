@@ -394,8 +394,8 @@ class FlowTest(unittest.TestCase):
                 (label, href), = fact.links
                 self.assertTrue(label.startswith("Import contacts.csv"), label)
                 source = self.get(href)
-                self.assertIn('<mark id="quote">', source.html)
-                self.assertIn("Import contacts.csv", source.words)
+                self.assertIn('<p id="quote" class="fn-source__lead text-body">', source.html)
+                self.assertIn('<h1 class="fn-source__title text-title">Ann Harbor</h1>', source.html)
 
     def walk_reopen(self) -> None:
         people = [found("Gus Alpha", "gus", "Wind cables"), found("Hal Beta", "hal", "Wind ports"),
