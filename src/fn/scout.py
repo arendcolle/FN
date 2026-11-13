@@ -29,13 +29,22 @@ ANGLES = {
                 "in the asked place or region. Report the speakers who hold the asked job today.",
     "boards": "Associations. Trade associations, industry groups and their boards and committees for the asked job "
               "in the asked place or region. Report the members who fit the question's subject.",
+    "chambers": "Belgian business circles in the US. Belgian-American chambers of commerce with their boards, members "
+                "and ambassadors, Belgian clubs and societies, honorary consuls, and the speakers and hosts of their "
+                "events. From those keep the people who hold the job the question asks for.",
+    "alumni": "Alumni. The US chapters and alumni pages of Flemish universities and business schools (KU Leuven, "
+              "Ghent, Antwerp, VUB, Hasselt, Vlerick, Antwerp Management School), alumni spotlights and fellowship "
+              "alumni pages. From those keep the people who hold the job the question asks for in the place it asks for.",
+    "firms": "Belgian companies in the US. The US offices and subsidiaries of Belgian and Flemish companies in the "
+             "question's sector, and US firms founded or led by Belgians. Report their leaders and staff who hold the "
+             "job the question asks for, with the page that shows their own tie to Belgium when there is one.",
 }
 
 
 def angles(chips: Chips) -> list[str]:
-    """The angle keys for the question: four for a must tie, six for a wished tie, four without a tie chip."""
+    """The angle keys for the question: six for a must tie, six for a wished tie, four without a tie chip."""
     if parse.tie_must(chips):
-        return ["press", "lists", "born", "place_tied"]
+        return ["press", "born", "place_tied", "chambers", "alumni", "firms"]
     if chips.tie is not None:
         return ["press", "lists", "born", "place", "speakers", "boards"]
     return ["place", "speakers", "boards", "lists"]
