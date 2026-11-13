@@ -32,8 +32,9 @@ def relation(kind: str, org: str, quote: str, year_from: int | None = None, year
     return {"relation": kind, "org": org, "quote": quote, "year_from": year_from, "year_to": year_to}
 
 
-def mention(name: str, quote: str, role: str | None = None, *relations: dict) -> dict:
-    return {"name": name, "quote": quote, "role": role, "relations": list(relations)}
+def mention(name: str, quote: str, role: str | None = None, *relations: dict, topics: list[dict] | None = None) -> dict:
+    found = {"name": name, "quote": quote, "role": role, "relations": list(relations)}
+    return found | {"topics": topics} if topics is not None else found
 
 
 def by_marker(answers: dict[str, list[dict]]) -> Callable[[str], list[dict]]:
@@ -58,6 +59,10 @@ class PageLLM:
                 raise error
         return LLMResult[schema](value=schema.model_validate({"people": self.answer(data["page"])}), model="stub",
                                  cost_usd=0.0, tokens_in=0, tokens_out=0, billing="stub")
+
+
+def topic(topic_: str, quote: str) -> dict:
+    return {"topic": topic_, "quote": quote}
 
 
 class ExtractTest(unittest.TestCase):
@@ -244,6 +249,58 @@ class ExtractTest(unittest.TestCase):
             ("role", None, None, "Belgium 6G roundtable", "Jan Peeters, PhD, KU Leuven", *undated),
             ("affiliation", "works_at", "ror:05f950310", "KU Leuven", "PhD, KU Leuven", *undated),
         ])
+
+    def test_an_origin_relation_is_a_location_claim_without_coordinates_that_locate_stored_leaves(self):
+        """Belgian in 'Belgian chocolatier Ann Example' is a location claim with relation origin and no place to find."""
+        text = "Belgian chocolatier Ann Example opened a shop."
+        source = self.source(text)
+        found, considered = self.mentions([mention("Ann Example", text, "chocolatier",
+                                                   relation("origin", "Belgian", "Belgian chocolatier"))], source)
+        (draft,) = [d for d in extract.drafts("p", source, found[0]) if d.kind == "location"]
+        self.assertEqual((draft.relation, draft.value, draft.lat, draft.lon, draft.quote_start, considered),
+                         ("origin", "Belgian", None, None, 0, []))
+        person = self.store.resolve_person([Identifier(scheme="mention", value="m1")], "Ann Example")
+        claim = self.store.upsert_claim(draft.model_copy(update={"person_id": person.id}))
+        self.assertEqual(extract.locate_stored(self.store, geo.from_zip(cities_zip())), 0)
+        self.assertIsNone(self.store.get_claim(claim.id).lat)
+
+    def test_a_kept_topic_is_an_undated_topic_claim_at_its_quote(self):
+        """A topic found in its quote near the mention gives a topic claim with the quote's own offsets."""
+        text = "Intro line.\nProf. Jan Peeters, professor of wireless networks at KU Leuven"
+        source = self.source(text)
+        found, considered = self.mentions([mention("Jan Peeters", "Jan Peeters, professor of wireless networks", None,
+                                                   topics=[topic("Wireless Networks", "professor of wireless networks")])],
+                                          source)
+        (draft,) = [d for d in extract.drafts("p", source, found[0]) if d.kind == "topic"]
+        start = text.index("professor of")
+        self.assertEqual((draft.value, draft.quote, draft.quote_start, draft.claim_date, draft.valid_from, considered),
+                         ("Wireless Networks", "professor of wireless networks", start, None, None, []))
+
+    def test_a_topic_is_dropped_with_its_reason_when_the_quote_is_far_missing_or_lacks_it_or_repeats(self):
+        """A quote past NEAR_CHARS, absent from the chunk, without the topic words or the same twice leaves one row each."""
+        far = "x" * (extract.NEAR_CHARS + 500)
+        text = f"Jan Peeters, professor of wireless networks\n{far}\nHe also studies optics and photonics."
+        quote = "professor of wireless networks"
+        cases = [
+            (topic("optics", "studies optics and photonics"),
+             "topic quote not near the mention: 'optics', quote 'studies optics and photonics'"),
+            (topic("optics", "invented quote"), "topic quote not near the mention: 'optics', quote 'invented quote'"),
+            (topic("antennas", quote), f"topic not in quote: 'antennas', quote {quote!r}"),
+            (topic("wireless", quote), None),
+            (topic("Wireless", quote), "same topic as before: 'Wireless'"),
+            (topic("   ", quote), f"topic not in quote: '   ', quote {quote!r}"),
+        ]
+        found, considered = self.mentions([mention("Jan Peeters", "Jan Peeters, professor of wireless networks", None,
+                                                   topics=[t for t, _ in cases])], self.source(text))
+        self.assertEqual([c.reason for c in considered], [r for _, r in cases if r])
+        self.assertTrue(all(c.stage == "topic" and not c.kept for c in considered))
+        self.assertEqual([t for t, _ in found[0].topics], ["wireless"])
+
+    def test_a_mention_with_no_topics_gives_no_topic_claim(self):
+        """A page with no topics, as an answer from before this round, gives the role claim and nothing else."""
+        source = self.source()
+        found, _ = self.mentions([mention("Jan Peeters", "Jan Peeters, PhD, KU Leuven")], source)
+        self.assertEqual([d.kind for d in extract.drafts("p", source, found[0])], ["role"])
 
     def test_a_year_the_quote_does_not_state_leaves_the_claim_undated(self):
         """A year whose digits are not in the relation's quote does not date the claim.

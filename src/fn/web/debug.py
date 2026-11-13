@@ -320,7 +320,9 @@ def debug_source_page(source: Source, claim: Claim | None) -> str:
 def chips_from_form(form: dict[str, list[str]], source: Chips | None = None) -> Chips:
     """Edited chips from a posted form, without spans; raises ValueError for an oversized chip or list.
 
-    A chip or place whose text matches one of source keeps its ref or kind; an edited text loses it.
+    A chip or place whose text matches one of source keeps its ref, or its kind and need; an edited text loses them.
+    A topic text that matches keeps its need and related words. The roles, tie and version come from source, and the queries are
+    dropped, because they describe the old chips. Without a source the chips are version 1.
     """
     def texts(name: str) -> list[str]:
         found = list(dict.fromkeys(t for t in (" ".join(v.split()) for v in form.get(name, [])) if t))
@@ -329,19 +331,23 @@ def chips_from_form(form: dict[str, list[str]], source: Chips | None = None) -> 
         return found
 
     def chips(name: str, old: list[Chip]) -> list[Chip]:
-        refs = {c.text: c.ref for c in old}
-        return [Chip(text=t, origin="edited", ref=refs.get(t)) for t in texts(name)]
+        by_text = {c.text: c for c in old}
+        return [Chip(text=t, origin="edited", **(by_text[t].model_dump(include={"ref", "need", "related"})
+                                                 if t in by_text else {})) for t in texts(name)]
 
     place, ask = first(form, "place"), first(form, "ask")
-    kind = source.place.kind if source and source.place and source.place.text == place else None
+    kept = source.place.model_dump(include={"kind", "need"}) if source and source.place and source.place.text == place else {}
     if len(place) > MAX_CHIP:
         raise ValueError(f"Keep the place to {MAX_CHIP} characters.")
     try:
         return Chips(
             topics=chips("topics", source.topics if source else []),
             institutions=chips("institutions", source.institutions if source else []),
-            place=Place(text=place, origin="edited", kind=kind) if place else None,
+            place=Place(text=place, origin="edited", **kept) if place else None,
             ask=ask or None,
+            roles=source.roles if source else [],
+            tie=source.tie if source else None,
+            version=source.version if source else 1,
         )
     except ValidationError as exc:
         raise ValueError(f"Not a valid ask: {ask!r}") from exc

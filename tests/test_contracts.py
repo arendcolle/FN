@@ -2,7 +2,7 @@ import unittest
 
 from pydantic import ValidationError
 
-from fn.contracts import ClaimDraft, Source, name_key, normalize
+from fn.contracts import Chips, ClaimDraft, Source, name_key, normalize
 
 SOURCE = Source(id="s1", kind="page", url="https://example.org", text="Anne works at KU Leuven.", content_hash="h")
 
@@ -26,6 +26,19 @@ class ClaimDraftTest(unittest.TestCase):
                                   ("Leuven.", 17, 99), ("x", 3, 2)):
             with self.subTest(quote=quote, start=start, end=end), self.assertRaises(ValidationError):
                 self.draft(quote, start, end)
+
+
+class ChipsTest(unittest.TestCase):
+    def test_chips_stored_before_roles_and_ties_load_as_version_1(self):
+        """Old chips JSON, with no roles, tie, version, need, related or queries, loads with the legacy defaults."""
+        old = ('{"topics": [{"text": "6G", "span": {"start": 0, "end": 2}, "origin": "parsed", "ref": null}], '
+               '"institutions": [], "place": {"text": "Boston", "span": null, "origin": "edited", "kind": "metro"}, '
+               '"ask": "talk"}')
+        chips = Chips.model_validate_json(old)
+        self.assertEqual((chips.version, chips.roles, chips.tie, chips.queries), (1, [], None, []))
+        self.assertEqual((chips.topics[0].need, chips.topics[0].related, chips.topics[0].research),
+                         ("must", [], None))
+        self.assertEqual(chips.place.need, "nice")
 
 
 class NameKeyTest(unittest.TestCase):
