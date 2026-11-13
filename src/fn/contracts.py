@@ -805,6 +805,7 @@ class RankIn(Model):
     entries: list[Entry]
     chips: Chips
     verdicts: dict[str, FitVerdict] = {}
+    unsure: list[str] = []
 
 
 class RankOut(Model):
@@ -819,6 +820,7 @@ class FitIn(Model):
 
 class FitOut(Model):
     verdicts: dict[str, FitVerdict] = {}
+    unsure: list[str] = []
     note: str = ""
 
 

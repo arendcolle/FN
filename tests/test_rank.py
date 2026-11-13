@@ -654,11 +654,20 @@ class VerdictTest(unittest.TestCase):
         out = self.fused(v2(None, Chip(text="founders", origin="edited", research=False)), {"partly": "partly", "yes": "yes"}, **people)
         self.assertEqual({k: c.tier for k, c in out.items()}, {"partly": 1, "yes": 1, "plain": 5, "met": 1})
         self.assertEqual(sorted((k for k in out if out[k].tier == 1), key=lambda k: out[k].rank), ["met", "yes", "partly"])
+        equal = self.fused(v2(), {"partly": "partly"}, partly=found(role="met", **self.HERE), met=found(role="met", **self.HERE))
+        self.assertEqual(sorted(equal, key=lambda k: equal[k].rank), ["met", "partly"])
         unchecked = self.fused(v2(), {}, plain=found(**self.HERE))
         self.assertEqual(unchecked["plain"].tier, 1)
         v1 = Question(chips=ASK.chips, area=BOSTON, country="US")
         out = self.fused(v1, {"partly": "partly", "yes": "yes"}, **people)
         self.assertEqual(sorted(out, key=lambda k: out[k].rank), ["met", "partly", "yes", "plain"])
+
+    def test_a_person_the_check_sent_without_a_verdict_keeps_the_tier(self):
+        """A person in unsure (failed batch, skipped line) is not demoted as an unchecked word match."""
+        entries = [hit_entry(k, openalex=n) for n, k in enumerate(("plain", "lost"), 1)]
+        people = dict(plain=found(**self.HERE), lost=found(**self.HERE))
+        out = {c.person_id: c.tier for c in rank.fuse("s", entries, {}, None, people, v2(), {"x": "yes"}, unsure=["lost"])}
+        self.assertEqual(out, {"plain": 5, "lost": 1})
 
     def test_rank_run_passes_the_verdicts_of_its_input_to_fuse(self):
         """RankIn.verdicts reaches the ranking."""

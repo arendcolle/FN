@@ -196,7 +196,7 @@ def tier(found: "evidence.Evidence | None", question: Question | None, researche
     tied, fits = found.belgian.grade in TIED, place_fit(found, question) in FITS
     current = question is not None and question.chips.version >= 2
     match = confirmed(found, question)
-    if current and not researched and (verdict == "no" or (checked and verdict is None and found.role.fit != "met")):
+    if current and (verdict == "no" or (checked and verdict is None and found.role.fit != "met")):
         match = False
     if match or (current and researched):
         return (1 if fits else 2) if tied else (3 if fits else 4)
@@ -317,15 +317,17 @@ def capped(kept: list[Row], question: Question | None) -> list[Row]:
 
 def fuse(search_id: str, entries: list[Entry], statuses: dict[str, ListStatus],
          belgian: dict[str, ScorePart] | None = None, found: dict[str, "evidence.Evidence"] | None = None,
-         question: Question | None = None, verdicts: dict[str, FitVerdict] | None = None) -> list[Candidate]:
+         question: Question | None = None, verdicts: dict[str, FitVerdict] | None = None,
+         unsure: list[str] | None = None) -> list[Candidate]:
     """Score each entry by the sum of its parts, order the new section by tier, then score, and number each section,
     kept entries apart from cut ones.
 
-    belgian holds the belgian_years parts, found the evidence and verdicts the fit check's answers, by first person id. Section network holds
+    belgian holds the belgian_years parts, found the evidence and verdicts the fit check's answers, by first person id; unsure
+    names the people it sent and got no verdict for, who stay as they were. Section network holds
     entries with a hit person in the list; equal scores are ordered by the first person id. People
     cut for no Belgian evidence who match the topic come back, up to EXEMPT_CAP; OpenAlex-only people are capped.
     """
-    belgian, found, verdicts = belgian or {}, found or {}, verdicts or {}
+    belgian, found, verdicts, unsure = belgian or {}, found or {}, verdicts or {}, unsure or []
     extra = evidence_lists(found)
     rows = []
     for e in entries:
@@ -334,7 +336,7 @@ def fuse(search_id: str, entries: list[Entry], statuses: dict[str, ListStatus],
         entry_parts = parts(e, belgian.get(key)) + extra.get(key, [])
         ev = found.get(key)
         verdict = verdicts.get(key)
-        level = tier(ev, question, "scout" in e.lane_ranks, verdict, bool(verdicts))
+        level = tier(ev, question, "scout" in e.lane_ranks, verdict, bool(verdicts) and key not in unsure)
         reason = cut_reason(section, ev, question) if ev else unread_cut(section, e, entry_parts)
         rows.append(Row(BLANK if section == "network" else order_key(ev, question, level, verdict), e, section, entry_parts, ev,
                         level, reason))
@@ -390,4 +392,4 @@ def run(ctx: StepContext, inp: RankIn) -> RankOut:
         found[e.person_ids[0]] = evidence.of({p: schemes.get(p, frozenset()) for p in on_card},
                                              [c for p in on_card for c in by_person.get(p, [])], facts, question, today, names)
     return RankOut(candidates=fuse(ctx.search_id, inp.entries, statuses, belgian_list(inp.entries, claims, facts),
-                                   found, question, inp.verdicts))
+                                   found, question, inp.verdicts, unsure=inp.unsure))

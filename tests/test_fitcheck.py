@@ -146,6 +146,7 @@ class FitCheckTest(unittest.TestCase):
         out = self.check(llm)
         self.assertEqual(len(out.verdicts), 40)
         self.assertEqual(out.note, "batch 2 failed: ConnectionError: model is down")
+        self.assertEqual(set(out.unsure), {c.person_id for c in self.people[20:40]})
         self.assertEqual(set(out.verdicts), {c.person_id for c in self.people[:20] + self.people[40:]})
 
     def test_every_batch_missing_its_recording_gives_a_note_and_other_errors_raise(self):

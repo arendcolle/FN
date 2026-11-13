@@ -10,7 +10,6 @@ from fn.contracts import (
     Considered,
     FitIn,
     FitOut,
-    FitVerdict,
     LaneIn,
     LaneOut,
     ParseIn,
@@ -47,8 +46,9 @@ def publish(outs: list[LaneOut]) -> Callable[[StepContext, PublishIn], PublishOu
     return step
 
 
-def rank_and_save(ctx: StepContext, resolved: ResolveOut, chips: Chips, verdicts: dict[str, FitVerdict]) -> None:
-    ranked = run_step(ctx, "rank", rank.run, RankIn(entries=resolved.entries, chips=chips, verdicts=verdicts))
+def rank_and_save(ctx: StepContext, resolved: ResolveOut, chips: Chips, fit: FitOut) -> None:
+    ranked = run_step(ctx, "rank", rank.run,
+                      RankIn(entries=resolved.entries, chips=chips, verdicts=fit.verdicts, unsure=fit.unsure))
     run_step(ctx, "save", save, SaveIn(candidates=ranked.candidates, flags=resolved.flags))
 
 
@@ -59,22 +59,22 @@ def finish(ctx: StepContext, outs: list[LaneOut], chips: Chips) -> None:
     A fit step that raises leaves the first ranking saved.
     """
     resolved = run_step(ctx, "resolve", resolve.run, ResolveIn(outs=outs))
-    rank_and_save(ctx, resolved, chips, {})
+    rank_and_save(ctx, resolved, chips, FitOut())
     try:
         fit = run_step(ctx, "fit", fitcheck.run, FitIn(question=ctx.store.get_search(ctx.search_id).question, chips=chips))
     except Exception:  # noqa: BLE001 any error is kept on the step row and the first ranking stands
         return
     if fit.verdicts:
-        rank_and_save(ctx, resolved, chips, fit.verdicts)
+        rank_and_save(ctx, resolved, chips, fit)
 
 
-def stored_verdicts(ctx: StepContext) -> dict[str, FitVerdict]:
-    """The verdicts of the search's last fit step that ended ok, else none."""
+def stored_fit(ctx: StepContext) -> FitOut:
+    """The output of the search's last fit step that ended ok, else an empty one."""
     for step in reversed(ctx.store.list_steps(ctx.search_id)):
         if step.step == "fit" and step.status == "ok":
             output = ctx.store.get_payload(step.id)[1]
-            return FitOut.model_validate_json(output).verdicts if output else {}
-    return {}
+            return FitOut.model_validate_json(output) if output else FitOut()
+    return FitOut()
 
 
 def first_heading(ctx: StepContext) -> int:
@@ -98,7 +98,7 @@ def refinish(ctx: StepContext, search: Search) -> None:
     if not stored:
         raise ValueError(f"search {search.id} has no stored lane outputs")
     resolved = run_step(ctx, "resolve", resolve.run, ResolveIn(outs=outs))
-    rank_and_save(ctx, resolved, search.chips, stored_verdicts(ctx))
+    rank_and_save(ctx, resolved, search.chips, stored_fit(ctx))
 
 
 def run(ctx: StepContext, search: Search) -> None:

@@ -35,7 +35,8 @@ def candidates(ranked: list[Candidate]) -> list[Candidate]:
 
 
 def run(ctx: StepContext, inp: FitIn) -> FitOut:
-    """Ask the model about the candidates in batches of BATCH and return a verdict per person it answered for.
+    """Ask the model about the candidates in batches of BATCH and return a verdict per person it answered for;
+    unsure names the people it sent and got no verdict for.
 
     No call for chips stored before version 2 or without a candidate. A failed batch adds nothing and names its error
     in the note; when every batch failed, the first error is raised, except a run of missing recordings, which gives
@@ -74,4 +75,5 @@ def run(ctx: StepContext, inp: FitIn) -> FitOut:
             if 1 <= row.n <= len(batch):
                 verdicts.setdefault(batch[row.n - 1].person_id, row.fit)
     notes = [f"batch {n} failed: {type(a).__name__}: {a}" for n, a in enumerate(answers, 1) if isinstance(a, Exception)]
-    return FitOut(verdicts=verdicts, note="; ".join(notes))
+    unsure = [c.person_id for c in people if c.person_id not in verdicts]
+    return FitOut(verdicts=verdicts, unsure=unsure, note="; ".join(notes))
