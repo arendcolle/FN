@@ -48,8 +48,8 @@ class ScoutTest(unittest.TestCase):
         return {k: answer for k in scout.angles(chips)}
 
     def test_the_angles_depend_on_the_tie_chip(self):
-        """A must tie gives four angles, a wished tie six, no tie chip four."""
-        self.assertEqual(scout.angles(MUST), ["press", "lists", "born", "place_tied"])
+        """A must tie gives six angles, a wished tie six, no tie chip four."""
+        self.assertEqual(scout.angles(MUST), ["press", "born", "place_tied", "chambers", "alumni", "firms"])
         self.assertEqual(scout.angles(WISH), ["press", "lists", "born", "place", "speakers", "boards"])
         self.assertEqual(scout.angles(NO_TIE), ["place", "speakers", "boards", "lists"])
 
@@ -106,8 +106,7 @@ class ScoutTest(unittest.TestCase):
     def test_every_angle_failing_raises_the_first_error(self):
         """When no angle answered, the first angle's error is raised so the step ends in error."""
         with self.assertRaises(TimeoutError) as raised:
-            self.find(MUST, {"press": TimeoutError("first"), "lists": ValueError("second"), "born": ValueError("third"),
-                             "place_tied": ValueError("fourth")})
+            self.find(MUST, self.every(MUST, ValueError("later")) | {"press": TimeoutError("first")})
         self.assertEqual(str(raised.exception), "first")
 
     def test_every_angle_missing_its_recording_gives_a_note_and_no_error(self):
@@ -120,8 +119,7 @@ class ScoutTest(unittest.TestCase):
     def test_a_mix_of_missing_recordings_and_another_error_raises(self):
         """The note is only for all-missing recordings; a mix with a real error still raises."""
         with self.assertRaises(FixtureMissing):
-            self.find(MUST, {"press": FixtureMissing("x"), "lists": RuntimeError("y"), "born": RuntimeError("y"),
-                             "place_tied": RuntimeError("y")})
+            self.find(MUST, self.every(MUST, RuntimeError("y")) | {"press": FixtureMissing("x")})
 
     def test_fn_scout_turns_the_setting_off_only_for_0_or_false(self):
         """FN_SCOUT unset keeps the lane on; 0 and false turn it off; any other text keeps it on."""
