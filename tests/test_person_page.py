@@ -242,7 +242,7 @@ class PersonPageTest(unittest.TestCase):
         twin = self.person("Ada Example", "ada-2", member=False)
         self.claim(twin, "topic", "Wind energy")
         html = self.page(twin)
-        self.assertIn(f'Same name as <a href="/people/{ada}">Ada Example</a> in your network', html)
+        self.assertIn(f'Same name as <a href="/people/{ada}?back=%2Fpeople%2F{twin}">Ada Example</a> in your network', html)
         self.assertEqual(re.findall(r'class="fn-btn fn-btn--quiet text-control">([^<]+)<', html),
                          ["Same person", "Add as new", "Skip"])
         self.assertEqual(self.post(f"/people/{ada}/merge", other=twin, next=f"/people/{ada}"), f"/people/{ada}")
@@ -255,7 +255,8 @@ class PersonPageTest(unittest.TestCase):
         card = person_card(PersonView(person_id=ada, name="Ada Example"), "s1")
         self.assertIn(f'<h3 class="fn-card__name text-name"><a href="/people/{ada}?search=s1&amp;from=card">'
                       'Ada Example</a></h3>', card)
-        self.assertIn(f'<a href="/people/{ada}?from=row">Ada Example</a>', self.client.get("/people").text)
+        self.assertIn(f'<a href="/people/{ada}?from=row&amp;back=%2Fpeople%23person-1">Ada Example</a>',
+                      self.client.get("/people").text)
 
 
 if __name__ == "__main__":

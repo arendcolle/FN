@@ -39,7 +39,28 @@ ImportSummary
 - Follows: GOV.UK check answers in patterns (button named after its action, "nothing is done until you confirm"), "An upload-and-import form with a preview" in principles (commit button carries the count, say what happens and how to undo before the click), HubSpot in patterns (blank cells clear nothing) and D7 (unticked boxes with a header box).
 - Left out: a column mapping step (D3), a progress bar (files of a few hundred rows finish in one request), and Undo of the whole import, which no decision defines.
 
+BackLink
+- Task: return from a person, a source or a match to exactly where you were, and walk a list one person at a time (U1, U2).
+- Follows: GOV.UK Back link (return to the previous page in the state last seen) and the A1 and A3 options in `notes/quality2/research/ux-patterns.md`, with Greenhouse's Previous and Next on a profile opened from search. The walk line counts the whole list ("4 of 143"), as the lead ruled.
+- Left out: breadcrumbs, a side panel, keyboard shortcuts and a back link when the origin is unknown.
+
+SummaryList
+- Task: read who a person is at a glance before reading the facts (U3).
+- Follows: GOV.UK summary list (a `dl` of key and value) and B1 in ux-patterns.md (summary first, sections second, two levels of disclosure). Rows reuse the contact rows' `rule` lines and key column, and stack under 900px.
+- Left out: "Works at" and "Based in" (the head already shows them), source links (each row repeats a sourced fact below) and actions.
+
 ## Changed parts
+
+Round 11 (UI-0, the quality2 round):
+
+- Profile. Task: decide on one person in seconds, then check the facts (U3, U4). Follows: B1 in ux-patterns.md and NN/g progressive disclosure: head, a quiet why block, the summary, then sections. Section headings are `text-title` over a `rule-strong` line, `space-12` apart, because the owner found today's `text-label` headings did not read as headings. "Found as" becomes "Sources" with "Not this person" on every record but the page's own. Leaves out: "Not provided" for Places, sections whose facts all stand in the summary, tabs and a side panel.
+- Claim. Task: read a fact in one line and check its proof without leaving the page (U5, U8). Follows: C1 in ux-patterns.md (Wikidata's collapsed references, GOV.UK details): the source name after the fact is the `summary` of an inline `details`, so the proof opens under the line and the line and "Not correct" stay put. Leaves out: footnote numbers, hover previews, a marker triangle, "date unknown", and the quote shown by default.
+- Quote. Task: see the words that prove a fact, not the page around them (U5). Follows: Wikipedia's reference preview (one reference, short). At most 25 words around the matched words. Leaves out: quotes on cards, quotes over 25 words, and page debris.
+- PersonCard. Task: decide Add or Skip from the list (U7). Follows: D1 in ux-patterns.md (one reason with its source next to it, NN/g explainable AI) and the lead's ruling on the second line (tie and place fit in words, since the headings say topic and tie). Leaves out: the quote, the ties line, the "Matches:" line and any tier or grade.
+- SectionHeading. Task: see at once how well each group of people fits (R4). Follows: the existing heading with a count, repeated per tier. Leaves out: a new class and tier numbers.
+- SourceText. Task: check a source in words, not raw record lines (U6). Follows: the source-page fix in ux-patterns.md (back link, one sentence, original link, raw record behind a disclosure). Leaves out: the raw record shown by default.
+- MapMarker. Task: reach the people at one place with the keyboard, and open the map on the people shown (U9). Follows: MapLibre's own clustering and native buttons. Leaves out: focusable single dots (their cards are in the list).
+- Header. Task: know which part of FN you are in from a person or source page. Search is current whenever the address carries a search. Leaves out: a third link.
 
 - PersonCard: the database statement replaces raw record lines that today show as quotes (design.md, "What works today"). Same person and Add as new are both quiet, because D5 says nothing is preselected. The match line stays after the choice, so the card keeps its height. A card without a place says nothing about it, because the count line already gives the number (D15). The why line names the matching words and the evidence is the fact that holds them, so staff see why a person is listed ("Show where each fact came from" in principles). "Combined from 2 records" is the one record count a card shows, a link to where staff split a record off.
 - NetworkRow: the "new facts" mark is an outlined word, not a dot, because a dot that never clears teaches users to ignore it and colour alone fails (patterns, section 6). Rows align their text with the filter box's text.
@@ -67,6 +88,12 @@ ImportSummary
 - Import preview: the summary in a reading column, the rows table at full width under it.
 - All searches: the recent-searches list without the cap.
 
+## Pages, round 11
+
+- Person, v11 (`preview/page-person-v11.html`): a person opened from a search, combined from 2 records, with one proof open and one removed fact.
+- Source, v11 (`preview/page-source-v11.html`): the readable page for a web page source, stored record closed.
+- Results, v11 (`preview/page-results-v11.html`): the results mockup with the new cards under two of the tier headings.
+
 ## Where I depart from a written decision
 
 1. **Count arithmetic in the import summary.** The brief's example ("12 new people", "3 already", "2 same name", "1 row skipped", "Import 15 people") does not add up whichever way the same-name rows count. I used 10 + 3 + 2 = 15 imported and 1 skipped from 16 rows, and the button counts new, already-in and same-name rows.
@@ -75,6 +102,10 @@ ImportSummary
 4. **"organization", not "organisation".** The filter placeholder uses the US spelling to match the CSV column name and the rest of the UI.
 5. **README's "What staff never see".** It banned "the per-record breakdown of a person". D5's "Found as" lists a person's records with a fact count. I reworded the rule so Found as is the one allowed place, and kept the ban on per-record scores and "same name in N records".
 6. **The site's popup markup changes.** `bundle.css` no longer has `.fn-popup__role + .fn-popup__name`. The new popup wraps each person in `fn-popup__person`, so `map.js` must emit that wrapper when `fn.css` becomes a byte copy, or a shared dot's names run together.
+7. **Person page section headings are `text-title`, not `text-label`.** The task keeps `h2.fn-section` markup; the owner said the person page's sections are not clear and its headings do not read as headings. A 13px label over one-line facts did not separate them in the screenshots; `text-title` over a `rule-strong` line does. The results headings and the why block keep `text-label`.
+8. **The why block's first line drops the source name.** The card's reason line ends with its source; on the person page the same fact stands with its source in a section below, so the why block keeps the words only.
+9. **A record's proof keeps "Original page" unless its url starts with `fn:`.** The task's sentence can be read as "every record has no Original page". An OpenAlex or LinkedIn record has a real url, so I kept the link there and dropped it only for `fn:` urls.
+10. **Claim rows are tighter.** `fn-claim` padding goes from `space-4` to `space-3`, because a claim is now one line. The site's quote-style claims get the same padding until UI-4.
 
 ## Decisions I think are wrong for staff
 

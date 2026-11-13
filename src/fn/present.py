@@ -370,6 +370,27 @@ def results(store: Store, search: Search, today: date, shown: int = RESULTS_STEP
                        next_key=next_key, order=[(v.person_id, c.person_id) for c, v in kept])
 
 
+def shown_for(position: int, shown: int) -> int:
+    """The shown count that holds the card at the 1-based position: shown itself, else the next multiple of 20."""
+    return shown if position <= shown else -(-position // RESULTS_STEP) * RESULTS_STEP
+
+
+def walk(store: Store, search: Search, key: str) -> tuple[int, int, tuple[str, str] | None, tuple[str, str] | None] | None:
+    """The card's 1-based place among the kept people who are not skipped, the size of that list and the
+    (person id, card key) before and after it; None when the key is not in the list.
+
+    The list is the one results().order gives, built without the person views.
+    """
+    kept = [c for c in store.list_candidates(search.id, kept_only=True) if not is_skipped(store, c)]
+    firsts = [identity.on_card(store, c)[0] for c in kept]
+    canonical = store.canonical_ids(firsts)
+    order = [(canonical[first], c.person_id) for first, c in zip(firsts, kept)]
+    at = next((n for n, (_, found) in enumerate(order) if found == key), None)
+    if at is None:
+        return None
+    return at + 1, len(order), order[at - 1] if at else None, order[at + 1] if at + 1 < len(order) else None
+
+
 def network_view(store: Store, flt: NetworkFilter, limit: int | None, today: date) -> NetworkView:
     """The filtered network: views of the first limit people, the total and how many of all of them have no place.
 

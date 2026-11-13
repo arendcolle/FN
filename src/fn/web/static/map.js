@@ -68,6 +68,11 @@ function start() {
     return p.shown === false;
   }
 
+  // A results person carries the link with the search, the shown count and the card; a network person comes back here.
+  function profile(p) {
+    return p.profile || `${p.href}?from=popup&back=${encodeURIComponent(location.pathname + location.search)}`;
+  }
+
   function line(tag, className, text, href) {
     const node = document.createElement(tag);
     node.className = className;
@@ -83,7 +88,7 @@ function start() {
     if (people.length > 1) box.append(line("span", "fn-popup__count text-label", `${people.length} people here`));
     for (const p of people) {
       const person = line("div", "fn-popup__person", "");
-      person.append(line("a", "fn-popup__name text-popup", p.name, p.href));
+      person.append(line("a", "fn-popup__name text-popup", p.name, profile(p)));
       const job = [p.role, p.employer].filter(Boolean).join(", ");
       if (job) person.append(line("span", "fn-popup__role text-small", job));
       if (people.length === 1 && p.place) person.append(line("span", "fn-popup__role text-small", p.place));
@@ -91,7 +96,7 @@ function start() {
         person.append(line("span", "fn-popup__new fn-new text-meta-strong", `${p.new_facts} new ${p.new_facts === 1 ? "fact" : "facts"}`));
       }
       if (people.length === 1 && unshown(p)) person.append(line("a", "fn-popup__open text-small", "Show in list", p.list));
-      else if (people.length === 1) person.append(line("a", "fn-popup__open text-small", "Open profile", p.href));
+      else if (people.length === 1) person.append(line("a", "fn-popup__open text-small", "Open profile", profile(p)));
       box.append(person);
     }
     // Centred on the marker, the popup fits beside it on a phone-wide map.
@@ -137,7 +142,8 @@ function start() {
       const index = atPoint.get(key);
       const id = feature.properties.id;
       const listed = data.list?.[id];
-      const person = listed ? {...feature.properties, shown: listed.shown, list: listed.href} : feature.properties;
+      const person = listed ? {...feature.properties, shown: listed.shown, list: listed.href, profile: listed.profile}
+        : feature.properties;
       if (!spots[index].people.some((p) => p.id === id)) spots[index].people.push(person);
       if (!spotsOf.has(id)) spotsOf.set(id, new Set());
       spotsOf.get(id).add(index);

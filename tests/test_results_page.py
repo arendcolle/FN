@@ -21,8 +21,8 @@ from fn.worker import now
 from tests.helpers import StubHttp, StubLLM, make_db, make_settings
 
 ROOT = Path(__file__).resolve().parent.parent
-# sha256 of components/bundle.css in version 10 of the design system.
-BUNDLE_SHA = "9aefbb76b8d12efcb9aadcb7c24686256ae2edada52d1d9b38647f01c6914afe"
+# sha256 of components/bundle.css in version 11 of the design system.
+BUNDLE_SHA = "4f1a844883605813c3dd6c1e0faf0b156f2618607965ac516bf6094b5c41da81"
 YEAR = str(now().year)
 
 
@@ -138,7 +138,8 @@ class ResultsPageTest(unittest.TestCase):
         network.merge(self.store, [merged], cas, now=now())
         self.search([([ada, twin], []), ([bea], []), ([cas, merged], [])])
         html = self.page()
-        self.assertIn(f'<p class="fn-card__combined text-small"><a href="/people/{ada}#matches">Combined from 2 records'
+        self.assertIn(f'<p class="fn-card__combined text-small"><a href="/people/{ada}?search=s1&card={ada}&from=card#matches">'
+                      'Combined from 2 records'
                       '</a></p>', self.card(html, ada))
         self.assertNotIn("Combined from", self.card(html, bea))
         self.assertNotIn("Combined from", self.card(html, cas))

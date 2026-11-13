@@ -7,9 +7,11 @@ This list holds every user-facing string the new and changed parts introduce, gr
 - Header links: "Search", "Network"
 - List/Map switch links: "List", "Map"
 - Map popup, one person: `{name}`, `{role}, {employer}`, `{place}`, "`{n}` new facts" or "1 new fact", "Open profile"; on results, a person not among the shown cards ends with "Show in list" instead
-- Map popup, shared dot: "`{n}` people here", then per person `{name}`, `{role}, {employer}`, "`{n}` new facts"
+- Map count marker, accessible name: "`{n}` people near `{city}`", or "`{n}` people here" when nobody has a place text
+- Map popup, count marker: "`{n}` people near `{city}`" or "`{n}` people here", then per person `{name}`, `{role}, {employer}`, "`{n}` new facts"
+- Back link: "Back to the results for “`{question, cut at 60 characters}…`”", "Back to your network", "Back to `{person name}`". No origin known: no back link
 - Undo refused (Banner, failed): "This could not be undone, because `{name}` changed since." with "Open profile"
-- A missing place: no words. The role line ends after the employer
+- A missing place: no words on the role line, which ends after the employer
 
 ## Home
 
@@ -34,10 +36,10 @@ This list holds every user-facing string the new and changed parts introduce, gr
 - Done with a source that could not be read: "Some sources could not be read, so this list may be incomplete." and the button "Search again"
 - Stopped after finding people: "This search stopped before it finished." and the button "Run again"
 - Stopped before finding anyone (Notice): title "This search stopped", text "FN ran into a problem before it found anyone. Your question is kept, so Try again runs it once more.", button "Try again"
-- Card evidence from a record: "`{relation}` `{organization}`, `{years}`" with the citation "`{source label}`, `{date}`", for example "Studied at KU Leuven, 2012–2017" and "OpenAlex record, 2025"
-- Card evidence from a paper: "Paper: `{title}`, `{year}`" with the citation "OpenAlex work, `{year}`"
-- Why line: "Matches: `{words}`", then " · Place from the employer" when the place is the employer's city; "Based in `{city}`" for a person listed for their place alone
-- Combined line: "Combined from `{n}` records", a link to Possible matches on the profile
+- Headings, in order, each followed by its count: "In your network", "Topic and a tie to Flanders", "Topic, no known tie", "Tie, topic not confirmed", "Other people found". A search stored before this round: "New"
+- Card reason line: "`{reason, from a stored fact}` · `{source short name}`", at most 15 words with the source, for example "Builds 6G channel models at Columbia · columbia.edu"
+- Card second line: "`{tie in words}` · `{place fit}`". Tie: for example "Studied at Ghent University", or "No known tie to Flanders". Place fit: "in `{city or state}`", "elsewhere in the US", "place unknown"
+- Combined line: "Combined from `{n}` records", a link to Sources on the person page
 - Same name: "Same name as `{name}` in your network", buttons "Same person", "Add as new", "Skip"
 - After Same person: "Added to your network", "· same person as `{name}`", "Undo"
 - After Add as new: "Added to your network", "· as a new person", "Undo"
@@ -60,23 +62,38 @@ This list holds every user-facing string the new and changed parts introduce, gr
 
 ## Person
 
-- Back link, when reached from a result: "Back to the results for “`{question, cut at 60 characters}…`”"
-- In the network: "In your network since `{d Month yyyy}`" with "Remove"
-- After Remove (Banner): "`{name}` removed from your network." with "Undo"
+- Back link, opened from a search: "Back to the results for “`{question, cut at 60 characters}…`”"; from the Network list: "Back to your network"; from another person's page: "Back to `{person name}`"
+- Walk line, opened from a search: "`{position}` of `{total}`", "Previous", "Next", joined by " · ". The first person has no Previous, the last no Next
+- Head, opened from a search whose card combines records: "Combined from `{n}` records", a link to Sources
+- In the network: "In your network since `{d Month yyyy}`" with "Remove from network"
+- After Remove from network (Banner): "`{name}` removed from your network." with "Undo"
 - Not in the network: "Add", "Skip". With a same-name network person: "Same name as `{name}` in your network", "Same person", "Add as new", "Skip"
 - After Add: "Added to your network", "Undo"
-- Group headings: "Contact", "Ties to Belgium", "Work", "Places", "Found as", "Possible matches"
-- Places without a place: "Not provided"
-- Fact from a paper: "Paper: `{title}`, `{year}`"
+- Why block heading: "Why for this search". Lines: the card's reason line, the tie in words or "No known tie to Flanders", the place words ("In `{city}`", "Elsewhere in the US", "Place unknown")
+- Summary keys: "Studied", "Tie to Flanders", "Contact". Contact value: "`{email}` · `{phone}`", or "Not found"
+- Section headings: "Work", "Education", "Ties to Flanders and Belgium", "Places", "Contact", "Sources", "Possible matches"
+- Under a section of more than three facts: "Show `{n}` more"
+- Fact: "`{relation}` `{organization or place}`, `{years}`", then the source's short name. Relations: "Works at", "Worked at", "Studied at", "Member of", "Fellow of", "Lives in", "Born in". A fact from a paper: "Paper: `{title}`, `{year}`"
+- Source name, accessible name: "Source for `{fact}`: `{source short name}`"
+- Opened proof: the quote, at most 25 words, then "`{page title}`, `{Month yyyy}` · Original page". No date: "`{page title}` · Original page". A record: "`{source label}`, `{year}` · Original page"; a url that starts with `fn:`: "`{source label}`, `{d Month yyyy}`"
+- Fact: "New", "Not correct". After Not correct: "`{fact}`", "· Removed", "Undo"
 - Contact kinds: "Email", "Phone". Empty value: "Not provided". Link: "Edit"
 - Contact citations: "From import `{file name}`, row `{n}`, `{d Month yyyy}`", "Entered in FN, `{d Month yyyy}`"
 - Contact edit: "Save", "Cancel". After Save: "Saved", "Undo"
 - Contact errors: "Enter an email address like name@example.org.", "Enter a phone number with at least 7 digits."
-- Fact: "New", "Remove". After Remove: "`{fact}`", "· Removed", "Undo"
-- Found as: "`{source label}`", "· `{n}` facts" or "· 1 fact", "Not this person". After: "`{source label}` · Separated", "Undo"
+- Sources: "`{source label}`", "· `{n}` facts" or "· 1 fact", "Not this person" on every record but the page's own. After: "`{source label}` · Separated", "Undo"
 - Source labels: "OpenAlex record", "OpenAlex work", "LinkedIn record", "Import `{file name}`, row `{n}`", "Entered in FN", or the site's host name
 - Possible matches note: "These have the same name, but nothing in FN links them to this person for sure."
 - Possible match buttons: "Same person", "Different person". After: "Merged into this profile" or "Marked as a different person", with "Undo"
+
+## Source
+
+- Back link: "Back to `{person name}`"
+- Title: `{person name}`; opened without a fact: `{source label}`
+- Sentence: "The page says: `{fact}`." for a web page; "The record lists: `{fact}`." for a record, an import or an entry in FN
+- Passage: about 60 words each side of the quote, "…" at a cut end
+- Link: "Open the original page", left out for `fn:` urls
+- Disclosure: "Show the stored record"
 
 ## Import
 

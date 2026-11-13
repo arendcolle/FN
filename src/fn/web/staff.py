@@ -3,7 +3,7 @@ with its decisions, the import pages, the CSV export and the source page."""
 import email.policy
 import re
 from email.parser import BytesParser
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -11,9 +11,11 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fn import exporter, identity, importer, network
 from fn.contracts import (
     IMPORT_COLUMNS,
+    BackLink,
     Candidate,
     Claim,
     ImportPreview,
+    ListPlace,
     NetworkFilter,
     Search,
     Source,
@@ -22,6 +24,7 @@ from fn.contracts import (
 from fn.present import (
     RESULTS_STEP,
     card,
+    cut,
     geo,
     label_of,
     network_view,
@@ -29,12 +32,15 @@ from fn.present import (
     plural,
     profile,
     results,
+    shown_for,
     sources_read,
+    walk,
 )
 from fn.store import Store, fold
 from fn.web.html import Safe, h, page
 from fn.web.parts import (
     NETWORK_STEP,
+    back_line,
     banner,
     contact_block,
     count_line,
@@ -53,6 +59,7 @@ from fn.web.parts import (
     network_row,
     nobody_matches,
     notice,
+    person_href,
     possible_block,
     profile_banner,
     profile_head,
@@ -98,13 +105,14 @@ def network_block(store: Store, flt: NetworkFilter, limit: int, view: str, home:
     everyone = store.list_network(NetworkFilter(), 0)[1] if filtered and not found.total else found.total
     import_name = (store.import_filename(flt.import_id) or flt.import_id) if flt.import_id else None
     path = "/" if home else "/people"
+    here = network_href(flt, limit, view, path)
     if not everyone:
         rows = [empty_network(home)]
     elif not found.total:
         rows = [filter_bar(flt, 0, 0, "/people", import_name), nobody_matches(flt, import_name, everyone)]
     else:
         rows = [filter_bar(flt, found.total, found.not_on_map, "/people", import_name, found.new_facts),
-                [network_row(v, n) for n, v in enumerate(found.people, 1)],
+                [network_row(v, n, here) for n, v in enumerate(found.people, 1)],
                 show_more(found.shown, found.total, network_href(flt, limit + NETWORK_STEP, view))]
     views = [h.a(name.title(), href=network_href(flt, limit, name, path), data_view=name,
                  aria_current="page" if name == view else None) for name in ("list", "map")]
@@ -164,7 +172,7 @@ def person_cards(store: Store, search: Search, shown: int, show_skipped: bool, v
         return [], False, facts
     counts = {"network": len(found.network), "new": len(found.new)}
     sections = [[h.h2(title, " ", h.span(f"{counts[section]:,}"), class_="fn-section text-label"),
-                 [result_card(c, search.id, here) for c in group]]
+                 [result_card(c, search.id, here, shown) for c in group]]
                 for section, title in SECTIONS.items() if (group := [c for c in found.cards if c.section == section])]
     count = None if active else count_line(found.total, found.not_on_map,
                                            [h.a("Export", href=f"/searches/{search.id}/export.csv")] if found.total else [])
@@ -229,29 +237,36 @@ def search_page(store: Store, search: Search, view: str = "list", shown: int = R
 def geo_features(store: Store, search: Search, shown: int = RESULTS_STEP) -> dict:
     """GeoJSON of the search's people who are not skipped: one point per person with a place with coordinates.
 
-    It also says, per person, whether the first shown cards hold them and the list link that opens at their card.
+    It also says, per person, whether the first shown cards hold them, the list link that opens at their card and
+    the link to their page.
     """
     found = results(store, search, now().astimezone().date(), shown=0)
     listed: dict[str, dict] = {}
     # A person behind two cards links to the first of them.
     for n, (person, key) in enumerate(found.order):
-        listed.setdefault(person, {"shown": n < shown,
-                                   "href": f"/searches/{search.id}?shown={(n // RESULTS_STEP + 1) * RESULTS_STEP}#card-{key}"})
+        listed.setdefault(person, {
+            "shown": n < shown, "href": f"/searches/{search.id}?shown={(n // RESULTS_STEP + 1) * RESULTS_STEP}#card-{key}",
+            "profile": person_href(person, search.id, shown_for(n + 1, shown), key, "popup")})
     return geo(found.network + found.new, listed)
 
 
-def source_page(source: Source, claim: Claim | None) -> str:
-    """The source's text with the claim's quote marked; an import or staff source shows its label and no link."""
+def source_page(source: Source, claim: Claim | None, back: BackLink | None = None) -> str:
+    """The source's text with the claim's quote marked; an import or staff source shows its label and no link.
+
+    back is the link to the page it was opened from, shown above the title.
+    """
     text, own = source.text, source.kind in ("import", "staff")
     body = [text[:claim.quote_start], h.mark(claim.quote, id="quote"), text[claim.quote_end:]] if claim else text
     return page(
         "Source",
         h.div(
+            back_line(back, None),
             h.h1(label_of(source) if own else source.title or source.url, class_="fn-source__title text-title"),
             None if own else h.p(h.a(source.url, href=source.url), class_="fn-source__url text-small"),
             h.pre(body, class_="fn-source__text text-body"),
             class_="fn-source",
         ),
+        current="search" if leads_to_search(back) else None,
     )
 
 
@@ -342,11 +357,14 @@ def get_search(request: Request, search_id: str) -> Search:
     return found
 
 
+def shown_of(raw: str) -> int:
+    """A shown count from a query: a positive number of at most six digits, else 20."""
+    return int(raw) if raw.isascii() and raw.isdigit() and len(raw) <= 6 and int(raw) > 0 else RESULTS_STEP
+
+
 def results_query(request: Request) -> tuple[int, bool]:
     """?shown= (a positive number, else 20) and ?skipped=1 of a results request."""
-    raw = request.query_params.get("shown", "")
-    shown = int(raw) if raw.isascii() and raw.isdigit() and len(raw) <= 6 and int(raw) > 0 else RESULTS_STEP
-    return shown, request.query_params.get("skipped") == "1"
+    return shown_of(request.query_params.get("shown", "")), request.query_params.get("skipped") == "1"
 
 
 def results_page(request: Request, search_id: str, view: str) -> HTMLResponse:
@@ -425,7 +443,8 @@ async def card_action(request: Request, search_id: str, person_id: str, action: 
     here = local_path(form.get("next", [""])[0]) or ""
     here = here if here.split("?")[0] in (f"/searches/{search_id}", f"/searches/{search_id}/map") else f"/searches/{search_id}"
     if request.headers.get("x-requested-with") == "fetch":
-        return HTMLResponse(result_card(card(store, candidate, now().astimezone().date()), search_id, here))
+        shown = shown_of(parse_qs(urlsplit(here).query).get("shown", [""])[0])
+        return HTMLResponse(result_card(card(store, candidate, now().astimezone().date()), search_id, here, shown))
     return RedirectResponse(f"{here}#card-{person_id}", 303)
 
 
@@ -460,8 +479,8 @@ def get_source(request: Request, source_id: str, claim: str) -> tuple[Source, Cl
 
 
 @router.get("/sources/{source_id}")
-async def show_source(request: Request, source_id: str, claim: str = "") -> HTMLResponse:
-    return HTMLResponse(source_page(*get_source(request, source_id, claim)))
+async def show_source(request: Request, source_id: str, claim: str = "", back: str = "") -> HTMLResponse:
+    return HTMLResponse(source_page(*get_source(request, source_id, claim), back_link(store_of(request), back)))
 
 
 def local_path(value: str) -> str | None:
@@ -472,9 +491,62 @@ def local_path(value: str) -> str | None:
     return value if not parts.scheme and not parts.netloc else None
 
 
+MAX_BACK = 2000
+BACK_PATH = re.compile(r"/(?:people(?:/[^/]+)?|searches/[^/]+(?:/map)?)?")
+
+
+def leads_to_search(back: BackLink | None) -> bool:
+    return bool(back and back.href.startswith("/searches/"))
+
+
+def back_link(store: Store, value: str) -> BackLink | None:
+    """The link back to a page of this site named by value: your network, a person or a search's results.
+
+    None for a value that is not a local path of those forms, is longer than 2,000 characters or names an unknown
+    person or search; a person merged since reads by their canonical name.
+    """
+    if len(value) > MAX_BACK or not local_path(value):
+        return None
+    path = urlsplit(value).path
+    if not BACK_PATH.fullmatch(path):
+        return None
+    kind, _, rest = path.strip("/").partition("/")
+    if kind == "searches":
+        found = store.get_search(rest.removesuffix("/map"))
+        return BackLink(label=results_label(found), href=value) if found else None
+    if kind == "people" and rest:
+        canonical = store.canonical_ids([rest]).get(rest)
+        return BackLink(label=f"Back to {store.get_persons([canonical])[canonical].display_name}", href=value) if canonical else None
+    return BackLink(label="Back to your network", href=value)
+
+
+def results_label(search: Search) -> str:
+    return f"Back to the results for “{cut(search.question, 60)}”"
+
+
+def search_back(search: Search, shown: int, key: str) -> BackLink:
+    """The link to the search's results at the shown count and the card the page was opened from."""
+    anchor = f"#card-{quote(key, safe='')}" if key else ""
+    return BackLink(label=results_label(search), href=results_href(search.id, shown, False) + anchor)
+
+
+def list_place(store: Store, search: Search, shown: int, key: str) -> ListPlace | None:
+    """The card's place in the search's list with the links to the people before and after it."""
+    if not (found := walk(store, search, key)):
+        return None
+    position, total, before, after = found
+
+    def href(step: tuple[str, str] | None, at: int) -> str | None:
+        return person_href(step[0], search.id, shown_for(at, shown), step[1], "card") if step else None
+
+    return ListPlace(position=position, total=total, previous=href(before, position - 1), next=href(after, position + 1))
+
+
 def person_here(person_id: str, params: dict[str, str]) -> str:
-    """The Person page's path with the query that keeps its state: the search it came from and every fact shown."""
-    query = urlencode({k: v for k, v in (("search", params.get("search")), ("all", params.get("all"))) if v})
+    """The Person page's path with the query that keeps its state: the search, shown count and card it was opened
+    from, the page it returns to and every fact shown."""
+    keys = ("search", "shown", "card", "back", "all")
+    query = urlencode({k: params[k] for k in keys if params.get(k)})
     return f"/people/{person_id}?{query}" if query else f"/people/{person_id}"
 
 
@@ -486,17 +558,20 @@ def person_page(store: Store, person_id: str, params: dict[str, str], error: str
     """
     view = profile(store, person_id, now().astimezone().date())
     here = person_here(person_id, params)
-    search = store.get_search(params["search"]) if params.get("search") else None
+    search = store.get_search(params.get("search", ""))
+    shown, key = shown_of(params.get("shown", "")), params.get("card", "")
+    back = search_back(search, shown, key) if search else back_link(store, params.get("back", ""))
+    place = list_place(store, search, shown, key) if search and key else None
     edit = edit or (params.get("edit") if params.get("edit") in CONTACT_KINDS else None)
     member = view.person.status == "in_list"
     text = page(
         view.person.name,
         profile_banner(view, params.get("undo") == "refused", here),
-        h.main(h.div(profile_head(view, search, here),
+        h.main(h.div(profile_head(view, back, place, here),
                      contact_block(view, here, edit, error, typed) if member else None,
                      fact_groups(view, here, params.get("all") == "1"), found_as_block(view, here),
                      possible_block(view, here), class_="fn-column"), class_="fn-page"),
-        current="network",
+        current="search" if leads_to_search(back) else "network",
     )
     if member:
         network.mark_seen(store, person_id, now=now())
@@ -607,7 +682,7 @@ async def reject(request: Request, claim_id: str) -> Response:
         raise HTTPException(404, "No such fact")
     if claim.rejected_at is None:
         network.reject_claim(store, claim_id, now=now())
-    return back_to(form, f"/people/{canonical_of(store, claim.person_id)}")
+    return back_to(form, f"/people/{canonical_of(store, claim.person_id)}#claim-{claim_id}")
 
 
 @router.post("/events/{event_id}/undo")
