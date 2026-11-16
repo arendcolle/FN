@@ -14,6 +14,7 @@ from fn.contracts import (
     Candidate,
     CardFit,
     CardView,
+    Chips,
     Claim,
     ClaimView,
     ContactView,
@@ -64,6 +65,8 @@ DONE = {"add": "Added to your network", "skip": "Skipped", "edit_contact": "Save
         "not_same": "Marked as a different person"}
 RESULTS_STEP = 20
 HEADINGS = {1: "Topic and a tie to Flanders or Belgium", 2: "Topic, no known tie", 3: "Tie, topic not confirmed", 4: "Other people found"}
+ASIDE_HEADINGS = {"outside": "Outside the area asked for", "abroad": "Outside the US", "unfit": "Work does not match the question"}
+UNFIT_LINE = "The fit check says this work does not match the question"
 WORK = "OpenAlex work "
 UNKNOWN_DATE = "date unknown"
 QUOTE_WORDS = 25
@@ -571,8 +574,19 @@ def person_views(store: Store, groups: list[list[str]], today: date, matched: li
 
 
 def heading_of(candidate: Candidate) -> str:
-    """The heading the candidate's tier stands under in the new section; the candidate must have a tier."""
+    """The heading the candidate stands under in the new section: its aside group, else its tier's; the candidate
+    must have a tier."""
+    if candidate.aside:
+        return ASIDE_HEADINGS[candidate.aside]
     return HEADINGS[rank.heading(candidate.tier, candidate.fit.tie_grade if candidate.fit else "none")]
+
+
+def is_open(candidate: Candidate, chips: Chips | None) -> bool:
+    """Whether the candidate stands in the open list the count and the map read: always on chips before version 2,
+    else a network person, one without a tier, or one not set aside under headings 1 to 3."""
+    if chips is None or chips.version < 2 or candidate.section == "network" or candidate.tier is None:
+        return True
+    return candidate.aside is None and rank.heading(candidate.tier, candidate.fit.tie_grade if candidate.fit else "none") <= 3
 
 
 def results_headings(candidates: list[Candidate], skipped: list[bool], shown: list[str]) -> list[ResultsHeading]:
@@ -665,12 +679,30 @@ def fit_words(candidate: Candidate, view: PersonView) -> str | None:
     return " · ".join(p for p in parts if p) or None
 
 
+def place_reason(store: Store, candidate: Candidate, today: date) -> ReasonView | None:
+    """The card's place fact, the one the ranker read, as a reason line; None when the card has no located place."""
+    claims = store.claims_of(identity.on_card(store, candidate))
+    facts = store.get_orgs(list({c.org_id for c in claims if c.org_id}))
+    by_id = {c.id: c for c in claims}
+    if (place := ev.shown(places(claims, facts, today), by_id)) is None:
+        return None
+    claim = by_id[place.claim_id]
+    source = store.get_sources([claim.source_id])[claim.source_id]
+    view = claim_view(claim, source, facts.get(claim.org_id or ""))
+    return reason_of(view, view.href)
+
+
 def card_view(store: Store, search: Search, candidate: Candidate, view: PersonView, skipped: bool,
               today: date) -> CardView:
-    """The candidate's card: its state from the people's status now, the same-name network person and the Undo."""
-    base = {"key": candidate.person_id, "section": candidate.section, "person": view,
-            "reason": reason_of(view.evidence, view.evidence.href) if view.evidence else None,
-            "fit": fit_words(candidate, view)}
+    """The candidate's card: its state from the people's status now, the same-name network person and the Undo.
+
+    An outside or abroad card's reason line is its place fact; an unfit card's second line is UNFIT_LINE.
+    """
+    reason = reason_of(view.evidence, view.evidence.href) if view.evidence else None
+    if candidate.aside in ("outside", "abroad"):
+        reason = place_reason(store, candidate, today)
+    base = {"key": candidate.person_id, "section": candidate.section, "person": view, "reason": reason,
+            "fit": UNFIT_LINE if candidate.aside == "unfit" else fit_words(candidate, view)}
     event = latest(store, view.person_id)
     if skipped:
         undo = LastView(event_id=event.id, kind="skip", words=DONE["skip"]) if event and event.kind == "skip" else None
@@ -703,10 +735,10 @@ def why_view(store: Store, search: Search, candidate: Candidate, today: date) ->
 
 def results(store: Store, search: Search, today: date, shown: int = RESULTS_STEP,
             show_skipped: bool = False) -> ResultsView:
-    """The search's kept candidates: the people who are not skipped by section, and the cards of the first shown.
+    """The search's kept candidates: the open people who are not skipped by section, and the cards of the first shown.
 
     A person skipped on this search keeps its card where it stood; one skipped elsewhere is counted as hidden and
-    shows only with show_skipped. Skipped people never take a place among the shown.
+    shows only with show_skipped. Skipped people never take a place among the shown. total and order keep everyone.
     """
     candidates = store.list_candidates(search.id, kept_only=True)
     views = person_views(store, [identity.on_card(store, c) for c in candidates], today,
@@ -726,10 +758,11 @@ def results(store: Store, search: Search, today: date, shown: int = RESULTS_STEP
         else:
             counted += 1
         cards.append(card_view(store, search, c, v, s, today))
-    people = [v for _, v in kept]
-    return ResultsView(network=[v for c, v in kept if c.section == "network"],
-                       new=[v for c, v in kept if c.section == "new"], cards=cards, total=len(kept), shown=counted,
-                       skipped_hidden=hidden, not_on_map=sum(1 for v in people if v.lat is None or v.lon is None),
+    people = [(c, v) for c, v in kept if is_open(c, search.chips)]
+    return ResultsView(network=[v for c, v in people if c.section == "network"],
+                       new=[v for c, v in people if c.section == "new"], cards=cards, total=len(kept), shown=counted,
+                       skipped_hidden=hidden, not_on_map=sum(1 for _, v in people if v.lat is None or v.lon is None),
+                       matched=len(people),
                        next_key=next_key, order=[(v.person_id, c.person_id) for c, v in kept],
                        headings=results_headings(candidates, skipped, [c.key for c in cards]))
 

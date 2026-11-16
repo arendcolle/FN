@@ -92,6 +92,11 @@ def tie_must(chips: Chips) -> bool:
     return chips.version >= 2 and chips.tie is not None and chips.tie.need == "must"
 
 
+def place_must(chips: Chips) -> bool:
+    """Whether the question requires its place: false for chips stored before version 2, else whether the place is a must."""
+    return chips.version >= 2 and chips.place is not None and chips.place.need == "must"
+
+
 def asks_researchers(chips: Chips) -> bool:
     """Whether the question asks for academic researchers: always for version 1 chips, else when a role chip says so."""
     return chips.version < 2 or any(r.research for r in chips.roles)

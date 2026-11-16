@@ -31,12 +31,12 @@ This list holds every user-facing string the new and changed parts introduce, gr
 
 ## Results
 
-- Count line: "`{count}` people · `{n}` not on the map · Export", with "Export" as a link. Left out while the search runs
+- Count line: "`{count}` people · `{n}` not on the map · Export", with "Export" as a link. Left out while the search runs. The count covers the people in your network and under the first three headings
 - Status line while running: "Searching…", "Searching… 1 person so far", "Searching… `{n}` people so far"
 - Done with a source that could not be read: "Some sources could not be read, so this list may be incomplete." and the button "Search again"
 - Stopped after finding people: "This search stopped before it finished." and the button "Run again"
 - Stopped before finding anyone (Notice): title "This search stopped", text "FN ran into a problem before it found anyone. Your question is kept, so Try again runs it once more.", button "Try again"
-- Headings, in order, each followed by its count: "In your network", "Topic and a tie to Flanders or Belgium", "Topic, no known tie", "Tie, topic not confirmed", "Other people found". A search stored before this round: "New"
+- Headings, in order, each followed by its count: "In your network", "Topic and a tie to Flanders or Belgium", "Topic, no known tie", "Tie, topic not confirmed", "Other people found", then the groups set aside at the end of the list: "Outside the area asked for", "Outside the US", "Work does not match the question". A search stored before this round: "New"
 - Card reason line: "`{reason, from a stored fact}` · `{source short name}`", at most 15 words with the source, for example "Builds 6G channel models at Columbia · columbia.edu"
 - Card second line: the tie in words, for example "Studied at Ghent University". Under "Topic, no known tie" the line is left out unless the place is unknown. With no tie under another heading: "No known tie to Flanders". Place words stand only when the role line shows no place: "place unknown". Tie and "place unknown" together: "`{tie in words}` · place unknown"
 - Combined line: "Combined from `{n}` records", a link to Sources on the person page

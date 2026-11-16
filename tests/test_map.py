@@ -6,7 +6,15 @@ from urllib.parse import urlsplit
 
 from fastapi.testclient import TestClient
 
-from fn.contracts import Candidate, ClaimDraft, Identifier, Search, Source
+from fn.contracts import (
+    Candidate,
+    CardFit,
+    Chips,
+    ClaimDraft,
+    Identifier,
+    Search,
+    Source,
+)
 from fn.web.app import create_app
 from fn.worker import now
 from tests.helpers import StubHttp, StubLLM, make_db, make_settings
@@ -80,6 +88,19 @@ class GeoTest(unittest.TestCase):
                          (ann, "Ann Near", "Cambridge"))
         self.assertEqual((second["properties"]["name"], second["properties"]["place"]), ("Cy Undated", "Gent"))
         self.assertEqual(self.client.get("/api/searches/nope/geo").status_code, 404)
+
+    def test_people_set_aside_and_under_heading_4_are_off_the_map(self):
+        """On version-2 chips the map shows the open people only."""
+        rows = [("Ann Open", 1, None, "Gent"), ("Bob Aside", 2, "outside", "Leuven"), ("Cy Other", 7, None, "Delft")]
+        people = [self.person(name, name, (place, None, 51.0 + n, 4.0)) for n, (name, _, _, place) in enumerate(rows)]
+        self.store.create_search(Search(id="s1", question="q", status="done", created_at=now(), code_sha=None, dirty=False,
+                                        llm_mode="replay", settings_json="{}", boot_id="b", chips=Chips(version=2)))
+        self.store.save_candidates("s1", [
+            Candidate(search_id="s1", person_id=p, person_ids=[p], hit_person_ids=[p], section="new", rank=n, score=1.0,
+                      lane_ranks={"seeds": n}, tier=tier, fit=CardFit(tie_grade="strong"), aside=aside)
+            for n, (p, (_, tier, aside, _)) in enumerate(zip(people, rows), 1)], [])
+        found = self.client.get("/api/searches/s1/geo").json()["features"]
+        self.assertEqual([f["properties"]["name"] for f in found], ["Ann Open"])
 
     def test_map_page_loads_vendored_scripts_with_no_inline_script_and_the_search_page_links_to_it(self):
         """The CSP allows scripts from this site only, so the page names its scripts and the geo URL in attributes; the question stays text."""

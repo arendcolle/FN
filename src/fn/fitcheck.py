@@ -27,10 +27,10 @@ def line_of(claims: list[Claim], facts: dict[str, Org]) -> str:
 
 
 def candidates(ranked: list[Candidate]) -> list[Candidate]:
-    """The kept people of the new section in tiers 1 to 4 whom the web researcher did not find, in rank order, at
-    most MAX_PEOPLE: the researcher chose its people for the question already."""
+    """The kept people of the new section in tiers 1 to 4 whom the web researcher did not find and nobody set aside,
+    in rank order, at most MAX_PEOPLE: the researcher chose its people for the question already."""
     found = [c for c in ranked if c.section == "new" and c.cut_reason is None and c.tier in (1, 2, 3, 4)
-             and "scout" not in c.lane_ranks]
+             and "scout" not in c.lane_ranks and c.aside is None]
     return sorted(found, key=lambda c: c.rank)[:MAX_PEOPLE]
 
 

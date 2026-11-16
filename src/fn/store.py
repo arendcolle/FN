@@ -593,11 +593,11 @@ class Store:
             conn.executemany(
                 "INSERT INTO candidates (search_id, person_id, person_ids_json, section, rank, score, lane_ranks_json, "
                 "reason_claim_ids_json, score_parts_json, hit_person_ids_json, cut_reason, card_person_ids_json, "
-                "rank_group, tier, fit_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "rank_group, tier, fit_json, aside) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [(search_id, c.person_id, json.dumps(c.person_ids), c.section, c.rank, c.score,
                   json.dumps(c.lane_ranks), json.dumps(c.reason_claim_ids),
                   json.dumps([p.model_dump() for p in c.score_parts]), json.dumps(c.hit_person_ids), c.cut_reason,
-                  json.dumps(c.card_person_ids), c.group, c.tier, c.fit.model_dump_json() if c.fit else None)
+                  json.dumps(c.card_person_ids), c.group, c.tier, c.fit.model_dump_json() if c.fit else None, c.aside)
                  for c in candidates],
             )
             conn.executemany(
@@ -630,7 +630,7 @@ class Store:
                 score_parts=[ScorePart.model_validate(p) for p in json.loads(r["score_parts_json"])],
                 hit_person_ids=json.loads(r["hit_person_ids_json"]), cut_reason=r["cut_reason"],
                 card_person_ids=json.loads(r["card_person_ids_json"]), group=r["rank_group"], tier=r["tier"],
-                fit=CardFit.model_validate_json(r["fit_json"]) if r["fit_json"] else None,
+                fit=CardFit.model_validate_json(r["fit_json"]) if r["fit_json"] else None, aside=r["aside"],
             )
             for r in rows
         ]

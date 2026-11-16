@@ -1,5 +1,6 @@
 import logging
 import unittest
+from collections import Counter
 from datetime import UTC, datetime
 from unittest import mock
 
@@ -689,6 +690,140 @@ class VerdictTest(unittest.TestCase):
             rank.run(ctx, RankIn(entries=[Entry(name_key="a", person_ids=[person.id], lane_ranks={"openalex": 1})], chips=Chips(),
                                  verdicts={person.id: "no"}))
         self.assertEqual(fuse.call_args.args[-1], {person.id: "no"})
+
+
+def placed(need: str = "must", kind: str | None = None, version: int = 2, area: GeoArea | None = BOSTON,
+           country: str | None = "US") -> Question:
+    """A question over ASK's topic with a place chip of the given need and kind."""
+    place = Place(text="Boston", origin="edited", need=need, kind=kind)
+    return Question(chips=Chips(topics=ASK.chips.topics, place=place, version=version), area=area, country=country)
+
+
+class AsideTest(unittest.TestCase):
+    HERE = dict(fit="inside", km=5.0, countries=("US",), only_openalex=False, job="known")
+    AWAY = dict(fit="outside", km=900.0, countries=("US",), only_openalex=False, job="known")
+    FAR = dict(countries=("BE",), only_openalex=False, job="known")
+    NOWHERE = dict(only_openalex=False, job="known")
+
+    def fused(self, ask: Question, verdicts: dict | None = None, statuses: dict | None = None, **people) -> list:
+        entries = [hit_entry(k, openalex=n) for n, k in enumerate(people, 1)]
+        return rank.fuse("s", entries, statuses or {}, None, people, ask, verdicts)
+
+    def test_a_must_place_sets_an_outside_person_aside_after_every_open_person_and_a_nice_place_keeps_them(self):
+        """Outside a must area the best-scored person is kept in tier 2, set aside and last; a nice place keeps them open."""
+        people = dict(away=found(**self.AWAY), tie5=found(match=False, only_openalex=False), here=found(**self.HERE))
+        out = self.fused(placed("must"), **people)
+        self.assertEqual([(c.person_id, c.tier, c.aside, c.cut_reason) for c in out],
+                         [("here", 1, None, None), ("tie5", 5, None, None), ("away", 2, "outside", None)])
+        out = self.fused(placed("nice"), **people)
+        self.assertEqual([(c.person_id, c.tier, c.aside) for c in out],
+                         [("here", 1, None), ("away", 2, None), ("tie5", 5, None)])
+
+    def test_a_place_without_a_need_is_a_wish(self):
+        """A place chip stored without need reads as nice: an outside person stays open in tier 2."""
+        ask = Question(chips=Chips(topics=ASK.chips.topics, place=Place(text="Boston", origin="edited"), version=2),
+                       area=BOSTON, country="US")
+        (c,) = self.fused(ask, away=found(**self.AWAY))
+        self.assertEqual((c.tier, c.aside), (2, None))
+
+    def test_abroad_under_a_nice_us_place_is_set_aside(self):
+        """A person placed only in Belgium under a wished US place stands aside as abroad."""
+        (c,) = self.fused(placed("nice"), far=found(**self.FAR))
+        self.assertEqual((c.aside, c.cut_reason), ("abroad", None))
+
+    def test_a_place_of_kind_abroad_sets_nobody_aside(self):
+        """A place abroad gives the question no country, so nobody is abroad or outside it."""
+        out = self.fused(placed("must", "abroad", area=None, country=None), far=found(**self.FAR),
+                         home=found(countries=("US",), only_openalex=False, job="known"))
+        self.assertEqual({c.aside for c in out}, {None})
+
+    def test_a_must_anywhere_us_place_sets_abroad_aside_and_keeps_an_unknown_place_open_in_tier_2(self):
+        """Under a required US a person in Belgium is abroad, one in the US is tier 1 and one without a place tier 2."""
+        out = self.fused(placed("must", "anywhere_us", area=None), far=found(**self.FAR),
+                         home=found(countries=("US",), only_openalex=False, job="known"), unknown=found(**self.NOWHERE))
+        self.assertEqual({c.person_id: (c.tier, c.aside) for c in out},
+                         {"far": (2, "abroad"), "home": (1, None), "unknown": (2, None)})
+
+    def test_a_must_place_that_was_not_located_sets_nobody_aside(self):
+        """Without an area or a country nobody is known to be outside, so nobody stands aside."""
+        out = self.fused(placed("must", area=None, country=None), far=found(**self.FAR), here=found(**self.NOWHERE))
+        self.assertEqual({c.aside for c in out}, {None})
+
+    def test_no_entries_give_no_candidates(self):
+        """An empty lane result ranks to an empty list under a must place."""
+        self.assertEqual(rank.fuse("s", [], {}, None, {}, placed("must")), [])
+
+    def test_outside_wins_over_a_no_verdict(self):
+        """A person outside a must area whom the fit check said no to stands aside as outside."""
+        (c,) = self.fused(placed("must"), {"away": "no"}, away=found(**self.AWAY))
+        self.assertEqual(c.aside, "outside")
+
+    def test_an_exempted_openalex_person_outside_a_must_area_is_kept_and_set_aside(self):
+        """A topic expert without Belgian evidence comes back by the exemption and then stands aside as outside."""
+        (c,) = self.fused(placed("must"), oa=found(kinds=(), years=0, last=None, fit="outside", km=900.0, countries=("US",)))
+        self.assertEqual((c.cut_reason, c.aside), (None, "outside"))
+
+    def test_a_network_person_outside_a_must_area_is_never_set_aside(self):
+        """The network section stays open whatever the place."""
+        (c,) = self.fused(placed("must"), statuses={"away": "in_list"}, away=found(**self.AWAY))
+        self.assertEqual((c.section, c.aside, c.cut_reason), ("network", None, None))
+
+    def test_version_1_chips_with_a_must_place_set_nobody_aside_and_keep_the_unknown_place_in_tier_1(self):
+        """Stored version-1 chips never read the place's need."""
+        out = self.fused(placed("must", version=1), {"away": "no"}, away=found(**self.AWAY), unknown=found(**self.NOWHERE))
+        self.assertEqual({c.person_id: (c.tier, c.aside) for c in out}, {"away": (2, None), "unknown": (1, None)})
+
+    def test_a_must_place_puts_an_unknown_place_in_tier_2_behind_a_worse_scored_inside_person(self):
+        """An unknown place does not fit a required area."""
+        out = self.fused(placed("must"), unknown=found(**self.NOWHERE), inside=found(**self.HERE))
+        self.assertEqual([(c.person_id, c.tier) for c in out], [("inside", 1), ("unknown", 2)])
+
+    def test_in_tier_5_a_must_place_puts_inside_before_unknown_despite_a_weaker_role(self):
+        """Under a must place the spot follows the heading; under a nice place the role still leads."""
+        people = dict(unknown=found(only_openalex=False), inside=found(match=False, fit="inside", km=5.0, countries=("US",),
+                                                                        only_openalex=False))
+        out = self.fused(placed("must"), **people)
+        self.assertEqual([(c.person_id, c.tier) for c in out], [("inside", 5), ("unknown", 5)])
+        self.assertEqual([c.person_id for c in self.fused(placed("nice"), **people)], ["unknown", "inside"])
+
+    def test_a_nice_place_puts_an_inside_medium_tie_before_an_unknown_strong_tie_and_version_1_the_reverse(self):
+        """On version 2 the place spot precedes the tie grade; version 1 keeps the tie grade first."""
+        people = dict(strong=found(**self.NOWHERE), medium=found(grade="medium", **self.HERE))
+        self.assertEqual([c.person_id for c in self.fused(placed("nice"), **people)], ["medium", "strong"])
+        self.assertEqual([c.person_id for c in self.fused(placed("nice", version=1), **people)], ["strong", "medium"])
+
+    def test_a_no_verdict_sets_a_person_aside_as_unfit_on_version_2_only(self):
+        """The fit check's no sets aside on version-2 chips; version 1 ignores it."""
+        (c,) = self.fused(v2(), {"nope": "no"}, nope=found(**self.HERE))
+        self.assertEqual(c.aside, "unfit")
+        (c,) = self.fused(ASK, {"nope": "no"}, nope=found(**self.HERE))
+        self.assertIsNone(c.aside)
+
+    def test_60_people_in_tiers_1_5_and_7_lose_0_10_and_10_over_the_cap(self):
+        """Headings 3 and 4 keep HEADING_CAP people each; heading 1 and version-1 chips keep everyone."""
+        people = {f"t{t}-{k:02d}": ev for t, ev in ((1, found(**self.HERE)), (5, found(match=False, only_openalex=False)),
+                                                    (7, found(role="fails", **self.HERE))) for k in range(60)}
+        out = self.fused(v2(), **people)
+        cut = Counter(c.person_id[:2] for c in out if c.cut_reason == "over_cap")
+        self.assertEqual((cut["t1"], cut["t5"], cut["t7"]), (0, 10, 10))
+        self.assertEqual({c.cut_reason for c in self.fused(ASK, **people)}, {None})
+
+    def test_120_people_under_heading_4_keep_50(self):
+        """Past the first 50 of heading 4 everyone is cut over_cap, in rank order."""
+        out = self.fused(v2(), **{f"p{k:03d}": found(role="fails", **self.HERE) for k in range(120)})
+        self.assertEqual([c.person_id for c in out if c.cut_reason is None], [f"p{k:03d}" for k in range(50)])
+        self.assertEqual(sum(1 for c in out if c.cut_reason == "over_cap"), 70)
+
+    def test_openalex_only_people_never_pass_an_aside_row(self):
+        """Moving the sixth OpenAlex-only person to the end of its heading stops before the people set aside."""
+        people = {f"a{k}": found(**self.AWAY) for k in range(3)}
+        people |= {f"p{k:02d}": found(fit="inside", km=5.0, countries=("US",), job="known", only_openalex=k in range(2, 10))
+                   for k in range(30)}
+        entries = [hit_entry(key, seeds=1, openalex=2) for key in people]
+        out = rank.fuse("s", entries, {}, None, people, placed("must"))
+        self.assertEqual([c.person_id for c in out[-3:]], ["a0", "a1", "a2"])
+        self.assertEqual({c.aside for c in out[-3:]}, {"outside"})
+        self.assertEqual({c.aside for c in out[:-3]}, {None})
 
 
 if __name__ == "__main__":

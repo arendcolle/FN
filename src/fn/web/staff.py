@@ -192,12 +192,12 @@ def person_cards(store: Store, search: Search, shown: int, show_skipped: bool, v
                  [[section_heading(firsts[c.key].title, firsts[c.key].count) if c.key in firsts else None,
                    result_card(c, search.id, here, shown)] for c in group]]
                 for section, title in SECTIONS.items() if (group := [c for c in found.cards if c.section == section])]
-    count = None if active else count_line(found.total, found.not_on_map,
+    count = None if active else count_line(found.matched, found.not_on_map,
                                            [h.a("Export", href=f"/searches/{search.id}/export.csv")] if found.total else [])
     more = show_more(found.shown, found.total, results_href(search.id, shown + RESULTS_STEP, show_skipped, view),
                      RESULTS_STEP, f"card-{found.next_key}") if found.next_key else None
     hidden = skipped_line(found.skipped_hidden, show_skipped, results_href(search.id, shown, not show_skipped, view))
-    return [count, sections, more, hidden], found.total > found.not_on_map, facts
+    return [count, sections, more, hidden], found.matched > found.not_on_map, facts
 
 
 def results_list(store: Store, search: Search, view: str, shown: int,
