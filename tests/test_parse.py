@@ -73,6 +73,20 @@ class ChipsPredicateTest(unittest.TestCase):
                 self.assertEqual((parse.tie_must(chips), parse.asks_researchers(chips), parse.wants_research(chips)),
                                  (tie, asked, wants))
 
+    def test_a_place_is_required_only_on_version_2_chips_with_a_must_place(self):
+        """Version-1 chips, no place and a nice place require no place; a must place on version 2 does."""
+        must, nice = Place(text="Chicago", origin="parsed", need="must"), Place(text="Chicago", origin="parsed")
+        cases = [(self.chips(place=must), False), (self.chips(version=2), False),
+                 (self.chips(version=2, place=nice), False), (self.chips(version=2, place=must), True)]
+        for chips, required in cases:
+            with self.subTest(chips=chips):
+                self.assertEqual(parse.place_must(chips), required)
+
+    def test_the_prompt_makes_a_place_that_says_where_the_people_are_a_must(self):
+        """The parse prompt words the rule that a place naming where the people are is required."""
+        self.assertIn('A place is "must" when it says where the people are ("scientists in the Washington D.C. area", '
+                      '"Who in Chicago", "Boston-based founders").', llm.system_prompt("parse"))
+
 
 class ParseTest(unittest.TestCase):
     def setUp(self):

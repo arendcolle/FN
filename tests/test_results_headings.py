@@ -1,9 +1,10 @@
 import re
 import unittest
+from datetime import date
 
-from fn import network
-from fn.contracts import Candidate, CardFit, Search
-from fn.present import HEADINGS
+from fn import network, present
+from fn.contracts import Candidate, CardFit, Chips, Search
+from fn.present import ASIDE_HEADINGS, HEADINGS, UNFIT_LINE
 from fn.worker import now
 from tests.test_results_page import ResultsPageCase
 
@@ -90,6 +91,75 @@ class ResultsHeadingsTest(ResultsPageCase):
         text = re.sub(r"<[^>]*>", " ", html)
         self.assertNotIn("strong", text)
         self.assertNotIn("medium", text)
+
+
+class AsideHeadingsTest(ResultsPageCase):
+    def listing(self, rows: list[tuple[str, int, str | None]], version: int = 2) -> list[str]:
+        """A search s1 with chips of the version, one made-up person per (section, tier, aside), a strong tie each."""
+        people = [self.person(f"Person {n:02}") for n in range(len(rows))]
+        self.store.create_search(Search(id="s1", question="q", status="done", created_at=now(), code_sha=None,
+                                        dirty=False, llm_mode="replay", settings_json="{}", boot_id="b",
+                                        chips=Chips(version=version)))
+        self.store.save_candidates("s1", [
+            Candidate(search_id="s1", person_id=p, person_ids=[p], hit_person_ids=[p], card_person_ids=[p], section=section,
+                      rank=n, score=1.0, lane_ranks={"seeds": n}, tier=tier, fit=CardFit(tie_grade="strong"), aside=aside)
+            for n, (p, (section, tier, aside)) in enumerate(zip(people, rows), 1)], [])
+        return people
+
+    def headings(self, html: str) -> list[tuple[str, str]]:
+        return re.findall(r'<h2 class="fn-section text-label">(.*?) <span>(.*?)</span></h2>', html)
+
+    def count_text(self, html: str) -> str:
+        return re.sub(r"<[^>]*>", "", re.search(r'<p class="fn-count text-meta">(.*?)</p>', html, re.DOTALL).group(1))
+
+    def results(self):
+        return present.results(self.store, self.store.get_search("s1"), date(2026, 11, 17))
+
+    def test_the_aside_groups_follow_the_open_headings(self):
+        """Each group set aside stands under its own heading after the open headings, in list order."""
+        self.listing([("new", 1, None), ("new", 3, None), ("new", 2, "outside"), ("new", 1, "abroad"), ("new", 5, "unfit")])
+        self.assertEqual(self.headings(self.page()), [(NEW[0], "1"), (NEW[1], "1"), (ASIDE_HEADINGS["outside"], "1"),
+                                                      (ASIDE_HEADINGS["abroad"], "1"), (ASIDE_HEADINGS["unfit"], "1")])
+
+    def test_the_count_covers_the_network_and_headings_1_to_3(self):
+        """A network person and tiers 1, 3 and 5 are counted; tier 7 and a person set aside are not."""
+        self.listing([("network", 7, None), ("new", 1, None), ("new", 3, None), ("new", 5, None), ("new", 7, None),
+                      ("new", 2, "outside")])
+        self.assertTrue(self.count_text(self.page()).startswith("4 people"))
+        found = self.results()
+        self.assertEqual((found.matched, found.total, len(found.order)), (4, 6, 6))
+
+    def test_a_network_person_and_a_heading_1_person_without_a_place_are_both_matched_and_off_the_map(self):
+        """matched and not_on_map count the same open people."""
+        self.listing([("network", None, None), ("new", 1, None), ("new", 7, None), ("new", 2, "outside")])
+        found = self.results()
+        self.assertEqual((found.matched, found.not_on_map, len(found.network), len(found.new)), (2, 2, 1, 1))
+
+    def test_a_version_1_search_keeps_its_list_count_and_map(self):
+        """On version-1 chips every kept person is open, heading 4 included."""
+        self.listing([("new", 1, None), ("new", 7, None)], version=1)
+        self.assertTrue(self.count_text(self.page()).startswith("2 people"))
+        found = self.results()
+        self.assertEqual((found.matched, found.not_on_map, len(found.new)), (2, 2, 2))
+        self.assertTrue(all(present.is_open(c, chips) for c in self.store.list_candidates("s1") for chips in (Chips(), None)))
+
+    def test_an_outside_card_names_its_place_fact_and_source(self):
+        """The reason line of a card set aside as outside is the place the ranker read, with its source."""
+        (person,) = self.listing([("new", 2, "outside")])
+        self.claim(person, "location", "Denver", lat=39.74, lon=-104.99)
+        card = self.card(self.page(), person)
+        self.assertIn("Based in Denver", card)
+        self.assertIn("example.org", card)
+
+    def test_an_outside_card_whose_place_claim_is_gone_has_no_reason_line(self):
+        """Without a located place the card renders with no place fact."""
+        (person,) = self.listing([("new", 2, "outside")])
+        self.assertNotIn("Based in", self.card(self.page(), person))
+
+    def test_an_unfit_card_shows_the_fit_check_line(self):
+        """A card set aside by the fit check says so in its second line."""
+        (person,) = self.listing([("new", 5, "unfit")])
+        self.assertIn(UNFIT_LINE, self.card(self.page(), person))
 
 if __name__ == "__main__":
     unittest.main()

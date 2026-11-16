@@ -74,7 +74,7 @@ class NetworkMigrationTest(unittest.TestCase):
             conn.execute("INSERT INTO candidates (search_id, person_id, person_ids_json, section, rank, score, "
                          "lane_ranks_json, reason_claim_ids_json, score_parts_json) "
                          "VALUES ('s1', ?, '[]', 'new', 1, 0.1, '{}', '[]', '[]')", (p,))
-        self.assertEqual(store.migrate(), [6, 7, 8, 9, 10, 11, 12, 14])
+        self.assertEqual(store.migrate(), [6, 7, 8, 9, 10, 11, 12, 13, 14])
         found = dict(conn.execute("SELECT person_id, hit_person_ids_json FROM candidates").fetchall())
         self.assertEqual({p: json.loads(v) for p, v in found.items()}, {"p1": ["p1", "p2"], "p3": [], "p4": []})
         self.assertEqual([c.hit_person_ids for c in store.list_candidates("s1")], [["p1", "p2"], [], []])
@@ -100,7 +100,7 @@ class NetworkMigrationTest(unittest.TestCase):
             store.conn.execute("INSERT INTO candidates (search_id, person_id, person_ids_json, section, rank, score, "
                                "lane_ranks_json, reason_claim_ids_json, score_parts_json) "
                                "VALUES ('s1', ?, '[]', ?, ?, 0.1, ?, '[]', ?)", (p, section, i, lanes, parts))
-        self.assertEqual(store.migrate(), [7, 8, 9, 10, 11, 12, 14])
+        self.assertEqual(store.migrate(), [7, 8, 9, 10, 11, 12, 13, 14])
         found = {c.person_id: (c.rank, c.cut_reason) for c in store.list_candidates("s1")}
         self.assertEqual(found, {"cut": (1, "no_belgian_evidence"), "years": (2, None), "two": (3, None),
                                  "net": (4, None)})
@@ -140,6 +140,21 @@ class CandidateTierTest(unittest.TestCase):
                            "lane_ranks_json, reason_claim_ids_json, score_parts_json) "
                            "VALUES ('s1', 'b', '[]', 'new', 2, 0.1, '{}', '[]', '[]')")
         self.assertEqual([(c.person_id, c.tier, c.fit) for c in store.list_candidates("s1")], [("a", 3, fit), ("b", None, None)])
+
+    def test_013_stores_aside_and_an_old_row_lists_with_none(self):
+        """A saved candidate lists with its aside group; a row stored without one lists with None."""
+        store = make_db(self)
+        store.create_search(Search(id="s1", question="q", status="done", created_at=now(), code_sha=None,
+                                   dirty=False, llm_mode="replay", settings_json="{}", boot_id="b"))
+        for p in ("a", "b"):
+            store.conn.execute("INSERT INTO persons (id, display_name, name_key, list_status) VALUES (?, ?, ?, 'candidate')",
+                               (p, p, p))
+        store.save_candidates("s1", [Candidate(search_id="s1", person_id="a", person_ids=["a"], section="new", rank=1,
+                                               score=0.1, lane_ranks={"seeds": 1}, tier=2, aside="outside")], [])
+        store.conn.execute("INSERT INTO candidates (search_id, person_id, person_ids_json, section, rank, score, "
+                           "lane_ranks_json, reason_claim_ids_json, score_parts_json) "
+                           "VALUES ('s1', 'b', '[]', 'new', 2, 0.1, '{}', '[]', '[]')")
+        self.assertEqual([(c.person_id, c.aside) for c in store.list_candidates("s1")], [("a", "outside"), ("b", None)])
 
 
 class OrgMatchesTest(unittest.TestCase):

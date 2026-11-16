@@ -53,7 +53,8 @@ class FitCheckTest(unittest.TestCase):
                 content_hash=f"h-{person_id}-{kind}-{value}")))
 
     def person(self, name: str, role: str | None = "Professor of politics", topics=(), tier: int = 1,
-               lanes: dict | None = None, section: str = "new", cut: str | None = None) -> Candidate:
+               lanes: dict | None = None, section: str = "new", cut: str | None = None,
+               aside: str | None = None) -> Candidate:
         """A stored person with a role, an employer and topic claims, and the kept candidate that stands for them."""
         found = self.store.resolve_person([Identifier(scheme="seed", value=name)], name)
         if role:
@@ -63,7 +64,8 @@ class FitCheckTest(unittest.TestCase):
             self.claim(found.id, "topic", value, year=year)
         self.n += 1
         c = Candidate(search_id="s1", person_id=found.id, person_ids=[found.id], section=section, rank=self.n, score=1.0,
-                      lane_ranks=lanes or {"openalex": 1}, hit_person_ids=[found.id], cut_reason=cut, tier=tier)
+                      lane_ranks=lanes or {"openalex": 1}, hit_person_ids=[found.id], cut_reason=cut, tier=tier,
+                      aside=aside)
         self.people.append(c)
         return c
 
@@ -109,6 +111,13 @@ class FitCheckTest(unittest.TestCase):
         out = self.check(llm)
         self.assertEqual(len(llm.calls[0][1]["people"].splitlines()), 4)
         self.assertEqual(set(out.verdicts), {c.person_id for c in keep})
+
+    def test_people_set_aside_are_not_sent(self):
+        """A kept tier-1 person set aside for any reason is left out of the check; an open one is sent."""
+        keep = self.person("Open Person")
+        for reason in ("outside", "abroad", "unfit"):
+            self.person(f"Aside {reason.title()} Person", aside=reason)
+        self.assertEqual(fitcheck.candidates(self.people), [keep])
 
     def test_135_candidates_give_six_calls_of_20_and_15_are_not_checked(self):
         """The first 120 in rank order go out in batches of 20, each numbered from 1."""

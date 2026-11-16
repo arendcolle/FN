@@ -5,6 +5,7 @@ from typing import NamedTuple
 
 from fn import evidence, geo, orgs, parse
 from fn.contracts import (
+    Aside,
     Candidate,
     CardFit,
     Claim,
@@ -31,6 +32,10 @@ OPENALEX_CAP = 5
 TIED = ("strong", "medium")
 ROLES = ("met", "unknown", "fails")
 FITS = ("inside", "unknown", "none")
+FITS_MUST = ("inside", "none")
+ASIDES = (None, "outside", "abroad", "unfit")
+HEADING_CAP = 50
+CAPPED = (3, 4)
 PLACES = {"outside": 1, "abroad": 2}
 SPOTS = {"unknown": 1, "outside": 2, "abroad": 3}
 BLANK = (7, 4, False, 1, False, 2, 0, 0)
@@ -185,6 +190,7 @@ def place_fit(found: "evidence.Evidence", question: Question | None) -> PlaceFit
 def tier(found: "evidence.Evidence | None", question: Question | None, researched: bool = False,
          verdict: FitVerdict | None = None, checked: bool = False) -> int:
     """The tier 1 to 7 of a person: topic before tie, tie before place; a failed role or no evidence is tier 7.
+    Under a required place an unknown place does not fit.
 
     On a version-2 question, a person the web researcher named for this question (researched) counts as a
     confirmed match: the researcher chose them for the question, which word matching cannot do. For anyone else
@@ -193,7 +199,8 @@ def tier(found: "evidence.Evidence | None", question: Question | None, researche
     """
     if found is None or found.role.fit == "fails":
         return 7
-    tied, fits = found.belgian.grade in TIED, place_fit(found, question) in FITS
+    must = question is not None and parse.place_must(question.chips)
+    tied, fits = found.belgian.grade in TIED, place_fit(found, question) in (FITS_MUST if must else FITS)
     current = question is not None and question.chips.version >= 2
     match = confirmed(found, question)
     partly = verdict == "partly" and found.role.fit != "met"
@@ -224,8 +231,9 @@ def fit_of(found: "evidence.Evidence | None", question: Question | None) -> Card
 def order_key(found: "evidence.Evidence | None", question: Question | None, level: int,
               verdict: FitVerdict | None = None) -> tuple:
     """The new section's order before score: tier, heading, abroad last, role met (then the fit verdict, then the
-    topic), own words before related words, tie grade, place, then more topic words. BLANK is for people without
-    evidence. In tiers 1 to 4 a "partly" verdict stands last; below them "partly" stands first and "no" last."""
+    topic), own words before related words, tie grade, place, then more topic words; version-2 chips put the place
+    before the tie grade, and under a required place tiers 5 to 7 put it right after the heading. BLANK is for people
+    without evidence. In tiers 1 to 4 a "partly" verdict stands last; below them "partly" stands first and "no" last."""
     if found is None:
         return BLANK
     place = place_fit(found, question)
@@ -234,8 +242,24 @@ def order_key(found: "evidence.Evidence | None", question: Question | None, leve
     spot = PLACES.get(place, 0) if legacy else SPOTS.get(place, 0)
     doubt = int(verdict == "partly") if level <= 4 else {"partly": 0, "no": 2}.get(verdict, 1)
     role = ROLES.index(found.role.fit) if legacy else 6 * ROLES.index(found.role.fit) + 2 * doubt + (not found.topic.match)
-    return (level, heading(level, grade), place == "abroad", role, found.topic.related,
-            TIED.index(grade) if grade in TIED else len(TIED), spot, -len(found.topic.words))
+    tie = TIED.index(grade) if grade in TIED else len(TIED)
+    lead = spot if not legacy and level >= 5 and parse.place_must(question.chips) else place == "abroad"
+    return (level, heading(level, grade), lead, role, found.topic.related, *((tie, spot) if legacy else (spot, tie)),
+            -len(found.topic.words))
+
+
+def aside(section: Section, found: "evidence.Evidence | None", question: Question | None,
+          verdict: FitVerdict | None) -> Aside | None:
+    """Why a person stands outside the open list: outside a required area, abroad under a US place, or a fit check "no".
+    None in the network section, without evidence or on chips stored before version 2."""
+    if section == "network" or found is None or question is None or question.chips.version < 2:
+        return None
+    place = place_fit(found, question)
+    if place == "outside" and parse.place_must(question.chips):
+        return "outside"
+    if place == "abroad" and question.chips.place is not None and question.country == "US":
+        return "abroad"
+    return "unfit" if verdict == "no" else None
 
 
 def no_tie(section: Section, found: "evidence.Evidence | None", question: Question | None) -> CutReason | None:
@@ -279,6 +303,7 @@ class Row(NamedTuple):
     found: "evidence.Evidence | None"
     level: int
     reason: CutReason | None
+    aside: Aside | None
 
 
 def exempt(rows: list[Row], question: Question | None) -> set[int]:
@@ -315,6 +340,20 @@ def capped(kept: list[Row], question: Question | None) -> list[Row]:
     return kept
 
 
+def over_cap(kept: list[Row], question: Question | None) -> set[int]:
+    """The indexes of the people past the first HEADING_CAP of each heading in CAPPED; none on chips before version 2."""
+    if question is None or question.chips.version < 2:
+        return set()
+    seen: dict[int, int] = {}
+    out = set()
+    for n, r in enumerate(kept):
+        if r.key[1] in CAPPED:
+            seen[r.key[1]] = seen.get(r.key[1], 0) + 1
+            if seen[r.key[1]] > HEADING_CAP:
+                out.add(n)
+    return out
+
+
 def fuse(search_id: str, entries: list[Entry], statuses: dict[str, ListStatus],
          belgian: dict[str, ScorePart] | None = None, found: dict[str, "evidence.Evidence"] | None = None,
          question: Question | None = None, verdicts: dict[str, FitVerdict] | None = None,
@@ -326,6 +365,7 @@ def fuse(search_id: str, entries: list[Entry], statuses: dict[str, ListStatus],
     names the people it sent and got no verdict for, who stay as they were. Section network holds
     entries with a hit person in the list; equal scores are ordered by the first person id. People
     cut for no Belgian evidence who match the topic come back, up to EXEMPT_CAP; OpenAlex-only people are capped.
+    Kept people set aside stand after the open ones, by ASIDES; headings 3 and 4 keep HEADING_CAP people each.
     """
     belgian, found, verdicts, unsure = belgian or {}, found or {}, verdicts or {}, unsure or []
     extra = evidence_lists(found)
@@ -341,14 +381,17 @@ def fuse(search_id: str, entries: list[Entry], statuses: dict[str, ListStatus],
         level = tier(ev, question, "scout" in e.lane_ranks, verdict, checked)
         reason = cut_reason(section, ev, question) if ev else unread_cut(section, e, entry_parts)
         rows.append(Row(BLANK if section == "network" else order_key(ev, question, level, verdict), e, section, entry_parts, ev,
-                        level, reason))
+                        level, reason, aside(section, ev, question, verdict)))
     rows.sort(key=lambda r: (*r.key, -score(r.parts), r.entry.person_ids[0]))
     back = exempt(rows, question)
     rows = [r._replace(reason=None if n in back else r.reason or no_tie(r.section, r.found, question))
             for n, r in enumerate(rows)]
-    spots = [n for n, r in enumerate(rows) if r.section == "new" and not r.reason]
+    rows.sort(key=lambda r: 0 if r.reason else ASIDES.index(r.aside))
+    spots = [n for n, r in enumerate(rows) if r.section == "new" and not r.reason and not r.aside]
     for n, r in zip(spots, capped([rows[n] for n in spots], question), strict=True):
         rows[n] = r
+    for n in over_cap([rows[n] for n in spots], question):
+        rows[spots[n]] = rows[spots[n]]._replace(reason="over_cap")
     counts: dict[tuple[Section, bool], int] = {}
     out = []
     for r in rows:
@@ -358,7 +401,7 @@ def fuse(search_id: str, entries: list[Entry], statuses: dict[str, ListStatus],
             rank=counts[r.section, r.reason is not None], score=score(r.parts),
             lane_ranks=r.entry.lane_ranks, reason_claim_ids=r.entry.claim_ids, score_parts=r.parts,
             hit_person_ids=hits(r.entry), cut_reason=r.reason, card_person_ids=r.entry.card_person_ids,
-            group=int(r.level > 2), tier=r.level, fit=fit_of(r.found, question),
+            group=int(r.level > 2), tier=r.level, fit=fit_of(r.found, question), aside=None if r.reason else r.aside,
         ))
     return out
 

@@ -50,7 +50,8 @@ GoldTie = Literal["flemish", "belgian", "none", "unverified"]
 PickVerdict = Literal["found", "event page", "missed", "no lane in slice"]
 GoldGroup = Literal["dev", "held-out", "other"]
 EventKind = Literal["add", "skip", "merge", "not_same", "reject_claim", "edit_contact", "remove", "import", "export", "undo"]
-CutReason = Literal["no_belgian_evidence", "weak_openalex", "no_claim", "outside_country", "no_tie"]
+CutReason = Literal["no_belgian_evidence", "weak_openalex", "no_claim", "outside_country", "no_tie", "over_cap"]
+Aside = Literal["outside", "abroad", "unfit"]
 TieGrade = Literal["strong", "medium", "weak", "none"]
 RoleFit = Literal["met", "fails", "unknown"]
 JobFit = Literal["known", "employer", "none"]
@@ -446,6 +447,7 @@ class Candidate(Model):
     # None for a candidate stored before the tiers.
     tier: int | None = None
     fit: CardFit | None = None
+    aside: Aside | None = None
 
 
 # One staff decision; detail holds what undo needs, ids and never contact values.
@@ -572,6 +574,7 @@ class ResultsView(Model):
     order: list[tuple[str, str]] = []
     # The new section's headings in list order; empty when a person of the section has no tier.
     headings: list[ResultsHeading] = []
+    matched: int = 0
 
 
 class NetworkFilter(Model):
