@@ -158,14 +158,14 @@ class CandidateTierTest(unittest.TestCase):
 
 
 class OrgMatchesTest(unittest.TestCase):
-    def test_014_adds_the_org_matches_table_to_a_database_at_012(self):
-        """A database at 012 has no org_matches table; migrate() applies 014 and the table takes a null org_id."""
+    def test_014_adds_the_org_matches_table_to_a_database_at_013(self):
+        """A database at 013 has no org_matches table; migrate() applies 014 and the table takes a null org_id."""
         store = Store(make_settings(self).db_path)
         self.addCleanup(store.close)
         old = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, old)
         for path in db.MIGRATIONS.glob("[0-9][0-9][0-9]_*.sql"):
-            if int(path.name[:3]) <= 12:
+            if int(path.name[:3]) <= 13:
                 shutil.copy(path, old / path.name)
         with mock.patch.object(db, "MIGRATIONS", old):
             store.migrate()
