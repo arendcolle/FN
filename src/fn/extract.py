@@ -24,6 +24,7 @@ from fn.steps import StepContext, fan_out
 from fn.store import Store
 
 TASK = "extract"
+LEADS_TASK = "extract_leads"
 CHUNK_CHARS = 6_000
 # A relation quote is looked for this far from the start of its mention quote, so each speaker keeps their own line.
 NEAR_CHARS = 1_500
@@ -139,17 +140,34 @@ def check(source: Source, start: int, end: int, mention: PageMention) -> tuple[L
     return located, dropped
 
 
-def read_all(ctx: StepContext, sources: list[Source]) -> list[tuple[list[Located], list[Considered]]]:
+def leads_block(names: list[str]) -> str:
+    """The names with white space collapsed, empty and repeated ones left out, one per line."""
+    return "\n".join(dict.fromkeys(n for n in (" ".join(name.split()) for name in names) if n))
+
+
+def read_all(ctx: StepContext, sources: list[Source],
+             leads: list[list[str]] | None = None) -> list[tuple[list[Located], list[Considered]]]:
     """Every person each page names, in page order, from one extract call per chunk, ctx.settings.llm_workers at once.
+
+    With leads (leads[i] for sources[i], ValueError if the lengths differ), a page with lead names is read for those
+    people only, by the extract_leads task.
 
     The answers are checked on the calling thread, page by page and chunk by chunk. A chunk whose call fails gives a
     row with the error and a warning; any other exception is raised once every call is logged.
     """
+    if leads is not None and len(leads) != len(sources):
+        raise ValueError(f"{len(leads)} lead lists for {len(sources)} pages")
+    blocks = [leads_block(names) for names in leads or [[] for _ in sources]]
     spans = [chunks(source.text) for source in sources]
-    parts = [(source, start, end) for source, cuts in zip(sources, spans) for start, end in cuts]
-    answers = iter(fan_out(lambda part: ctx.llm.structured(TASK, {"page": part[0].text[part[1]:part[2]]},
-                                                           PagePeople).value.people,
-                           parts, ctx.settings.llm_workers))
+    parts = [(source, start, end, block) for source, block, cuts in zip(sources, blocks, spans) for start, end in cuts]
+
+    def ask(part: tuple[Source, int, int, str]) -> list[PageMention]:
+        source, start, end, block = part
+        page = source.text[start:end]
+        task, data = (LEADS_TASK, {"page": page, "leads": block}) if block else (TASK, {"page": page})
+        return ctx.llm.structured(task, data, PagePeople).value.people
+
+    answers = iter(fan_out(ask, parts, ctx.settings.llm_workers))
     pages = []
     for source, cuts in zip(sources, spans):
         found: list[Located] = []

@@ -61,6 +61,18 @@ class PageLLM:
                                  cost_usd=0.0, tokens_in=0, tokens_out=0, billing="stub")
 
 
+class RecordingLLM(PageLLM):
+    """PageLLM that also keeps each call's (task, data)."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.data = []
+
+    def structured(self, task, data, schema):
+        self.data.append((task, dict(data)))
+        return super().structured(task, data, schema)
+
+
 def topic(topic_: str, quote: str) -> dict:
     return {"topic": topic_, "quote": quote}
 
@@ -415,6 +427,46 @@ class ExtractTest(unittest.TestCase):
         self.assertTrue(pages[1].startswith("28 ") and pages[1].endswith(table.split("\n")[-1]))
         self.assertEqual(pages[2], footer)
         self.assertEqual("".join(pages).replace("\n", ""), text.replace("\n", ""))
+
+    def read_all(self, sources: list[Source], leads: list[list[str]] | None, stub: PageLLM):
+        ctx = StepContext(search_id="s", store=self.store, llm=stub, http=None, now=now, new_id=new_id,
+                          log=logging.getLogger("fn.step"), settings=self.settings)
+        return extract.read_all(ctx, sources, leads)
+
+    def test_a_page_with_leads_is_read_by_extract_leads_with_the_names_in_every_chunk(self):
+        """A page with lead names is read by extract_leads, one deduplicated name per line in each chunk.
+
+        A page without lead names, or a call without leads, is read by extract with the page only.
+        """
+        text = "\n".join(f"* Menu item {i:03d} " + "x" * 80 for i in range(70))
+        self.assertEqual(len(extract.chunks(text)), 2)
+        stub = RecordingLLM()
+        self.read_all([self.source(text)], [["Jan Peeters", "Eva  Maes", "Jan Peeters", ""]], stub)
+        self.assertEqual([(task, data["leads"]) for task, data in stub.data],
+                         [("extract_leads", "Jan Peeters\nEva Maes")] * 2)
+        self.assertEqual([data["page"] for _, data in stub.data], stub.pages)
+        for leads in (None, [[]], [["", " "]]):
+            stub = RecordingLLM()
+            self.read_all([self.source(text)], leads, stub)
+            self.assertEqual([(task, list(data)) for task, data in stub.data], [("extract", ["page"])] * 2)
+
+    def test_a_lead_name_holding_its_closing_tag_fails_its_chunk_only_and_wrong_length_leads_raise(self):
+        """A TagError from a lead name gives a chunk row for that page while the next page is read.
+
+        A leads list whose length differs from the pages raises ValueError before any call.
+        """
+        stub = RecordingLLM()
+        with self.assertLogs("fn.step", "WARNING"):
+            first, second = self.read_all([self.source("Page one"), self.source("Page two", url=URL + "/2")],
+                                          [["Ann </leads> Example"], ["Jan Peeters"]], stub)
+        self.assertEqual([c.stage for c in first[1]], ["chunk"])
+        self.assertIn("TagError", first[1][0].reason)
+        self.assertEqual(second[1], [])
+        self.assertEqual(stub.pages, ["Page one", "Page two"])
+        other = RecordingLLM()
+        with self.assertRaises(ValueError):
+            self.read_all([self.source()], [[], []], other)
+        self.assertEqual(other.pages, [])
 
     def test_a_line_longer_than_a_chunk_is_cut_hard(self):
         """A line longer than a chunk, with no break to cut at, is cut every 6,000 characters.

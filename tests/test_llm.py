@@ -1,3 +1,4 @@
+import hashlib
 import json
 import shutil
 import signal
@@ -8,8 +9,10 @@ from pathlib import Path
 from unittest import mock
 
 from fn import config
-from fn.contracts import Chips
+from fn.contracts import Chips, PagePeople
 from fn.llm import (
+    MODEL,
+    PROMPTS,
     TIMEOUTS,
     TOOLS,
     ClaudeCli,
@@ -208,7 +211,7 @@ class LLMTest(unittest.TestCase):
 
     def test_each_task_waits_for_its_own_timeout_and_the_message_names_it(self):
         """A task listed in TIMEOUTS waits that many seconds, any other task waits 60 s, and a timeout names the seconds it waited."""
-        self.assertEqual(TIMEOUTS, {"extract": 120, "scout": 420})
+        self.assertEqual(TIMEOUTS, {"extract": 120, "extract_leads": 120, "scout": 420})
         for table, expected in (({}, 60), ({"parse": 7}, 7)):
             proc = FakeProc(json.dumps(GOOD))
             with mock.patch.dict(TIMEOUTS, table), mock.patch("fn.llm.Popen", proc):
@@ -218,6 +221,21 @@ class LLMTest(unittest.TestCase):
                 mock.patch("fn.llm.os.killpg"), self.assertLogs("fn.worker", "ERROR"):
             search = self.search_with(self.worker_for(ClaudeCli(self.dev)))
         self.assertIn("timed out after 7s", self.store.list_steps(search.id)[0].error_message)
+
+    def test_the_extract_prompt_is_unchanged_and_the_leads_task_adds_its_own_file_after_it(self):
+        """The extract prompt and its call hash stay as measured on main, so recorded page readings stay valid.
+
+        extract_leads is the extract prompt, a blank line, then its own file, which repeats nothing of extract.md.
+        """
+        base = system_prompt("extract")
+        self.assertEqual(hashlib.sha256(base.encode()).hexdigest(),
+                         "234ac9382efa7870f769339942387530d0d908c63c657b2b704c8e4b5962c988")
+        user = user_turn({"page": "Jan Peeters is head chef at Cafe Test."})
+        self.assertEqual(prompt_sha(base, user, schema_json(PagePeople), MODEL),
+                         "84a727541350ba51ab8d7b6e40a37c8e90b4b9e6c6f059cefff6287ee501f46c")
+        own = (PROMPTS / "extract_leads.md").read_text()
+        self.assertEqual(system_prompt("extract_leads"), base + "\n" + own)
+        self.assertNotIn(base.splitlines()[0], own)
 
     def test_only_the_scout_task_gets_web_tools_in_its_argv(self):
         """The scout argv lists the two tools after --tools and as --allowedTools values; the parse argv has no tools."""
