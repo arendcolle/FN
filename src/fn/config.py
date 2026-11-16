@@ -28,6 +28,7 @@ class Settings(BaseModel):
     apify_token: SecretStr | None = None
     linkedin_live: bool = False
     llm_workers: int = Field(6, ge=1)
+    llm_procs: int = Field(10, ge=1)
     scout: bool = True
     stored_record: bool = False
 
@@ -75,6 +76,7 @@ def from_env() -> Settings:
         "apify_token": secret("APIFY_TOKEN"),
         "linkedin_live": env.get("FN_LINKEDIN") == "1",
         "llm_workers": env.get("FN_LLM_WORKERS"),
+        "llm_procs": env.get("FN_LLM_PROCS"),
         "scout": None if env.get("FN_SCOUT") is None else env["FN_SCOUT"].lower() not in ("0", "false"),
         "stored_record": env.get("FN_STORED_RECORD") == "1",
     }

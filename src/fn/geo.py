@@ -3,6 +3,7 @@ import csv
 import io
 import logging
 import math
+import threading
 import zipfile
 from collections.abc import Callable
 from functools import cache
@@ -40,6 +41,7 @@ Names = dict[str, list[City]]
 Region = tuple[str, str]
 
 _loaded: WeakKeyDictionary[HttpClient, Names] = WeakKeyDictionary()
+_lock = threading.Lock()
 
 
 def index(text: str) -> Names:
@@ -65,10 +67,11 @@ def from_zip(data: bytes) -> Names:
 
 
 def cities(http: HttpClient) -> Names:
-    """The city index, fetched and unzipped once per HTTP client."""
-    if http not in _loaded:
-        _loaded[http] = from_zip(http.get(CITIES_URL).content)
-    return _loaded[http]
+    """The city index, fetched and unzipped once per HTTP client, also when threads ask for it at once."""
+    with _lock:
+        if http not in _loaded:
+            _loaded[http] = from_zip(http.get(CITIES_URL).content)
+        return _loaded[http]
 
 
 @cache

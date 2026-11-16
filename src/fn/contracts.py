@@ -757,7 +757,7 @@ class LLMResult[T](Model):
     billing: str
 
 
-# Step models, in the order search.py runs them: parse, lane:<name> per lane with publish between, resolve, rank, save.
+# Step models, in the order search.py runs them: parse, cities, seeds then the other lanes side by side with a publish as each ends but the last, resolve, rank, save.
 class ParseIn(Model):
     question: str
 
@@ -874,6 +874,14 @@ class OrgsOut(Model):
 # The one step of the fn-orgs --places job.
 class PlacesIn(Model):
     pass
+
+
+class CitiesIn(Model):
+    pass
+
+
+class CitiesOut(Model):
+    names: int
 
 
 class PlacesOut(Model):

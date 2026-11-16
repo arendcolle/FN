@@ -3,10 +3,14 @@ import argparse
 import logging
 import sys
 from collections.abc import Callable
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from contextvars import copy_context
 
-from fn import fitcheck, parse, rank, resolve
+from fn import fitcheck, geo, parse, rank, resolve
 from fn.contracts import (
     Chips,
+    CitiesIn,
+    CitiesOut,
     Considered,
     FitIn,
     FitOut,
@@ -23,22 +27,49 @@ from fn.contracts import (
     SaveOut,
     Search,
 )
-from fn.lanes import LANES
+from fn.lanes import LANES, Lane
 from fn.llm import StructuredLLM, from_settings
+from fn.net import HttpError
 from fn.steps import StepContext, run_step, skip_step
+
+# The lane that runs alone and is published before any other lane starts, since it reads what they write.
+FIRST = "seeds"
+# The lane that starts only once every lane before it in LANES has ended and been published.
+WAITS = "web_topic"
 
 
 def save(ctx: StepContext, inp: SaveIn) -> SaveOut:
     return SaveOut(count=ctx.store.save_candidates(ctx.search_id, inp.candidates, inp.flags))
 
 
-def publish(outs: list[LaneOut]) -> Callable[[StepContext, PublishIn], PublishOut]:
-    """The publish step over the lane outputs so far: it resolves, ranks and saves them as the final steps do.
+def cities(ctx: StepContext, _: CitiesIn) -> CitiesOut:
+    """Build the city index once before the lanes start; a failed fetch logs a warning and counts 0 names."""
+    try:
+        return CitiesOut(names=len(geo.cities(ctx.http)))
+    except HttpError as exc:
+        ctx.log.warning("the city index could not be fetched: %s", exc)
+        return CitiesOut(names=0)
+
+
+def lane_index(name: str) -> int:
+    """The place of lane `name` in LANES, after every lane when it is missing from LANES."""
+    names = [lane.name for lane in LANES]
+    return names.index(name) if name in names else len(names)
+
+
+def in_lane_order(outs: list[LaneOut]) -> list[LaneOut]:
+    """The lane outputs in the order of LANES, a lane missing from LANES last; outputs of one lane keep their order."""
+    return sorted(outs, key=lambda out: lane_index(out.lane))
+
+
+def publish(outs: list[LaneOut], done: LaneOut) -> Callable[[StepContext, PublishIn], PublishOut]:
+    """The publish step over the lane outputs so far, after lane `done` ended: it resolves, ranks and saves them as the
+    final steps do.
 
     A lane that added no hits leaves the saved candidates as they are, so the step returns their count.
     """
     def step(ctx: StepContext, inp: PublishIn) -> PublishOut:
-        if not outs[-1].hits:
+        if not done.hits:
             return PublishOut(count=len(ctx.store.list_candidates(ctx.search_id)))
         resolved = resolve.run(ctx, ResolveIn(outs=outs))
         ranked = rank.run(ctx, RankIn(entries=resolved.entries, chips=inp.chips))
@@ -97,14 +128,35 @@ def refinish(ctx: StepContext, search: Search) -> None:
         outs.append(LaneOut.model_validate_json(output) if output else LaneOut(lane=step.step[5:], query="", total_seen=0))
     if not stored:
         raise ValueError(f"search {search.id} has no stored lane outputs")
-    resolved = run_step(ctx, "resolve", resolve.run, ResolveIn(outs=outs))
+    resolved = run_step(ctx, "resolve", resolve.run, ResolveIn(outs=in_lane_order(outs)))
     rank_and_save(ctx, resolved, search.chips, stored_fit(ctx))
 
 
-def run(ctx: StepContext, search: Search) -> None:
-    """Run the Quick steps in order: parse, each lane with a publish after all but the last, resolve, rank and save.
+def run_lane(ctx: StepContext, lane: Lane, given: LaneIn) -> tuple[LaneOut, bool]:
+    """Run one lane as step lane:<name> on a lane thread and close the thread's connection: its output and whether it
+    raised.
 
-    A lane that raises keeps its error row and counts as an empty output; raises RuntimeError when every lane did.
+    A lane that raises keeps its error row and gives an empty output.
+    """
+    try:
+        if lane.name == "openalex" and not parse.wants_research(given.chips):
+            return skip_step(ctx, "lane:openalex", given, LaneOut(
+                lane="openalex", query="", total_seen=0,
+                considered=[Considered(person_key="-", name="", stage="query", kept=False,
+                                       reason="no research asked")])), False
+        return run_step(ctx, f"lane:{lane.name}", lane.run, given), False
+    except Exception:  # noqa: BLE001 any lane error is kept on its step row and the search goes on
+        return LaneOut(lane=lane.name, query="", total_seen=0), True
+    finally:
+        ctx.store.close()
+
+
+def run(ctx: StepContext, search: Search) -> None:
+    """Run the Quick steps: parse, cities, the seeds lane alone, then the other lanes side by side, with a publish as
+    each lane ends but the last, then resolve, rank and save.
+
+    The web_topic lane starts once every lane before it has ended and been published. A lane that raises keeps its
+    error row and counts as an empty output; raises RuntimeError when every lane did.
     """
     inp = ParseIn(question=search.question)
     if search.chips is not None:
@@ -112,28 +164,45 @@ def run(ctx: StepContext, search: Search) -> None:
     else:
         chips = run_step(ctx, "parse", parse.run, inp).chips
         ctx.store.set_search_chips(search.id, chips, "parsed")
-    lane_in = LaneIn(search_id=search.id, chips=chips, depth=search.depth, question=search.question)
-    outs, failed = [], 0
-    for i, lane in enumerate(LANES):
+    if ctx.http is not None:
         try:
-            if lane.name == "openalex" and not parse.wants_research(chips):
-                outs.append(skip_step(ctx, "lane:openalex", lane_in, LaneOut(
-                    lane="openalex", query="", total_seen=0,
-                    considered=[Considered(person_key="-", name="", stage="query", kept=False,
-                                           reason="no research asked")])))
-            else:
+            run_step(ctx, "cities", cities, CitiesIn())
+        except Exception:  # noqa: BLE001 the error is kept on the step row and a lane builds the index when it needs it
+            pass
+    lane_in = LaneIn(search_id=search.id, chips=chips, depth=search.depth, question=search.question)
+    outs: list[LaneOut | None] = [None] * len(LANES)
+    failed = 0
+    with ThreadPoolExecutor(max_workers=len(LANES), thread_name_prefix="fn-lane") as pool:
+        def submit(i: int, given: LaneIn) -> Future[tuple[LaneOut, bool]]:
+            return pool.submit(copy_context().run, run_lane, ctx, LANES[i], given)
+
+        def ready(i: int) -> bool:
+            if LANES[i].name == FIRST:
+                return True
+            if any(outs[j] is None for j, lane in enumerate(LANES) if lane.name == FIRST):
+                return False
+            return LANES[i].name != WAITS or None not in outs[:i]
+
+        waiting, pending = list(range(len(LANES))), {}
+        while waiting or pending:
+            for i in [i for i in waiting if ready(i)]:
+                waiting.remove(i)
                 given = lane_in
-                if lane.name == "web_topic":
+                if LANES[i].name == WAITS:
                     given = lane_in.model_copy(update={"first_heading": first_heading(ctx)})
-                outs.append(run_step(ctx, f"lane:{lane.name}", lane.run, given))
-        except Exception:  # noqa: BLE001 any lane error is kept on its step row and the search goes on
-            failed += 1
-            outs.append(LaneOut(lane=lane.name, query="", total_seen=0))
-        if i < len(LANES) - 1:
-            run_step(ctx, "publish", publish(list(outs)), PublishIn(lanes=[o.lane for o in outs], chips=chips))
+                pending[submit(i, given)] = i
+            done, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for future in sorted(done, key=pending.__getitem__):
+                i = pending.pop(future)
+                outs[i], error = future.result()
+                failed += error
+                filled = [o for o in outs if o is not None]
+                if len(filled) < len(LANES):
+                    given = PublishIn(lanes=[o.lane for o in filled], chips=chips)
+                    run_step(ctx, "publish", publish(filled, outs[i]), given)
     if failed == len(LANES):
         raise RuntimeError("every lane failed")
-    finish(ctx, outs, chips)
+    finish(ctx, in_lane_order(outs), chips)
 
 
 def main(argv: list[str] | None = None, llm: StructuredLLM | None = None) -> int:

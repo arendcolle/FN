@@ -179,16 +179,21 @@ class Store:
         row = self.conn.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM step_runs WHERE search_id = ?", (search_id,))
         return row.fetchone()[0]
 
-    def start_step(self, run: StepRun, input_json: str) -> None:
-        """Insert the step row and its input payload before the step runs."""
-        row = run.model_dump()
-        row["started_at"] = _iso(run.started_at)
-        row["ended_at"] = _iso(run.ended_at)
+    def start_step(self, run: StepRun, input_json: str) -> StepRun:
+        """Insert the step row, numbered next in its search, and its input payload before the step runs.
+
+        Returns run with that number; the write lock taken first keeps two threads from reading the same one.
+        """
         with self.tx() as conn:
+            run = run.model_copy(update={"seq": self.next_step_seq(run.search_id)})
+            row = run.model_dump()
+            row["started_at"] = _iso(run.started_at)
+            row["ended_at"] = _iso(run.ended_at)
             conn.execute(
                 f"INSERT INTO step_runs ({', '.join(row)}) VALUES ({', '.join('?' * len(row))})", list(row.values())
             )
             conn.execute("INSERT INTO step_payloads (step_run_id, input_json) VALUES (?, ?)", (run.id, input_json))
+        return run
 
     def finish_step(self, run: StepRun, output_json: str | None) -> None:
         """Write the step's final status and metrics, and its output payload when there is one."""

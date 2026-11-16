@@ -265,8 +265,10 @@ class SeedLaneSearchTest(unittest.TestCase):
         chips = Chips(topics=[Chip(text="exoplanetology", origin="edited")])
         found = self.search(chips)
         steps = self.store.list_steps(found.id)
-        self.assertEqual([(s.step, s.status) for s in steps][:2], [("parse", "skipped"), ("lane:seeds", "ok")])
-        self.assertEqual(Chips.model_validate(json.loads(self.store.get_payload(steps[1].id)[0])["chips"]), chips)
+        self.assertEqual([(s.step, s.status) for s in steps][:2], [("parse", "skipped"), ("cities", "ok")])
+        (lane,) = [s for s in steps if s.step == "lane:seeds"]
+        self.assertEqual(lane.status, "ok")
+        self.assertEqual(Chips.model_validate(json.loads(self.store.get_payload(lane.id)[0])["chips"]), chips)
         self.assertEqual(len(self.store.list_candidates(found.id)), 1)
 
     def test_same_question_twice_makes_two_searches_and_no_people(self):
