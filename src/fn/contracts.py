@@ -878,6 +878,18 @@ class PlacesOut(Model):
     claims: int
 
 
+# The one step of the fn-orgs --match job.
+class OrgMatchIn(Model):
+    pace_s: float = 0.2
+
+
+class OrgMatchOut(Model):
+    asked: int
+    chosen: int
+    linked: int
+    failed: int
+
+
 # The one step of the fn-seed job.
 class SeedIn(Model):
     pass

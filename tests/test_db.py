@@ -74,7 +74,7 @@ class NetworkMigrationTest(unittest.TestCase):
             conn.execute("INSERT INTO candidates (search_id, person_id, person_ids_json, section, rank, score, "
                          "lane_ranks_json, reason_claim_ids_json, score_parts_json) "
                          "VALUES ('s1', ?, '[]', 'new', 1, 0.1, '{}', '[]', '[]')", (p,))
-        self.assertEqual(store.migrate(), [6, 7, 8, 9, 10, 11, 12])
+        self.assertEqual(store.migrate(), [6, 7, 8, 9, 10, 11, 12, 14])
         found = dict(conn.execute("SELECT person_id, hit_person_ids_json FROM candidates").fetchall())
         self.assertEqual({p: json.loads(v) for p, v in found.items()}, {"p1": ["p1", "p2"], "p3": [], "p4": []})
         self.assertEqual([c.hit_person_ids for c in store.list_candidates("s1")], [["p1", "p2"], [], []])
@@ -100,7 +100,7 @@ class NetworkMigrationTest(unittest.TestCase):
             store.conn.execute("INSERT INTO candidates (search_id, person_id, person_ids_json, section, rank, score, "
                                "lane_ranks_json, reason_claim_ids_json, score_parts_json) "
                                "VALUES ('s1', ?, '[]', ?, ?, 0.1, ?, '[]', ?)", (p, section, i, lanes, parts))
-        self.assertEqual(store.migrate(), [7, 8, 9, 10, 11, 12])
+        self.assertEqual(store.migrate(), [7, 8, 9, 10, 11, 12, 14])
         found = {c.person_id: (c.rank, c.cut_reason) for c in store.list_candidates("s1")}
         self.assertEqual(found, {"cut": (1, "no_belgian_evidence"), "years": (2, None), "two": (3, None),
                                  "net": (4, None)})
@@ -140,6 +140,24 @@ class CandidateTierTest(unittest.TestCase):
                            "lane_ranks_json, reason_claim_ids_json, score_parts_json) "
                            "VALUES ('s1', 'b', '[]', 'new', 2, 0.1, '{}', '[]', '[]')")
         self.assertEqual([(c.person_id, c.tier, c.fit) for c in store.list_candidates("s1")], [("a", 3, fit), ("b", None, None)])
+
+
+class OrgMatchesTest(unittest.TestCase):
+    def test_014_adds_the_org_matches_table_to_a_database_at_012(self):
+        """A database at 012 has no org_matches table; migrate() applies 014 and the table takes a null org_id."""
+        store = Store(make_settings(self).db_path)
+        self.addCleanup(store.close)
+        old = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, old)
+        for path in db.MIGRATIONS.glob("[0-9][0-9][0-9]_*.sql"):
+            if int(path.name[:3]) <= 12:
+                shutil.copy(path, old / path.name)
+        with mock.patch.object(db, "MIGRATIONS", old):
+            store.migrate()
+        self.assertEqual(store.conn.execute("SELECT name FROM sqlite_master WHERE name = 'org_matches'").fetchall(), [])
+        self.assertEqual(store.migrate(), [14])
+        store.save_org_answer("example institute", "Example Institute", None, now())
+        self.assertEqual(store.org_answers(), {"example institute": None})
 
 
 class ClaimsFtsTest(unittest.TestCase):

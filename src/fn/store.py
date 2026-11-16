@@ -363,7 +363,7 @@ class Store:
         """Store the claim and its source unless they are stored, and return it as stored.
 
         The id is the sha1 of person, kind, value, source and quote start; a stored claim with that id
-        takes the draft's org_id, relation and years. A new claim gets first_seen_at at, else the current
+        takes the draft's relation and years, and its org_id when the draft has one. A new claim gets first_seen_at at, else the current
         UTC time. Raises ValueError when the quote is not at its offsets in the source text as stored.
         """
         source = draft.source
@@ -378,8 +378,9 @@ class Store:
                                                           "first_seen_at": _iso(claim.first_seen_at)}
             conn.execute(
                 f"INSERT INTO claims ({', '.join(data)}) VALUES ({', '.join('?' * len(data))}) "
-                "ON CONFLICT (id) DO UPDATE SET org_id = excluded.org_id, relation = excluded.relation, "
-                "years_json = excluded.years_json WHERE org_id IS NOT excluded.org_id "
+                "ON CONFLICT (id) DO UPDATE SET org_id = COALESCE(excluded.org_id, claims.org_id), "
+                "relation = excluded.relation, years_json = excluded.years_json "
+                "WHERE claims.org_id IS NOT COALESCE(excluded.org_id, claims.org_id) "
                 "OR relation IS NOT excluded.relation OR years_json IS NOT excluded.years_json",
                 list(data.values()),
             )
@@ -413,6 +414,26 @@ class Store:
         cursor = self.conn.execute("UPDATE orgs SET city = ?, lat = ?, lon = ? WHERE id = ? AND city IS NULL",
                                    (city, lat, lon, org_id))
         return cursor.rowcount > 0
+
+    def unlinked_affiliations(self, relations: tuple[str, ...]) -> list[tuple[str, str]]:
+        """The id and value of every claim without an org and with one of the relations, rejected ones too, by id."""
+        rows = self.conn.execute("SELECT id, value FROM claims WHERE org_id IS NULL "
+                                 "AND relation IN (SELECT value FROM json_each(?)) ORDER BY id", (json.dumps(relations),))
+        return [(r[0], r[1]) for r in rows]
+
+    def org_answers(self) -> dict[str, str | None]:
+        """The stored ROR answer of every asked name by its folded key: an org id, or None for no match."""
+        return {r[0]: r[1] for r in self.conn.execute("SELECT fold_key, org_id FROM org_matches")}
+
+    def save_org_answer(self, fold_key: str, name: str, org_id: str | None, at: datetime) -> None:
+        """Store the answer for the folded name, replacing an earlier one."""
+        self.conn.execute("INSERT OR REPLACE INTO org_matches (fold_key, name, org_id, asked_at) VALUES (?, ?, ?, ?)",
+                          (fold_key, name, org_id, at.isoformat()))
+
+    def link_claims(self, claim_ids: list[str], org_id: str) -> int:
+        """Give the claims without an org this org; returns the number of rows changed."""
+        return self.conn.execute("UPDATE claims SET org_id = ? WHERE org_id IS NULL "
+                                 "AND id IN (SELECT value FROM json_each(?))", (org_id, json.dumps(claim_ids))).rowcount
 
     def unlocated_places(self) -> list[tuple[str, str]]:
         """The id and place text of every location claim without coordinates that is not a birthplace or an origin."""

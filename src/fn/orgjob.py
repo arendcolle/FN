@@ -4,13 +4,14 @@ import sys
 
 from fn import extract, geo, orgs
 from fn.config import Settings, from_env
-from fn.contracts import HttpClient, OrgsIn, PlacesIn, PlacesOut, Search
+from fn.contracts import HttpClient, OrgMatchIn, OrgMatchOut, OrgsIn, PlacesIn, PlacesOut, Search
 from fn.net import Client
 from fn.steps import StepContext, run_step
 from fn.store import Store
 from fn.worker import Worker
 
 PLACES_JOB = "fn-orgs --places"
+MATCH_JOB = "fn-orgs --match"
 
 
 def job_steps(ctx: StepContext, _: Search) -> None:
@@ -49,11 +50,25 @@ def fill_places(store: Store, settings: Settings, http: HttpClient) -> Search:
         worker.shutdown()
 
 
+def match_names(store: Store, settings: Settings, http: HttpClient) -> Search:
+    """Run fn-orgs --match as a job: one searches row of kind job with one match step; returns the ended job."""
+    worker = Worker(store, settings, llm=None, http=http)
+    try:
+        return worker.execute(worker.create_search(MATCH_JOB, kind="job").id,
+                              lambda ctx, _: run_step(ctx, "match", orgs.match, OrgMatchIn()))
+    finally:
+        worker.shutdown()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="fn-orgs")
-    parser.add_argument("--places", action="store_true",
-                        help="fill org cities from stored OpenAlex records and locate stored place claims")
-    run = fill_places if parser.parse_args().places else refresh
+    flags = parser.add_mutually_exclusive_group()
+    flags.add_argument("--places", action="store_true",
+                       help="fill org cities from stored OpenAlex records and locate stored place claims")
+    flags.add_argument("--match", action="store_true",
+                       help="ask ROR for the organization of each employer name and link it to the claims")
+    args = parser.parse_args()
+    run = fill_places if args.places else match_names if args.match else refresh
     settings = from_env()
     store = Store(settings.db_path)
     store.migrate()
@@ -63,6 +78,10 @@ def main() -> int:
         out = PlacesOut.model_validate_json(store.get_payload(step.id)[1])
         print(f"fn-orgs --places job {job.id} done: {out.orgs} orgs got a city, {out.claims} place claims got "
               f"coordinates in {settings.db_path}")
+    elif job.status == "done" and job.question == MATCH_JOB:
+        out = OrgMatchOut.model_validate_json(store.get_payload(step.id)[1])
+        print(f"fn-orgs --match job {job.id} done: {out.asked} names asked, {out.chosen} chosen, {out.linked} claims "
+              f"linked, {out.failed} failed in {settings.db_path}")
     elif job.status == "done":
         print(f"fn-orgs job {job.id} done: {len(orgs.ids())} orgs saved into {settings.db_path}")
     else:
