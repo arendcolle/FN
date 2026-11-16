@@ -56,16 +56,17 @@ def listed(claim: Claim) -> str:
 
 
 def people(ctx: StepContext, pages: list[tuple[int, Source]], considered: list[Considered], lane: LaneName,
-           focus: Callable[[Source, str], bool] | None = None) -> list[LaneHit]:
+           focus: Callable[[Source, str], bool] | None = None, leads: list[list[str]] | None = None) -> list[LaneHit]:
     """One hit per person the pages name, in page order, then mention order, with every mention's claims stored.
 
     With focus, a person for whom focus(source, name) is false is not stored and gets a dropped mention row.
+    With leads (one name list per page), each page is read for those people only.
 
     A person named twice on a page is one hit with the claims of both mentions. Each kept mention, and each
     mention, relation or chunk dropped, is added to considered.
     """
     hits: dict[str, LaneHit] = {}
-    read = extract.read_all(ctx, [source for _, source in pages])
+    read = extract.read_all(ctx, [source for _, source in pages], leads)
     for (rank, source), (found, dropped) in zip(pages, read):
         considered += dropped
         page = f"page {rank}, {source.title}, {source.url}" if source.title else f"page {rank}, {source.url}"

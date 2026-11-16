@@ -19,7 +19,8 @@ from fn.steps import current_recorder
 PROMPTS = Path(__file__).parent / "prompts"
 CLI_ENV = ("PATH", "HOME", "USER", "LANG", "TMPDIR")
 TIMEOUT_S = 60
-TIMEOUTS = {"extract": 120, "scout": 420}
+TIMEOUTS = {"extract": 120, "extract_leads": 120, "scout": 420}
+BASES = {"extract_leads": "extract"}
 TOOLS = {"scout": "WebSearch,WebFetch"}
 MODEL = "haiku"
 DATA_NAME = re.compile(r"[a-z][a-z_]*")
@@ -48,7 +49,9 @@ class TagError(ValueError):
 
 
 def system_prompt(task: str) -> str:
-    return (PROMPTS / f"{task}.md").read_text()
+    """The task's prompt file, after its base task's prompt when BASES names one."""
+    own = (PROMPTS / f"{task}.md").read_text()
+    return f"{system_prompt(BASES[task])}\n{own}" if task in BASES else own
 
 
 def user_turn(data: dict[str, str]) -> str:

@@ -21,10 +21,11 @@ class ResearchLLM:
     """Answers the scout task with the same leads for every angle and the extract task per page by marker."""
 
     def __init__(self, leads: list[ScoutLead], people: dict[str, list[dict]]):
-        self.leads, self.answer, self.calls = leads, by_marker(people), []
+        self.leads, self.answer, self.calls, self.data = leads, by_marker(people), [], []
 
     def structured(self, task, data, schema):
         self.calls.append(task)
+        self.data.append((task, dict(data)))
         value = ScoutLeads(searches=["q"], people=self.leads) if task == "scout" else schema.model_validate(
             {"people": self.answer(data["page"])})
         return type("Result", (), {"value": value})()
@@ -84,6 +85,14 @@ class ScoutLaneTest(unittest.TestCase):
         self.assertEqual(kinds, {"page"})
         self.assertEqual(sorted(map(sorted, self.windowed)), [["Eva Maes"], ["Jan Peeters"], ["Jan Peeters"]])
         self.assertEqual(self.llm.calls.count("scout"), 6)
+
+    def test_two_leads_on_one_page_give_one_extract_leads_call_with_both_names(self):
+        """The page is read by extract_leads with both lead names in lead order, and by no extract call."""
+        self.run_lane([lead("Jan Peeters", JAN), lead("Eva Maes", JAN)], {JAN: JAN_TEXT})
+        read = [data for task, data in self.llm.data if task != "scout"]
+        self.assertEqual([task for task, _ in self.llm.data if task != "scout"], ["extract_leads"])
+        self.assertEqual(read[0]["leads"], "Jan Peeters\nEva Maes")
+        self.assertNotIn("extract", self.llm.calls)
 
     def test_a_person_the_page_names_who_is_not_a_lead_is_not_stored(self):
         """A second name on the page gets a dropped row and no stored person."""

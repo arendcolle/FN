@@ -108,7 +108,8 @@ def run(ctx: StepContext, inp: LaneIn) -> LaneOut:
         matched.extend((source, found, lead) for lead in leads_here)
         return bool(leads_here)
 
-    hits = web.people(ctx, stored, considered, name, focus=focus)
+    hits = web.people(ctx, stored, considered, name, focus=focus,
+                      leads=[[lead.name for lead in givers[scout.page_key(s.url)]] for _, s in stored])
     hits = add_stated(ctx, hits, matched, stored, considered)
     named = {lead.name for _, _, lead in matched}
     for lead in leads:
