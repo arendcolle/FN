@@ -6,30 +6,39 @@ import tempfile
 import unittest
 from collections import Counter
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from pathlib import Path
 from unittest import mock
 
 import httpx
 
-from fn import db, orgjob, orgs, seedload
+from fn import db, net, orgjob, orgs, search, seedload
 from fn.contracts import (
     REGISTRY_ID,
     Chip,
     Chips,
     ClaimDraft,
     Identifier,
+    LaneHit,
+    LaneOut,
     OrgFacts,
+    OrgMatchIn,
+    OrgMatchOut,
+    Place,
     PlacesOut,
     Search,
     Source,
     page_source,
     record_source,
 )
+from fn.steps import StepContext, run_step
 from fn.store import Store
 from fn.web.debug import debug_search_page
+from fn.worker import Worker, new_id, now
 from tests.helpers import (
     FIXTURES,
     StubHttp,
+    StubLLM,
     make_db,
     make_settings,
     recorded_orgs,
@@ -316,9 +325,177 @@ class OrgPlacesMigrationTest(MigrationTest):
                      " VALUES ('s1', 'record', 'https://example.org', 'text', 'h', 1)")
         conn.execute("INSERT INTO orgs (id, name, country_code, source_id, fetched_at)"
                      " VALUES ('ror:0aaaaaa11', 'Example Institute', 'BE', 's1', '2026-11-02T00:00:00+00:00')")
-        self.assertEqual(self.store.migrate(), [8, 9, 10, 11, 12])
+        self.assertEqual(self.store.migrate(), [8, 9, 10, 11, 12, 14])
         old = self.store.get_orgs(["ror:0aaaaaa11"])["ror:0aaaaaa11"]
         self.assertEqual((old.name, old.country_code, old.city, old.lat, old.lon), ("Example Institute", "BE", None, None, None))
+
+
+INBO = "Research Institute for Nature and Forest"
+AGRICULTURE = "Research Institute for Agriculture"
+ROR_ANSWERS = FIXTURES / "http" / "ror-affiliation"
+
+
+class MatchTest(unittest.TestCase):
+    def setUp(self):
+        self.settings = make_settings(self)
+        self.store = make_db(self, self.settings)
+        self.person = self.store.resolve_person([Identifier(scheme="mention", value="m1")], "Wim Doe")
+        self.asked: list[str] = []
+        self.answers = {INBO: (200, (ROR_ANSWERS / "inbo.json").read_bytes()),
+                        AGRICULTURE: (200, (ROR_ANSWERS / "agriculture.json").read_bytes())}
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        name = request.url.params["affiliation"]
+        self.assertEqual(request.url.params["single_search"], "")
+        self.asked.append(name)
+        known = {orgs.fold(k): v for k, v in self.answers.items()}
+        status, content = known.get(orgs.fold(name), (200, b'{"items": []}'))
+        return httpx.Response(status, content=content, headers={"Retry-After": "300"} if status == 429 else {})
+
+    def claim(self, value: str, relation: str = "works_at", date: str | None = "2025"):
+        text = f"Wim Doe works at {value.strip()}."
+        page = page_source(f"https://example.org/{hashlib.sha1((value + relation).encode()).hexdigest()}", "Page", text,
+                           {}, NOW, None)
+        quote = value.strip()
+        start = text.index(quote)
+        return self.store.upsert_claim(ClaimDraft(person_id=self.person.id, kind="affiliation", relation=relation,
+                                                  value=value, quote=quote, quote_start=start, quote_end=start + len(quote),
+                                                  source=page, claim_date=date))
+
+    def run_match(self) -> tuple[Search, OrgMatchOut | None]:
+        client = net.Client(self.settings.model_copy(update={"http_mode": "live"}), httpx.MockTransport(self.handler))
+        worker = Worker(self.store, self.settings, llm=None, http=client)
+        self.addCleanup(worker.shutdown)
+        job = worker.execute(worker.create_search(orgjob.MATCH_JOB, kind="job").id,
+                             lambda ctx, _: run_step(ctx, "match", orgs.match, OrgMatchIn(pace_s=0)))
+        step = self.store.list_steps(job.id)[-1]
+        return job, (OrgMatchOut.model_validate_json(self.store.get_payload(step.id)[1]) if step.status == "ok" else None)
+
+    def org_of(self, *claims) -> list[str | None]:
+        return [self.store.get_claim(c.id).org_id for c in claims]
+
+    def test_one_call_stores_the_org_with_its_place_and_links_the_claims_of_all_spellings(self):
+        """A name in three spellings is asked once; its claims get the chosen org, stored with city and coordinates."""
+        claims = [self.claim(INBO), self.claim(INBO.upper()), self.claim(f"  {INBO.lower()}  ", "worked_at")]
+        job, out = self.run_match()
+        self.assertEqual((job.status, [orgs.fold(n) for n in self.asked]), ("done", [orgs.fold(INBO)]))
+        self.assertEqual(out, OrgMatchOut(asked=1, chosen=1, linked=3, failed=0))
+        self.assertEqual(self.org_of(*claims), ["ror:00j54wy13"] * 3)
+        org = self.store.get_orgs(["ror:00j54wy13"])["ror:00j54wy13"]
+        self.assertEqual((org.country_code, org.city, org.lat, org.lon), ("BE", "Brussels", 50.85045, 4.34878))
+
+    def test_no_chosen_item_stores_a_null_answer_and_a_second_run_makes_no_call(self):
+        """The agriculture answer has a first item at 0.95 that is not chosen: nothing links, and the name is not asked again."""
+        claim = self.claim(AGRICULTURE)
+        _, out = self.run_match()
+        self.assertEqual((out, self.org_of(claim)), (OrgMatchOut(asked=1, chosen=0, linked=0, failed=0), [None]))
+        self.assertEqual(self.store.org_answers(), {orgs.fold(AGRICULTURE): None})
+        self.assertEqual(self.run_match()[1], OrgMatchOut(asked=0, chosen=0, linked=0, failed=0))
+        self.assertEqual(self.asked, [AGRICULTURE])
+
+    def test_a_new_claim_of_a_remembered_name_is_linked_by_a_rerun_without_a_call(self):
+        """The stored answer links a claim added after the first run, and a rejected claim of the name too."""
+        self.claim(INBO)
+        self.run_match()
+        later = self.claim(INBO, "affiliated_with")
+        rejected = self.claim(INBO, "studied_at")
+        self.store.conn.execute("UPDATE claims SET rejected_at = '2026-11-03' WHERE id = ?", (rejected.id,))
+        _, out = self.run_match()
+        self.assertEqual((out.asked, out.linked, self.asked), (0, 2, [INBO]))
+        self.assertEqual(self.org_of(later, rejected), ["ror:00j54wy13"] * 2)
+
+    def test_an_unmapped_a_one_letter_and_a_long_name_make_no_call(self):
+        """A name in the unmapped file, one with under three letters and one over 200 characters are not asked or stored."""
+        for value in (next(iter(orgs.unmapped())), "X", "-- 7 --", "Lab " * 75):
+            self.claim(value)
+        job, out = self.run_match()
+        self.assertEqual((job.status, out, self.asked, self.store.org_answers()),
+                         ("done", OrgMatchOut(asked=0, chosen=0, linked=0, failed=0), [], {}))
+
+    def test_two_chosen_items_link_nothing_and_a_record_without_locations_links_and_gives_no_place(self):
+        """Two chosen items are no match; one chosen record without locations links its claims to an org with no city."""
+        item = json.loads((ROR_ANSWERS / "inbo.json").read_text())["items"][0]
+        bare = {**item, "organization": {k: v for k, v in item["organization"].items() if k != "locations"}}
+        other = {**item, "organization": {**item["organization"], "id": "https://ror.org/0aaaaaa11"}}
+        self.answers = {"Two Place": (200, json.dumps({"items": [item, other]}).encode()),
+                        "No Place": (200, json.dumps({"items": [bare]}).encode())}
+        both, nowhere = self.claim("Two Place"), self.claim("No Place")
+        _, out = self.run_match()
+        self.assertEqual((out.chosen, out.linked), (1, 1))
+        self.assertEqual(self.org_of(both, nowhere), [None, "ror:00j54wy13"])
+        org = self.store.get_orgs(["ror:00j54wy13"])["ror:00j54wy13"]
+        self.assertEqual((org.city, org.lat, org.lon), (None, None, None))
+
+    def test_a_stored_org_keeps_its_city(self):
+        """When the org is stored with a city, a match of the name leaves that city alone."""
+        source, _ = record_source("https://example.org/inbo", "org", [("id", "x")], {}, NOW)
+        orgs.save(self.store, [OrgFacts(id="ror:00j54wy13", name="Research Institute", city="Leuven", lat=50.88, lon=4.7)],
+                  source, replace=False)
+        self.claim(INBO)
+        self.run_match()
+        org = self.store.get_orgs(["ror:00j54wy13"])["ror:00j54wy13"]
+        self.assertEqual((org.city, org.lat, org.lon), ("Leuven", 50.88, 4.7))
+
+    def test_a_429_over_30_seconds_fails_the_step_naming_the_name_and_a_rerun_asks_only_the_rest(self):
+        """Names are asked in key order; the 429 stops the run at its name, earlier answers stay, the rerun skips them."""
+        first, limited, last = self.claim(AGRICULTURE), self.claim("Zed Limited Lab"), self.claim("Zzz Lab")
+        self.answers["Zed Limited Lab"] = (429, b"slow down")
+        with self.assertLogs("fn.worker", "ERROR"):
+            job, out = self.run_match()
+        step = self.store.list_steps(job.id)[-1]
+        self.assertEqual((job.status, step.status, out), ("failed", "error", None))
+        self.assertIn("'Zed Limited Lab'", step.error_message)
+        self.assertEqual(self.asked, [AGRICULTURE, "Zed Limited Lab"])
+        self.assertEqual(self.store.org_answers(), {orgs.fold(AGRICULTURE): None})
+        self.answers["Zed Limited Lab"] = (200, b'{"items": []}')
+        self.asked.clear()
+        self.run_match()
+        self.assertEqual(self.asked, ["Zed Limited Lab", "Zzz Lab"])
+        self.assertEqual(self.org_of(first, limited, last), [None, None, None])
+
+    def test_a_400_adds_to_failed_is_not_stored_and_the_next_name_is_asked(self):
+        """A 400 and an answer that is not JSON each count as failed and store nothing; the run goes on to INBO."""
+        bad, text, good = self.claim("Aa Bad Lab"), self.claim("Ab Text Lab"), self.claim(INBO)
+        self.answers["Aa Bad Lab"] = (400, b'{"errors": ["bad"]}')
+        self.answers["Ab Text Lab"] = (200, b"<html>")
+        job, out = self.run_match()
+        self.assertEqual((job.status, out), ("done", OrgMatchOut(asked=3, chosen=1, linked=1, failed=2)))
+        self.assertEqual(self.org_of(bad, text, good), [None, None, "ror:00j54wy13"])
+        self.assertEqual(list(self.store.org_answers()), [orgs.fold(INBO)])
+
+    def test_a_seed_load_after_a_match_keeps_the_link_and_a_second_load_writes_nothing(self):
+        """A claim linked by a match keeps its org when the seed rows load again, and that load changes no row."""
+        seedload.load(self.store)
+        (claim_id, _), *_ = self.store.unlinked_affiliations(orgs.MATCH_RELATIONS)
+        self.assertEqual(self.store.link_claims([claim_id], "ror:00j54wy13"), 1)
+        before = self.store.conn.total_changes
+        seedload.load(self.store)
+        self.assertEqual(self.store.conn.total_changes - before, 0)
+        self.assertEqual(self.store.get_claim(claim_id).org_id, "ror:00j54wy13")
+
+    def test_a_match_moves_a_person_with_an_employer_in_belgium_from_unknown_to_abroad_in_a_us_search(self):
+        """The saved fit's place is unknown while the employer has no org, and abroad after the match and a rerank."""
+        self.claim(INBO)
+        person = self.person
+
+        def run(ctx, inp):
+            hit = LaneHit(person_id=person.id, name_key=person.name_key, lane="seeds", rank=1, score=1.0, matched_on="wind")
+            return LaneOut(lane="seeds", query="wind", total_seen=1, hits=[hit])
+
+        chips = Chips(topics=[Chip(text="wind", origin="edited")],
+                      place=Place(text="the US", origin="edited", kind="anywhere_us"), version=2)
+        worker = Worker(self.store, self.settings, llm=StubLLM(), http=StubHttp())
+        self.addCleanup(worker.shutdown)
+        search_id = worker.create_search("Who knows wind?", chips, "edited").id
+        with mock.patch("fn.search.LANES", [SimpleNamespace(name="seeds", run=run)]):
+            worker.execute(search_id)
+        (before,) = self.store.list_candidates(search_id)
+        self.run_match()
+        ctx = StepContext(search_id=search_id, store=self.store, llm=None, http=None, now=now, new_id=new_id,
+                          log=mock.Mock(), settings=self.settings)
+        search.refinish(ctx, self.store.get_search(search_id))
+        (after,) = self.store.list_candidates(search_id)
+        self.assertEqual((before.fit.place, after.fit.place), ("unknown", "abroad"))
 
 
 if __name__ == "__main__":

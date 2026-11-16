@@ -1,5 +1,6 @@
 """Institution identity from data/org_aliases.csv, and institution facts from ROR, Wikidata and OpenAlex."""
 import csv
+import time
 from datetime import datetime
 from functools import cache
 
@@ -10,9 +11,12 @@ from fn.contracts import (
     HttpClient,
     Org,
     OrgFacts,
+    OrgMatchIn,
+    OrgMatchOut,
     OrgsIn,
     OrgsOut,
     Source,
+    name_key,
     normalize,
     record_source,
 )
@@ -25,6 +29,9 @@ UNMAPPED = ROOT / "data" / "org_aliases_unmapped.txt"
 ROR_API = "https://api.ror.org/v2/organizations"
 WIKIDATA_API = "https://www.wikidata.org/w/api.php"
 RANKS = ("preferred", "normal")
+MATCH_RELATIONS = ("works_at", "worked_at", "affiliated_with", "hosted_by", "studied_at")
+MIN_CHARS = 3
+MAX_NAME_CHARS = 200
 
 
 class OrgError(RuntimeError):
@@ -220,3 +227,63 @@ def run(ctx: StepContext, inp: OrgsIn) -> OrgsOut:
         save(ctx.store, [facts], source, replace=True)
         ctx.log.info("%s: %s, %s %s, name in %s", org, facts.name, facts.country_code, facts.region, facts.name_lang)
     return OrgsOut(orgs=list(ctx.store.get_orgs(inp.ids).values()))
+
+
+def askable(name: str) -> bool:
+    """Whether ROR is asked about the name: at least MIN_CHARS letters or digits, at most MAX_NAME_CHARS, not unmapped."""
+    return (len(name_key(name).replace(" ", "")) >= MIN_CHARS and len(name) <= MAX_NAME_CHARS
+            and fold(name) not in unmapped())
+
+
+def chosen(body: dict, fetched_at: datetime) -> tuple[OrgFacts, Source] | None:
+    """The facts and record Source of the one chosen item of a ROR affiliation answer; None for none or several chosen.
+
+    Raises OrgError for a body without items and for a record ror_record refuses.
+    """
+    try:
+        picked = [item["organization"] for item in body["items"] if item.get("chosen")]
+        return ror_record(picked[0], fetched_at) if len(picked) == 1 else None
+    except (ValueError, KeyError, TypeError) as exc:
+        raise OrgError(f"unexpected answer, {type(exc).__name__}: {exc}") from exc
+
+
+def match(ctx: StepContext, inp: OrgMatchIn) -> OrgMatchOut:
+    """Ask ROR once per employer name that has claims without an org, and link the chosen org to every claim of the name.
+
+    A stored answer is reused without a call. Raises OrgError naming the name at a 429, a 5xx or a failed call,
+    with the earlier answers stored, and RuntimeError without an HTTP client.
+    """
+    if ctx.http is None:
+        raise RuntimeError("fn-orgs --match needs an HTTP client")
+    groups: dict[str, tuple[str, list[str]]] = {}
+    for claim_id, value in ctx.store.unlinked_affiliations(MATCH_RELATIONS):
+        groups.setdefault(fold(value), (value, []))[1].append(claim_id)
+    answers = ctx.store.org_answers()
+    asked = picked = linked = failed = 0
+    for key, (name, claim_ids) in sorted(groups.items()):
+        if key in answers:
+            linked += ctx.store.link_claims(claim_ids, answers[key]) if answers[key] else 0
+            continue
+        if not askable(name):
+            continue
+        if asked:
+            time.sleep(inp.pace_s)
+        asked += 1
+        try:
+            found = chosen(ctx.http.get(ROR_API, {"affiliation": name, "single_search": ""}).json(), ctx.now())
+        except HttpError as exc:
+            if exc.status is None or exc.status == 429 or exc.status >= 500:
+                raise OrgError(f"{name!r}: {exc}") from exc
+            failed += 1
+            continue
+        except (ValueError, OrgError):
+            failed += 1
+            continue
+        with ctx.store.tx():
+            if found:
+                save(ctx.store, [found[0]], found[1], replace=False)
+            org = found[0].id if found else None
+            ctx.store.save_org_answer(key, name, org, ctx.now())
+            linked += ctx.store.link_claims(claim_ids, org) if org else 0
+        picked += bool(found)
+    return OrgMatchOut(asked=asked, chosen=picked, linked=linked, failed=failed)
