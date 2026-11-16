@@ -270,10 +270,11 @@ def geo_features(store: Store, search: Search, shown: int = RESULTS_STEP) -> dic
     return geo(found.network + found.new, listed)
 
 
-def source_page(store: Store, source: Source, claim: Claim | None, back: BackLink | None = None) -> str:
-    """A source in words staff can read: the person, the fact as a sentence, the passage, the link and the stored text.
+def source_page(store: Store, source: Source, claim: Claim | None, back: BackLink | None = None,
+                stored_record: bool = False) -> str:
+    """A source in words staff can read: the person, the fact as a sentence, the passage, the link, and the stored text when stored_record is on.
 
-    Without a claim the page shows the source label and the stored text. back is the link to the page it was
+    Without a claim the page shows the source label. back is the link to the page it was
     opened from. id="quote" is on the passage, or on the sentence when there is no passage, so #quote never opens the record.
     """
     person = org = None
@@ -284,8 +285,7 @@ def source_page(store: Store, source: Source, claim: Claim | None, back: BackLin
     title = person.display_name if person else label_of(source)
     shown = bool(claim) and prose(source)
     text = source.text
-    stored = [text[:claim.quote_start], h.mark(claim.quote),
-              text[claim.quote_end:]] if claim else text
+    stored = ([text[:claim.quote_start], h.mark(claim.quote), text[claim.quote_end:]] if claim else text) if stored_record else None
     before, quote, after = passage(source, claim) if shown else ("", "", "")
     return page(
         title if person else "Source",
@@ -299,7 +299,7 @@ def source_page(store: Store, source: Source, claim: Claim | None, back: BackLin
             None if source.url.startswith("fn:") else h.p(h.a("Open the original page", href=source.url),
                                                           class_="fn-source__url text-small"),
             h.details(h.summary("Show the stored record", class_="text-meta"),
-                      h.pre(stored, class_="fn-source__text text-body"), class_="fn-source__stored"),
+                      h.pre(stored, class_="fn-source__text text-body"), class_="fn-source__stored") if stored_record else None,
             class_="fn-source",
         ),
         current="search" if leads_to_search(back) else None,
@@ -520,7 +520,8 @@ def get_source(request: Request, source_id: str, claim: str) -> tuple[Source, Cl
 @router.get("/sources/{source_id}")
 async def show_source(request: Request, source_id: str, claim: str = "", back: str = "") -> HTMLResponse:
     store = store_of(request)
-    return HTMLResponse(source_page(store, *get_source(request, source_id, claim), back_link(store, back)))
+    return HTMLResponse(source_page(store, *get_source(request, source_id, claim), back_link(store, back),
+                                    stored_record=worker_of(request).settings.stored_record))
 
 
 def local_path(value: str) -> str | None:

@@ -1,9 +1,11 @@
 import re
 import unittest
 from html import unescape
+from unittest import mock
 
 from fastapi.testclient import TestClient
 
+from fn import config
 from fn.contracts import ClaimDraft, Identifier, Org, Source
 from fn.present import passage
 from fn.web.app import create_app
@@ -22,7 +24,7 @@ def words_outside_details(html: str) -> int:
 
 class SourcePageTest(unittest.TestCase):
     def setUp(self):
-        self.settings = make_settings(self)
+        self.settings = make_settings(self).model_copy(update={"stored_record": True})
         self.store = make_db(self, self.settings)
         app = create_app(self.settings, StubLLM(error=AssertionError("no LLM")), StubHttp())
         self.client = TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=False)
@@ -136,6 +138,39 @@ class SourcePageTest(unittest.TestCase):
         self.assertNotIn("<b>", html)
         self.assertNotIn("<i>", html)
         self.assertNotIn('q="><b>', html)
+
+    def test_the_stored_record_is_left_out_when_the_setting_is_off(self):
+        """With stored_record off no page holds the disclosure or any raw text; the rest of the page is as before."""
+        quote = "Ada Example works at Example Labs since 2019"
+        source_id, claim_id = self.add("page", SENTENCE * 20 + quote + ". " + SENTENCE * 20, quote)
+        record_id, record_claim = self.add("record", "name: Ada Example\nstudied at KU Leuven", "studied at KU Leuven")
+        script_id, script_claim = self.add("page", "<script>x</script> " + SENTENCE * 20 + "Ada Example is an engineer", "Ada Example is an engineer")
+        app = create_app(self.settings.model_copy(update={"stored_record": False}), StubLLM(error=AssertionError("no LLM")), StubHttp())
+        with TestClient(app, base_url="http://127.0.0.1") as off:
+            def get(source, claim=""):
+                response = off.get(f"/sources/{source}", params={"claim": claim} if claim else {})
+                self.assertEqual(response.status_code, 200)
+                return response.text
+            html = get(source_id, claim_id)
+            on = self.open(source_id, claim_id)
+            for part in ("fn-source__lead", "fn-source__cite", "fn-source__passage"):
+                self.assertEqual(re.search(rf'<p[^>]*class="{part}.*?</p>', html, re.S).group(),
+                                 re.search(rf'<p[^>]*class="{part}.*?</p>', on, re.S).group())
+            self.assertEqual(html.count('id="quote"'), 1)
+            for text in (html, get(source_id), get(record_id, record_claim), get(script_id, script_claim)):
+                self.assertNotIn("fn-source__stored", text)
+                self.assertNotIn("Show the stored record", text)
+            self.assertNotIn("x&lt;/script&gt;", get(script_id, script_claim))
+            self.assertNotIn("x</script>", get(script_id, script_claim))
+
+    def test_fn_stored_record_turns_the_setting_on_only_for_1(self):
+        """Only the exact text 1 turns the stored record on; the default settings leave it off."""
+        for value, expected in ((None, False), ("0", False), ("true", False), ("", False), ("1", True)):
+            with self.subTest(value=value):
+                env = {} if value is None else {"FN_STORED_RECORD": value}
+                with mock.patch.dict("os.environ", env, clear=True), mock.patch("fn.config.keychain", return_value=None):
+                    self.assertEqual(config.from_env().stored_record, expected)
+        self.assertFalse(make_settings(self).stored_record)
 
     def test_a_claim_of_another_source_is_a_404(self):
         """The claim must belong to the source in the url."""

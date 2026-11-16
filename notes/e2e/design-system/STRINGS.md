@@ -111,7 +111,7 @@ This list holds every user-facing string the new and changed parts introduce, gr
 - Cite line under the sentence: "`{source label}`, `{date}`", the date left out when unknown: "BAEF Belgian Fellows, 2015", "columbia.edu, May 2024", "OpenAlex record, 2025", and the day FN read an undated page: "kslaw.com, read 13 November 2026"
 - Passage: about 60 words each side of the quote, "…" at a cut end
 - Link: "Open the original page", left out for `fn:` urls
-- Disclosure: "Show the stored record"
+- Disclosure: "Show the stored record", for debugging only: shown when FN runs with FN_STORED_RECORD=1, left out by default
 
 ## Import
 
