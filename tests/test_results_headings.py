@@ -301,11 +301,14 @@ class SetAsideGroupsTest(ResultsPageCase):
 
     def test_the_no_match_line_names_what_was_not_found_in_each_form(self):
         """Nobody under the first heading gives the line; a required tie changes its second sentence, a required place
-        adds the place words, and roles come before topics and join with 'or'."""
+        adds the place words, roles come before topics and join with 'or', and a question without a tie leaves the tie out."""
         found = "with a known tie to Flanders or Belgium. "
         rows = [("new", 5, None)]
         cases = [
             (Chips(version=2, roles=[chip("marine biologists")], place=BOSTON),
+             "FN found no marine biologists in the Boston area. "
+             "The people below have a known tie, but FN could not confirm their topic."),
+            (Chips(version=2, roles=[chip("marine biologists")], tie=chip("Flemish", "nice"), place=BOSTON),
              f"FN found no marine biologists in the Boston area {found}The closest people are below."),
             (Chips(version=2, topics=[chip("tides"), chip("wind")], tie=chip("Flemish", "nice")),
              f"FN found no tides or wind {found}The closest people are below."),
@@ -332,6 +335,16 @@ class SetAsideGroupsTest(ResultsPageCase):
         self.setUp()
         self.listing([("new", 5, None)], chips=Chips(version=1, roles=[chip("scientists")]))
         self.assertNotIn("FN found no", self.page())
+
+    def test_without_a_tie_chip_a_person_with_the_topic_and_no_tie_is_a_full_match(self):
+        """A question that asks for no tie gives no line when someone stands under "Topic, no known tie"; with a wished
+        tie the same list still gets the line."""
+        rows = [("new", 3, None), ("new", 5, None)]
+        self.listing(rows, chips=Chips(version=2, roles=[chip("scientists")], place=BOSTON))
+        self.assertNotIn("FN found no", self.page())
+        self.setUp()
+        self.listing(rows, chips=Chips(version=2, roles=[chip("scientists")], tie=chip("Flemish", "nice"), place=BOSTON))
+        self.assertIn("FN found no scientists in the Boston area with a known tie", self.page())
 
     def test_the_geo_answer_counts_only_open_people_when_it_says_who_is_shown(self):
         """A set-aside person ahead of 21 open people does not move them: the first 20 are shown, the 21st is not."""

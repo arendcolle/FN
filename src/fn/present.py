@@ -850,13 +850,14 @@ def shown_cards(store: Store, search: Search, rows: list[tuple[Candidate, Person
 
 
 def no_match_line(chips: Chips) -> str:
-    """The line over the list when nobody stands under the first heading: what FN found none of, and what follows."""
+    """The line over the list when nobody matches every wish: what FN found none of, and what follows. A question
+    without a tie chip leaves the tie out of the line."""
     texts = [plain(c.text) for c in chips.roles] or [plain(c.text) for c in chips.topics]
     texts = [t for t in dict.fromkeys(texts) if t]
     what = ", ".join(texts[:-1]) + f" or {texts[-1]}" if len(texts) > 1 else texts[0] if texts else "people"
     place = f" {area_words(chips.place)}" if chips.place and parse.place_must(chips) else ""
-    return (f"FN found no {what}{place} with a known tie to Flanders or Belgium. "
-            + (TIE_BELOW if parse.tie_must(chips) else CLOSEST))
+    tie = " with a known tie to Flanders or Belgium" if chips.tie else ""
+    return f"FN found no {what}{place}{tie}. " + (TIE_BELOW if parse.tie_must(chips) or not chips.tie else CLOSEST)
 
 
 def results(store: Store, search: Search, today: date, shown: int = RESULTS_STEP,
@@ -887,7 +888,9 @@ def results(store: Store, search: Search, today: date, shown: int = RESULTS_STEP
             groups.append(AsideGroup(key=key, title=group_title(key, chips), count=sum(not s for _, _, s in mine),
                                      cards=found, shown=count, next_key=after))
     people = [(c, v) for c, v in kept if is_open(c, chips)]
-    first = any(c.section == "new" and c.tier is not None and rank.heading(c.tier, c.fit.tie_grade if c.fit else "none") == 1
+    # Without a tie chip a person under "Topic, no known tie" matches every wish too.
+    full = (1,) if chips is None or chips.tie else (1, 2)
+    first = any(c.section == "new" and c.tier is not None and rank.heading(c.tier, c.fit.tie_grade if c.fit else "none") in full
                 for c, _ in people)
     new = [v for c, v in people if c.section == "new"]
     done = search.status == "done" and chips is not None and chips.version >= 2
