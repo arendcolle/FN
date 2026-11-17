@@ -91,11 +91,6 @@ def near(ctx: StepContext, area: GeoArea, chips: Chips) -> list[tuple[str, float
     return sorted(found, key=lambda f: (f[1] is None, f[1] or 0.0, f[0]))
 
 
-def must_place(chips: Chips) -> bool:
-    """Whether the question requires its place (version 2 chips with a place of need must)."""
-    return chips.version >= 2 and chips.place is not None and chips.place.need == "must"
-
-
 def inside_first(ctx: StepContext, area: GeoArea, chips: Chips, ranked: list) -> tuple[list[LaneHit], list[Considered]]:
     """The hits of a required place on one rank counter under MAX_HITS, and the verdict of each.
 
@@ -140,7 +135,7 @@ def run(ctx: StepContext, inp: LaneIn) -> LaneOut:
     related = related_query(chips, query)
     # A place search beside a topic or institution lifted people who match only the city above topic matches.
     lone_place = not any(parse.content_words(c.text) for c in chips.topics) and not chips.institutions
-    must = must_place(chips)
+    must = parse.place_must(chips)
     area = area_of(ctx, chips) if lone_place or must else None
     if not query and not related and area is None:
         return LaneOut(lane=name, query="", total_seen=0,
