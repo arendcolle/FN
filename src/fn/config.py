@@ -27,8 +27,8 @@ class Settings(BaseModel):
     parallel_api_key: SecretStr | None = None
     apify_token: SecretStr | None = None
     linkedin_live: bool = False
-    llm_workers: int = Field(6, ge=1)
-    llm_procs: int = Field(10, ge=1)
+    llm_workers: int = Field(12, ge=1)
+    llm_procs: int = Field(16, ge=1)
     scout: bool = True
     stored_record: bool = False
 
