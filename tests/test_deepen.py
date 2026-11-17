@@ -3,7 +3,7 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from unittest import mock
 
-from fn import deepen, llm, pageread
+from fn import deepen, extract, llm, pageread
 from fn.contracts import (
     Candidate,
     CardFit,
@@ -142,13 +142,14 @@ class DeepenTest(unittest.TestCase):
     def held(self, person_id: str, kind: str | None = None) -> list:
         return [c for c in self.store.claims_of([person_id]) if kind in (None, c.kind)]
 
-    def test_the_first_twenty_qualifying_people_by_rank_are_looked_up(self):
-        """Of 25 people who miss a fact, the lookups are those of the first 20 by rank, in rank order."""
+    def test_the_first_twelve_qualifying_people_by_rank_are_looked_up(self):
+        """Of 25 people who miss a fact, the lookups are those of the first MAX_LOOKUPS (12) by rank, in rank order."""
         ids = [self.person(f"Ann Person{chr(97 + n)}") for n in range(25)]
         order = list(reversed(self.people))
         out = self.deepen(order=order)
-        self.assertEqual([lookup.person_id for lookup in out.lookups], [c.person_id for c in order][:20])
-        self.assertEqual(len(self.looked_up()), 20)
+        self.assertEqual(deepen.MAX_LOOKUPS, 12)
+        self.assertEqual([lookup.person_id for lookup in out.lookups], [c.person_id for c in order][:12])
+        self.assertEqual(len(self.looked_up()), 12)
         self.assertNotIn(ids[0], {lookup.person_id for lookup in out.lookups})
 
     def test_nobody_qualifying_gives_a_note_and_no_call(self):
@@ -323,6 +324,14 @@ class DeepenTest(unittest.TestCase):
         pages, notes = deepen.chosen_pages(answer)
         self.assertEqual((pages, notes), ([], ["a mailto address: not fetchable", "https://www.linkedin.com/in/jan: not fetchable"]))
 
+    def test_a_long_page_is_cut_around_the_name_so_one_call_reads_it(self):
+        """A page of 20,000 characters reaches the page reading as one part of at most PAGE_CHARS characters plus its
+        title line, so the model is asked once for it."""
+        text = ("Staff of the department. " * 400) + "Jan Peeters is professor of physics at Example University. " + ("More staff. " * 800)
+        cut = deepen.titled("Staff", pageread.windows(text, ["Jan Peeters"], limit=deepen.PAGE_CHARS))
+        self.assertIn("Jan Peeters is professor", cut)
+        self.assertEqual(len(extract.chunks(cut)), 1)
+
     def test_version_one_chips_make_no_call(self):
         """Chips stored before this round give a note and no lookup."""
         self.person("Jan Peeters")
@@ -385,16 +394,16 @@ class DeepenTest(unittest.TestCase):
         self.assertEqual(self.store.conn.execute("SELECT verdict FROM lookups WHERE person_id = ?", (broken,)).fetchone()[0],
                          "failed")
 
-    def test_past_the_used_lookups_only_the_rest_of_twenty_gaps_are_looked_up_and_no_gap_gets_contact_alone(self):
-        """With used lookups the step looks up at most 20 minus used people with a gap; past that cap a top-10 person
-        with a gap gets no contact-only lookup, while a top-10 person without a gap still gets one."""
+    def test_past_the_used_lookups_only_the_rest_of_the_limit_is_looked_up_and_no_gap_gets_contact_alone(self):
+        """With used lookups the step looks up at most MAX_LOOKUPS minus used people with a gap; past that cap a top-10
+        person with a gap gets no contact-only lookup, while a top-10 person without a gap still gets one."""
         for n in range(300):
             self.person(f"Ann Person{n:03}", complete=n < 10 and n % 2 == 0)
         top = [c.person_id for c in self.people[:10]]
-        out = self.deepen(used=20)
+        out = self.deepen(used=deepen.MAX_LOOKUPS)
         self.assertEqual(out.picked, top[::2])
         self.assertEqual((out.gaps, sorted(self.looked_up())), (0, [f"Ann Person{n:03}" for n in range(0, 10, 2)]))
-        out = self.deepen(used=15)
+        out = self.deepen(used=deepen.MAX_LOOKUPS - 5)
         self.assertEqual((out.picked, out.gaps), (top[1::2], 5))
 
     def test_a_person_in_skip_is_not_looked_up_even_after_a_failed_lookup_or_as_a_card_s_second_record(self):
