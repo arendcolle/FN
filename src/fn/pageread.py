@@ -1,7 +1,10 @@
 """Reads a web page itself: robots.txt first, a fetch through net.Client, then the page's text with the standard library."""
 import ipaddress
+import json
 import re
 import socket
+import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -15,6 +18,7 @@ from fn.steps import StepContext, fan_out
 
 MAX_CHARS = 40_000
 MIN_CHARS = 300
+PDF_SECONDS = 20
 MAX_REDIRECTS = 3
 WORKERS = 6
 PAUSE_S = 0.5
@@ -246,6 +250,29 @@ def _guard(ctx: StepContext, url: str) -> None:
         raise HttpError(f"redirected to {url}: {reason}")
 
 
+def pdf_read(url: str, body: bytes) -> Read:
+    """The text, title and date of a PDF read in a child process, or the reason it could not be read."""
+    try:
+        done = subprocess.run([sys.executable, "-m", "fn.pdftext", str(MAX_CHARS)], input=body, capture_output=True,
+                              timeout=PDF_SECONDS, check=False)
+    except subprocess.TimeoutExpired:
+        return Read(url, None, None, f"a PDF that took over {PDF_SECONDS}s to read")
+    try:
+        got = json.loads(done.stdout)
+    except ValueError:
+        got = None
+    if done.returncode or not isinstance(got, dict) or "error" in got:
+        lines = [line for line in done.stderr.decode(errors="replace").splitlines() if line.strip()]
+        error = str(got["error"]) if isinstance(got, dict) and "error" in got else (
+            lines[-1] if lines else f"the reader ended with status {done.returncode}")
+        return Read(url, None, None, f"a PDF that could not be read: {' '.join(error.split())[:120]}")
+    text = got["text"]
+    if len(text) < MIN_CHARS:
+        return Read(url, got["title"], None, f"a PDF with {len(text)} characters of text, under {MIN_CHARS}")
+    published = next((d for d in (got["modified"], got["created"]) if d and _is_day(d)), None)
+    return Read(url, got["title"], text[:MAX_CHARS], None, len(text) > MAX_CHARS or got["more"], published)
+
+
 def read(ctx: StepContext, url: str) -> Read:
     """Fetch url after the robots.txt check and return its text, or the reason it could not be read."""
     if reason := allowed(ctx, url):
@@ -257,7 +284,7 @@ def read(ctx: StepContext, url: str) -> Read:
         again = "redirected to" not in str(exc) if exc.status is None else exc.status == 429 or exc.status >= 500
         return Read(url, None, None, str(exc), retry=again)
     if body.startswith(b"%PDF-"):
-        return Read(url, None, None, "a PDF, not a web page")
+        return pdf_read(url, body)
     try:
         html = body.decode("utf-8")
     except UnicodeDecodeError:

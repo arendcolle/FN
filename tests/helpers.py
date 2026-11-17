@@ -119,6 +119,35 @@ def cities_zip() -> bytes:
     return out.getvalue()
 
 
+def pdf_bytes(pages: list[list[str]], title: str | None = None, modified: str | None = None,
+              created: str | None = None) -> bytes:
+    """A valid PDF with one page per entry, each line drawn in Helvetica; title and dates go into the Info dictionary.
+
+    Dates are PDF date strings such as "D:20240305120000Z". Lines are latin-1 without parentheses or backslashes.
+    """
+    n = len(pages)
+    objects = [b"<< /Type /Catalog /Pages 2 0 R >>",
+               b"<< /Type /Pages /Kids [%s] /Count %d >>" % (b" ".join(b"%d 0 R" % (4 + 2 * i) for i in range(n)), n),
+               b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
+    for i, lines in enumerate(pages):
+        draw = b"BT /F1 11 Tf 14 TL 72 760 Td " + b" ".join(b"(%s) Tj T*" % line.encode("latin-1") for line in lines) + b" ET"
+        objects.append(b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> "
+                       b"/Contents %d 0 R >>" % (5 + 2 * i))
+        objects.append(b"<< /Length %d >>\nstream\n%s\nendstream" % (len(draw), draw))
+    info = b"".join(b"/%s (%s) " % (key, value.encode("latin-1"))
+                    for key, value in ((b"Title", title), (b"ModDate", modified), (b"CreationDate", created)) if value)
+    objects.append(b"<< %s>>" % info)
+    out, offsets = bytearray(b"%PDF-1.4\n"), []
+    for number, body in enumerate(objects, 1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n%s\nendobj\n" % (number, body)
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
+    out += b"".join(b"%010d 00000 n \n" % at for at in offsets)
+    out += b"trailer\n<< /Size %d /Root 1 0 R /Info %d 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objects) + 1, len(objects), xref)
+    return bytes(out)
+
+
 class StubHttp:
     """Answers the GeoNames dump with the test extract, every other GET with an empty OpenAlex list and every POST
     with an empty result list; records each.
