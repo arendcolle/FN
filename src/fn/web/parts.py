@@ -3,6 +3,7 @@ from datetime import date
 from urllib.parse import parse_qsl, urlencode
 
 from fn.contracts import (
+    AsideGroup,
     BackLink,
     CardView,
     ClaimView,
@@ -42,8 +43,18 @@ def error_page(title: str, text: str) -> str:
     return page(title, h.div(h.h1(title, class_="text-title"), h.pre(text), class_="fn-page"))
 
 
-def search_box(question: str = "", message: str | None = None) -> Safe:
-    """The question box and its Search button; message is a refused question, shown under the box."""
+def reading_line(read: tuple[str | None, str | None] | None) -> Safe | None:
+    """How FN read the question: the Required words, then ' · ' and the Wished words; None without either."""
+    required, wished = read or (None, None)
+    if not (required or wished):
+        return None
+    return h.p(h.span(required) if required else None, h.span(f" · {wished}" if required else wished) if wished else None,
+               class_="fn-search__read text-small")
+
+
+def search_box(question: str = "", message: str | None = None, read: tuple[str | None, str | None] | None = None) -> Safe:
+    """The question box and its Search button; message is a refused question, shown under the box and read the
+    Required and Wished words of how FN read it, shown after the button."""
     return h.form(
         h.div(
             h.textarea(question, name="question", rows="3" if len(question) > 80 else "1", class_="fn-input text-body",
@@ -53,6 +64,7 @@ def search_box(question: str = "", message: str | None = None) -> Safe:
             class_="fn-search__field",
         ),
         h.button("Search", type="submit", class_="fn-btn fn-btn--dark text-control"),
+        reading_line(read),
         method="post", action="/searches", class_="fn-search",
     )
 
@@ -136,12 +148,12 @@ def with_back(href: str, back: str | None) -> str:
 
 def person_card(view: PersonView, search_id: str | None = None, acts: object = None, card_id: str | None = None,
                 reason: ReasonView | None = None, fit: str | None = None, shown: int = RESULTS_STEP,
-                back: str | None = None) -> Safe:
-    """The person's card: the name linking to their page, role and place, the reason line, the tie and place line and
-    the combined line.
+                back: str | None = None, aside: ReasonView | None = None) -> Safe:
+    """The person's card: the name linking to their page, role and place, the line that set the person aside, the
+    reason line, the tie and place line and the combined line.
 
     search_id is the search the card shows on and shown its shown count, which the Person page links back to; acts
-    follow the combined line; back is the page the reason's source link returns to.
+    follow the combined line; back is the page the source links return to.
     """
     key = card_id.removeprefix("card-") if card_id else None
     href = person_href(view.person_id, search_id, shown, key, "card")
@@ -150,6 +162,8 @@ def person_card(view: PersonView, search_id: str | None = None, acts: object = N
     return h.article(
         h.h3(h.a(view.name, href=href), class_="fn-card__name text-name"),
         h.p(role_line(view), class_="fn-card__role text-body") if role_line(view) else None,
+        h.p(aside.text, " · ", h.a(aside.source, href=with_back(aside.href, back), class_="fn-card__source"),
+            class_="fn-card__fit text-small") if aside else None,
         h.p(reason.text, " · ", h.a(reason.source, href=with_back(reason.href, back), class_="fn-card__source"),
             class_="fn-card__reason text-body") if reason else None,
         h.p(fit, class_="fn-card__fit text-small") if fit else None,
@@ -166,12 +180,26 @@ def why_block(why: WhyView) -> Safe:
                      h.ul([h.li(line) for line in lines if line], class_="fn-why__lines text-body"), class_="fn-why")
 
 
-def results_href(search_id: str, shown: int, skipped: bool, view: str = "list") -> str:
-    """The URL of the results page with a shown count other than the first step, the skipped people and the view."""
+def results_href(search_id: str, shown: int, skipped: bool, view: str = "list", group: str | None = None,
+                 group_shown: int = RESULTS_STEP) -> str:
+    """The URL of the results page with a shown count other than the first step, the skipped people, the view and the
+    opened set-aside group with its own shown count."""
     query = urlencode({k: v for k, v in (("shown", str(shown) if shown != RESULTS_STEP else None),
-                                         ("skipped", "1" if skipped else None)) if v})
+                                         ("skipped", "1" if skipped else None), ("group", group),
+                                         ("group_shown", str(group_shown) if group and group_shown != RESULTS_STEP else None))
+                       if v})
     path = f"/searches/{search_id}" + ("/map" if view == "map" else "")
     return f"{path}?{query}" if query else path
+
+
+def aside_group(group: AsideGroup, cards: list[Safe], more: Safe | None, opened: bool) -> Safe:
+    """One SetAside group: its title and count, closed unless opened, then its cards and Show more; the count is
+    left out when nobody in it is left."""
+    return h.details(
+        h.summary(h.span(group.title, class_="fn-aside__title"),
+                  [" ", h.span(f"{group.count:,}", class_="fn-aside__count text-meta")] if group.count else None,
+                  class_="text-body"),
+        cards, more, class_="fn-aside", data_group=group.key, open=opened)
 
 
 def match_line(match: PersonView, back: str | None = None) -> Safe:
@@ -213,7 +241,7 @@ def result_card(card: CardView, search_id: str, here: str, shown: int = RESULTS_
         acts = [match_line(card.match, anchored) if card.match else None,
                 undo_form(card.undo_event, done, "fn-card__acts", anchored) if card.undo_event
                 else h.div(done, class_="fn-card__acts")]
-    return person_card(view, search_id, acts, card_id, card.reason, card.fit, shown, anchored)
+    return person_card(view, search_id, acts, card_id, card.reason, card.fit, shown, anchored, card.aside_line)
 
 
 def network_href(flt: NetworkFilter, limit: int = NETWORK_STEP, view: str = "list", path: str = "/people") -> str:

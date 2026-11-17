@@ -45,7 +45,19 @@ async function swap() {
   // The list keeps its element, so its own scroll and the page's stay where they were.
   const list = document.querySelector(".fn-results__list");
   const [top, y] = [list.scrollTop, window.scrollY];
+  const opened = new Set([...list.querySelectorAll("details.fn-aside[open]")].map((d) => d.dataset.group));
+  const status = list.querySelector("[role=status]");
+  const freshStatus = fresh.querySelector("[role=status]");
+  const read = fresh.querySelector("template[data-read]");
+  const form = document.querySelector(".fn-search");
+  // The status element stays, so a screen reader hears its new words, and a reading line that came late joins the form.
+  if (status && freshStatus) {
+    status.replaceChildren(...freshStatus.childNodes);
+    freshStatus.replaceWith(status);
+  }
   list.replaceChildren(...fresh.childNodes);
+  for (const group of list.querySelectorAll("details.fn-aside")) group.open = opened.has(group.dataset.group);
+  if (read && form && !form.querySelector(".fn-search__read")) form.append(read.content.cloneNode(true));
   list.scrollTop = top;
   window.scrollTo(window.scrollX, y);
   document.querySelector(".fn-results").classList.toggle("fn-results--no-map", !fresh.hasAttribute("data-placed"));

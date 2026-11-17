@@ -11,6 +11,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fn import exporter, identity, importer, network
 from fn.contracts import (
     IMPORT_COLUMNS,
+    AsideGroup,
     BackLink,
     Candidate,
     Claim,
@@ -23,12 +24,15 @@ from fn.contracts import (
     normalize,
 )
 from fn.present import (
+    GROUP_KEYS,
     RESULTS_STEP,
+    SET_ASIDE,
     card,
     card_candidate,
     cut,
     fit_tie,
     geo,
+    group_key,
     label_of,
     network_view,
     passage,
@@ -36,6 +40,7 @@ from fn.present import (
     plural,
     profile,
     prose,
+    reading,
     results,
     shown_for,
     source_cite,
@@ -48,6 +53,7 @@ from fn.store import Store, fold
 from fn.web.html import Safe, h, page
 from fn.web.parts import (
     NETWORK_STEP,
+    aside_group,
     back_line,
     banner,
     contact_block,
@@ -71,6 +77,7 @@ from fn.web.parts import (
     possible_block,
     profile_banner,
     profile_head,
+    reading_line,
     recent_list,
     result_card,
     results_href,
@@ -174,44 +181,65 @@ def section_heading(title: str, count: int) -> Safe:
     return h.h2(title, " ", h.span(f"{count:,}") if count else None, class_="fn-section text-label")
 
 
-def person_cards(store: Store, search: Search, shown: int, show_skipped: bool, view: str,
-                 active: bool) -> tuple[list[object], bool, dict]:
-    """The count line, the shown cards under their section headings, Show more and the skipped line.
+def person_cards(store: Store, search: Search, shown: int, show_skipped: bool, view: str, active: bool,
+                 group: str | None = None, group_shown: int = RESULTS_STEP) -> tuple[Safe | None, list[object], bool, dict]:
+    """The count line, then the notice, the shown cards under their section headings, Show more, the set-aside groups
+    and the skipped line.
 
-    Also whether anyone has a place on the map, and the facts the request log keeps; nothing when nobody is kept.
+    group is the opened set-aside group and group_shown its shown count. Also whether anyone has a place on the map, and
+    the facts the request log keeps; nothing when nobody is kept.
     """
-    found = results(store, search, now().astimezone().date(), shown, show_skipped)
-    here = results_href(search.id, shown, show_skipped, view)
+    found = results(store, search, now().astimezone().date(), shown, show_skipped, {group: group_shown} if group else None)
+    href = lambda count, skipped: results_href(search.id, count, skipped, view, group, group_shown)
+    here = href(shown, show_skipped)
     facts = {"kept": found.total, "shown": found.shown}
-    if not found.cards and not found.skipped_hidden:
-        return [], False, facts
+    if not found.cards and not found.skipped_hidden and not found.groups:
+        return None, [], False, facts
     counts = {"network": len(found.network), "new": len(found.new)}
     firsts = {x.first_key: x for x in found.headings}
     sections = [[None if section == "new" and firsts else
                  section_heading(title, counts[section]),
                  [[section_heading(firsts[c.key].title, firsts[c.key].count) if c.key in firsts else None,
-                   result_card(c, search.id, here, shown)] for c in group]]
-                for section, title in SECTIONS.items() if (group := [c for c in found.cards if c.section == section])]
+                   result_card(c, search.id, here, shown)] for c in group_cards]]
+                for section, title in SECTIONS.items() if (group_cards := [c for c in found.cards if c.section == section])]
     count = None if active else count_line(found.matched, found.not_on_map,
                                            [h.a("Export", href=f"/searches/{search.id}/export.csv")] if found.total else [])
-    more = show_more(found.shown, found.total, results_href(search.id, shown + RESULTS_STEP, show_skipped, view),
-                     RESULTS_STEP, f"card-{found.next_key}") if found.next_key else None
-    hidden = skipped_line(found.skipped_hidden, show_skipped, results_href(search.id, shown, not show_skipped, view))
-    return [count, sections, more, hidden], found.matched > found.not_on_map, facts
+    more = show_more(found.shown, found.matched, href(shown + RESULTS_STEP, show_skipped), RESULTS_STEP,
+                     f"card-{found.next_key}") if found.next_key else None
+    hidden = skipped_line(found.skipped_hidden, show_skipped, href(shown, not show_skipped))
+    note = h.p(found.no_match, class_="fn-note text-body") if found.no_match else None
+    asides = aside_groups(search, found.groups, shown, show_skipped, view, group, group_shown)
+    return count, [note, sections, more, asides, hidden], found.matched > found.not_on_map, facts
 
 
-def results_list(store: Store, search: Search, view: str, shown: int,
-                 show_skipped: bool) -> tuple[Safe, bool, bool, dict]:
-    """The results list: the status line, note or notice, then the count line, the cards, Show more and the skipped line.
+def aside_groups(search: Search, groups: list[AsideGroup], shown: int, show_skipped: bool, view: str,
+                 opened: str | None, opened_shown: int) -> list[object]:
+    """The Set aside heading with its total and the groups in one div; each card and Show more link returns to the page
+    with its group opened at that group's shown count."""
+    if not groups:
+        return []
+    wanted = lambda g: opened_shown if g.key == opened else RESULTS_STEP
+    href = lambda g, count: results_href(search.id, shown, show_skipped, view, g.key, count)
+    return [section_heading(SET_ASIDE, sum(g.count for g in groups)), h.div([
+        aside_group(g, [result_card(c, search.id, href(g, wanted(g)), wanted(g)) for c in g.cards],
+                    show_more(g.shown, g.count, href(g, wanted(g) + RESULTS_STEP), RESULTS_STEP,
+                              f"card-{g.next_key}") if g.next_key else None, g.key == opened) for g in groups])]
 
-    Also whether it has cards, whether anyone has a place on the map, and the request log facts. A running list names the status and
-    fragment URLs results.js polls; progress is read before the cards, so they are never older than it.
+
+def results_list(store: Store, search: Search, view: str, shown: int, show_skipped: bool, group: str | None = None,
+                 group_shown: int = RESULTS_STEP) -> tuple[Safe, bool, bool, dict]:
+    """The results list: the status element, note or notice, the cards, Show more and the skipped line.
+
+    The status element holds the status line while the search runs and the count line when it is done. Also whether
+    it has cards, whether anyone has a place on the map, and the request log facts. A running list names the status
+    and fragment URLs results.js polls, and holds the reading line in a template for a page that has none yet;
+    progress is read before the cards, so they are never older than it.
     """
     active, stopped = search.status in ("queued", "running"), search.status in ("failed", "interrupted")
     progress = store.search_progress(search.id) if active else None
-    found, placed, facts = person_cards(store, search, shown, show_skipped, view, active)
+    count, found, placed, facts = person_cards(store, search, shown, show_skipped, view, active, group, group_shown)
     if progress:
-        top = status_line(progress.people)
+        top = None
     elif stopped:
         top = status_note(STOPPED, "Run again", search.question) if found else notice(search, 0)
     elif store.failed_lanes(search.id):
@@ -221,21 +249,26 @@ def results_list(store: Store, search: Search, view: str, shown: int,
         top = None if found else notice(search, sources_read(store, search))
     query = urlencode({k: v for k, v in (("shown", shown if shown != RESULTS_STEP else None),
                                          ("skipped", 1 if show_skipped else None),
-                                         ("view", "map" if view == "map" else None)) if v})
+                                         ("view", "map" if view == "map" else None), ("group", group),
+                                         ("group_shown", group_shown if group and group_shown != RESULTS_STEP else None)) if v})
     poll = {"data_status": f"/searches/{search.id}/status", "data_progress": f"{progress.status} {progress.version}",
             "data_cards": f"/searches/{search.id}/cards" + (f"?{query}" if query else "")} if progress else {}
-    return h.div(top, found, class_="fn-results__list", data_placed=placed, **poll), bool(found), placed, facts
+    read = reading_line(reading(search.chips)) if progress else None
+    return h.div(top, h.div(status_line(progress.people) if progress else count, role="status"), found,
+                 h.template(read, data_read=True) if read else None,
+                 class_="fn-results__list", data_placed=placed, **poll), bool(found), placed, facts
 
 
 def search_page(store: Store, search: Search, view: str = "list", shown: int = RESULTS_STEP,
-                show_skipped: bool = False) -> tuple[str, dict]:
-    """The results page: the question box, then the people's cards beside a map of where they are.
+                show_skipped: bool = False, group: str | None = None, group_shown: int = RESULTS_STEP) -> tuple[str, dict]:
+    """The results page: the question box with how FN read the question, then the people's cards beside a map of
+    where they are, and the set-aside groups, the one named by group opened.
 
     A running search shows the status line, and a page without people a notice with the map hidden. view picks
     the list or the map on narrow screens; each has its own URL, so the refresh while a search runs keeps it.
     """
     active = search.status in ("queued", "running")
-    found, cards, placed, facts = results_list(store, search, view, shown, show_skipped)
+    found, cards, placed, facts = results_list(store, search, view, shown, show_skipped, group, group_shown)
     views = [h.a(name.title(), href=results_href(search.id, shown, show_skipped, name), data_view=name,
                  aria_current="page" if name == view else None) for name in ("list", "map")]
     results = h.div(
@@ -246,7 +279,7 @@ def search_page(store: Store, search: Search, view: str = "list", shown: int = R
         class_="fn-results" if placed else "fn-results fn-results--no-map", data_view=view,
     )
     return page(
-        "Search", search_box(search.question), results,
+        "Search", search_box(search.question, read=reading(search.chips)), results,
         refresh=2 if active else None, current="search", body_class="fn-app",
         extra_head=RESULTS_HEAD if active or cards else MAP_HEAD,
     ), facts
@@ -258,11 +291,12 @@ def geo_features(store: Store, search: Search, shown: int = RESULTS_STEP) -> dic
     It also says, per person, whether the first shown cards hold them, the list link that opens at their card and
     the link to their page, and the place fit the ranker stored for their card (None for a search stored without one).
     """
-    found = results(store, search, now().astimezone().date(), shown=0)
+    found = results(store, search, now().astimezone().date(), shown=0, group_shown=dict.fromkeys(GROUP_KEYS, 0))
     fits = {c.person_id: c.fit for c in store.list_candidates(search.id, kept_only=True)}
+    open_people = {v.person_id for v in found.network + found.new}
     listed: dict[str, dict] = {}
     # A person behind two cards links to the first of them.
-    for n, (person, key) in enumerate(found.order):
+    for n, (person, key) in enumerate(p for p in found.order if p[0] in open_people):
         listed.setdefault(person, {
             "shown": n < shown, "href": f"/searches/{search.id}?shown={(n // RESULTS_STEP + 1) * RESULTS_STEP}#card-{key}",
             "profile": person_href(person, search.id, shown_for(n + 1, shown), key, "popup"),
@@ -398,13 +432,21 @@ def shown_of(raw: str) -> int:
     return int(raw) if raw.isascii() and raw.isdigit() and len(raw) <= 6 and int(raw) > 0 else RESULTS_STEP
 
 
-def results_query(request: Request) -> tuple[int, bool]:
-    """?shown= (a positive number, else 20) and ?skipped=1 of a results request."""
-    return shown_of(request.query_params.get("shown", "")), request.query_params.get("skipped") == "1"
+def group_query(raw: str) -> str | None:
+    """A set-aside group from a query: one of GROUP_KEYS, else None."""
+    return raw if raw in GROUP_KEYS else None
+
+
+def results_query(request: Request) -> tuple[int, bool, str | None, int]:
+    """?shown= (a positive number, else 20), ?skipped=1, ?group= (a set-aside group) and ?group_shown= of a results request."""
+    params = request.query_params
+    return (shown_of(params.get("shown", "")), params.get("skipped") == "1", group_query(params.get("group", "")),
+            shown_of(params.get("group_shown", "")))
 
 
 def results_page(request: Request, search_id: str, view: str) -> HTMLResponse:
-    """The results page in the given view, with ?shown= and ?skipped=1, and its facts for the request log."""
+    """The results page in the given view, with ?shown=, ?skipped=1, ?group= and ?group_shown=, and its facts for the
+    request log."""
     text, request.state.facts = search_page(store_of(request), get_search(request, search_id), view,
                                             *results_query(request))
     return HTMLResponse(text)
@@ -482,8 +524,11 @@ async def card_action(request: Request, search_id: str, person_id: str, action: 
         return RedirectResponse(here, 303)
     here = here if here.split("?")[0] in (f"/searches/{search_id}", f"/searches/{search_id}/map") else f"/searches/{search_id}"
     if request.headers.get("x-requested-with") == "fetch":
-        shown = shown_of(parse_qs(urlsplit(here).query).get("shown", [""])[0])
-        return HTMLResponse(result_card(card(store, get_search(request, search_id), candidate, now().astimezone().date()), search_id, here, shown))
+        search, query = get_search(request, search_id), parse_qs(urlsplit(here).query)
+        own = group_key(candidate, search.chips)
+        mine = own is not None and own == group_query(query.get("group", [""])[0])
+        shown = shown_of(query.get("group_shown" if mine else "shown", [""])[0])
+        return HTMLResponse(result_card(card(store, search, candidate, now().astimezone().date()), search_id, here, shown))
     return RedirectResponse(f"{here}#card-{person_id}", 303)
 
 
@@ -565,10 +610,12 @@ def results_label(search: Search) -> str:
     return f"Back to the results for “{cut(search.question, 60)}”"
 
 
-def search_back(search: Search, shown: int, key: str) -> BackLink:
-    """The link to the search's results at the shown count and the card the page was opened from."""
+def search_back(search: Search, shown: int, key: str, group: str | None = None) -> BackLink:
+    """The link to the search's results at the shown count and the card the page was opened from; for a card of a
+    set-aside group, the page with that group opened at the shown count."""
     anchor = f"#card-{quote(key, safe='')}" if key else ""
-    return BackLink(label=results_label(search), href=results_href(search.id, shown, False) + anchor)
+    href = results_href(search.id, *((RESULTS_STEP, False, "list", group, shown) if group else (shown, False)))
+    return BackLink(label=results_label(search), href=href + anchor)
 
 
 def list_place(store: Store, search: Search, shown: int, key: str) -> ListPlace | None:
@@ -608,7 +655,8 @@ def person_page(store: Store, person_id: str, params: dict[str, str], error: str
         view = view.model_copy(update={"why": why_view(store, search, candidate, today)})
     here = person_here(person_id, params)
     route = f"/searches/{search.id}/people/{candidate.person_id}" if candidate else None
-    back = search_back(search, shown, key) if search else back_link(store, params.get("back", ""))
+    back = (search_back(search, shown, key, group_key(candidate, search.chips) if candidate else None) if search
+            else back_link(store, params.get("back", "")))
     place = list_place(store, search, shown, key) if search and key else None
     edit = edit or (params.get("edit") if params.get("edit") in CONTACT_KINDS else None)
     member = view.person.status == "in_list"

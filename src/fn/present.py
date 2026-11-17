@@ -9,8 +9,9 @@ from html import unescape
 from urllib.parse import urlsplit
 
 from fn import evidence as ev
-from fn import identity, network, orgs, rank
+from fn import identity, network, orgs, parse, rank
 from fn.contracts import (
+    AsideGroup,
     Candidate,
     CardFit,
     CardView,
@@ -29,6 +30,7 @@ from fn.contracts import (
     OrgView,
     Person,
     PersonView,
+    Place,
     ProfileView,
     QuoteView,
     ReasonView,
@@ -42,6 +44,7 @@ from fn.contracts import (
     name_key,
 )
 from fn.evidence import places
+from fn.geo import regions_of
 from fn.store import Store, fold
 
 EMPLOYED = ("works_at", "worked_at", "affiliated_with")
@@ -65,10 +68,16 @@ DONE = {"add": "Added to your network", "skip": "Skipped", "edit_contact": "Save
         "not_same": "Marked as a different person"}
 RESULTS_STEP = 20
 HEADINGS = {1: "Topic and a tie to Flanders or Belgium", 2: "Topic, no known tie", 3: "Tie, topic not confirmed", 4: "Other people found"}
-ASIDE_HEADINGS = {"outside": "Outside the area asked for", "abroad": "Outside the US", "unfit": "Work does not match the question",
-                  "died": "People who have died"}
-UNFIT_LINE = "The fit check says this work does not match the question"
 OLD_LINE = "First record {year}, nothing recent"
+GROUP_KEYS = ("other", "outside", "abroad", "unfit", "died")
+GROUP_TITLES = {"other": "Other people found", "abroad": "Outside the US", "unfit": "Other roles or topics",
+                "died": "People who have died"}
+SET_ASIDE = "Set aside"
+CLOSEST = "The closest people are below."
+TIE_BELOW = "The people below have a known tie, but FN could not confirm their topic."
+US_NAMES = ("us", "usa", "us based", "united states")
+SOFTENERS = ("ideally", "preferably", "if possible")
+READ_CHARS = 60
 WORK = "OpenAlex work "
 UNKNOWN_DATE = "date unknown"
 QUOTE_WORDS = 25
@@ -580,10 +589,7 @@ def person_views(store: Store, groups: list[list[str]], today: date, matched: li
 
 
 def heading_of(candidate: Candidate) -> str:
-    """The heading the candidate stands under in the new section: its aside group, else its tier's; the candidate
-    must have a tier."""
-    if candidate.aside:
-        return ASIDE_HEADINGS[candidate.aside]
+    """The heading the candidate stands under in the new section: its tier's; the candidate must have a tier."""
     return HEADINGS[rank.heading(candidate.tier, candidate.fit.tie_grade if candidate.fit else "none")]
 
 
@@ -595,12 +601,76 @@ def is_open(candidate: Candidate, chips: Chips | None) -> bool:
     return candidate.aside is None and rank.heading(candidate.tier, candidate.fit.tie_grade if candidate.fit else "none") <= 3
 
 
-def results_headings(candidates: list[Candidate], skipped: list[bool], shown: list[str]) -> list[ResultsHeading]:
-    """The new section's headings with the people not skipped under each and the first shown card under it.
+def area_words(place: Place) -> str:
+    """The place as the reading line and the group title say it: 'in the US', 'in North Carolina', 'in the US West
+    Coast', 'in Belgium' or, for a city or metro area, 'in the New York area'."""
+    key, text = name_key(place.text), re.sub(r"^the\s+", "", place.text.strip(), flags=re.IGNORECASE)
+    if place.kind == "anywhere_us":
+        if key in US_NAMES:
+            return "in the US"
+        return f"in {place.text}" if regions_of(key, free_text=True) else f"in the {text}"
+    if place.kind == "abroad":
+        return f"in {place.text}"
+    return f"in the {text}" if text.lower().endswith(" area") else f"in the {text} area"
+
+
+def plain(text: str) -> str:
+    """The chip's text without a leading softener or a trailing 'if possible', cut to READ_CHARS."""
+    text = text.strip()
+    for word in SOFTENERS:
+        if re.match(rf"{word}\b", text, re.I):
+            text = text[len(word):].lstrip(" ,")
+            break
+    if text.lower().endswith(" if possible"):
+        text = text[:-len(" if possible")].rstrip(" ,")
+    return cut(text, READ_CHARS)
+
+
+def parts_of(chips: Chips) -> list[tuple[str, str]]:
+    """The (need, words) of each part of the question, in reading order: roles, topics, institutions, tie, place."""
+    found = [(c.need, c.text) for c in [*chips.roles, *chips.topics, *chips.institutions, *([chips.tie] if chips.tie else [])]]
+    return [*found, *([(chips.place.need, area_words(chips.place))] if chips.place else [])]
+
+
+def reading(chips: Chips | None) -> tuple[str | None, str | None] | None:
+    """How FN read the question as (Required line, Wished line); None without chips, on version 1 or with no part."""
+    if chips is None or chips.version < 2:
+        return None
+    seen, words = set(), {"must": [], "nice": []}
+    for need, text in parts_of(chips):
+        text = plain(text)
+        if text and name_key(text) not in seen:
+            seen.add(name_key(text))
+            words[need].append(text)
+    if not (words["must"] or words["nice"]):
+        return None
+    return tuple(f"{label}: {', '.join(found)}" if found else None
+                 for label, found in (("Required", words["must"]), ("Wished", words["nice"])))
+
+
+def group_key(candidate: Candidate, chips: Chips | None) -> str | None:
+    """The set-aside group the candidate stands in, one of GROUP_KEYS; None for an open person. An outside person
+    under a question without a place stands in 'other'."""
+    if is_open(candidate, chips):
+        return None
+    key = candidate.aside or "other"
+    return "other" if key == "outside" and (chips is None or chips.place is None) else key
+
+
+def group_title(key: str, chips: Chips | None) -> str:
+    """The group's title: 'Outside the Boston area' for outside, else its fixed words."""
+    if key == "outside" and chips and chips.place:
+        return "Outside " + area_words(chips.place).removeprefix("in ")
+    return GROUP_TITLES[key]
+
+
+def results_headings(candidates: list[Candidate], skipped: list[bool], shown: list[str],
+                     chips: Chips | None) -> list[ResultsHeading]:
+    """The new section's headings with the open people not skipped under each and the first shown card under it.
 
     shown holds the keys of the shown cards. Empty when a person of the section has no tier.
     """
-    new = [(c, s) for c, s in zip(candidates, skipped) if c.section == "new"]
+    new = [(c, s) for c, s in zip(candidates, skipped) if c.section == "new" and is_open(c, chips)]
     if any(c.tier is None for c, _ in new):
         return []
     titles = {c.person_id: heading_of(c) for c, _ in new}
@@ -685,8 +755,11 @@ def fit_words(candidate: Candidate, view: PersonView) -> str | None:
     return " · ".join(p for p in parts if p) or None
 
 
-def place_reason(store: Store, candidate: Candidate, today: date) -> ReasonView | None:
-    """The card's place fact, the one the ranker read, as a reason line; None when the card has no located place."""
+def aside_line(store: Store, candidate: Candidate, today: date) -> ReasonView | None:
+    """The place fact the ranker read, as the line that sets the card aside, with its source and no years: a stated
+    place as its claim words it ('Based in Houston, TX'), an employer's as 'Works at Example Lab, Houston'. None when
+    the card has no located place.
+    """
     claims = store.claims_of(identity.on_card(store, candidate))
     facts = store.get_orgs(list({c.org_id for c in claims if c.org_id}))
     by_id = {c.id: c for c in claims}
@@ -694,8 +767,10 @@ def place_reason(store: Store, candidate: Candidate, today: date) -> ReasonView 
         return None
     claim = by_id[place.claim_id]
     source = store.get_sources([claim.source_id])[claim.source_id]
-    view = claim_view(claim, source, facts.get(claim.org_id or ""))
-    return reason_of(view, view.href)
+    org = facts.get(claim.org_id or "")
+    view = claim_view(claim, source, org)
+    what = f"Works at {org.name}, {place.text}" if place.basis == "employer" and org else view.what
+    return ReasonView(text=what, source=view.source, href=view.href)
 
 
 def death_reason(store: Store, candidate: Candidate, today: date) -> ReasonView | None:
@@ -711,19 +786,19 @@ def card_view(store: Store, search: Search, candidate: Candidate, view: PersonVi
               today: date) -> CardView:
     """The candidate's card: its state from the people's status now, the same-name network person and the Undo.
 
-    An outside or abroad card's reason line is its place fact, a died card's its death fact; an unfit card's second
-    line is UNFIT_LINE, and an old first record ends the second line with OLD_LINE.
+    An outside or abroad card also has the place fact that set it aside, and its role line then leaves the place out.
+    A died card's reason line is its death fact, and an old first record ends the second line with OLD_LINE.
     """
     reason = reason_of(view.evidence, view.evidence.href) if view.evidence else None
-    if candidate.aside in ("outside", "abroad"):
-        reason = place_reason(store, candidate, today)
     if candidate.aside == "died":
         reason = death_reason(store, candidate, today)
-    fit = UNFIT_LINE if candidate.aside == "unfit" else fit_words(candidate, view)
+    line = aside_line(store, candidate, today) if candidate.aside in ("outside", "abroad") else None
+    fit = fit_words(candidate, view)
     if search.chips and search.chips.version >= 2 and candidate.section == "new" and not candidate.aside:
         age = ev.age(store.claims_of(identity.on_card(store, candidate)), today)
         fit = " · ".join(p for p in (fit, OLD_LINE.format(year=age.first) if rank.old(age) else None) if p) or None
-    base = {"key": candidate.person_id, "section": candidate.section, "person": view, "reason": reason, "fit": fit}
+    base = {"key": candidate.person_id, "section": candidate.section, "reason": reason, "fit": fit,
+            "person": view.model_copy(update={"place": None}) if line else view, "aside_line": line}
     event = latest(store, view.person_id)
     if skipped:
         undo = LastView(event_id=event.id, kind="skip", words=DONE["skip"]) if event and event.kind == "skip" else None
@@ -754,20 +829,12 @@ def why_view(store: Store, search: Search, candidate: Candidate, today: date) ->
     return WhyView(reason=reason, tie=tie, place=place)
 
 
-def results(store: Store, search: Search, today: date, shown: int = RESULTS_STEP,
-            show_skipped: bool = False) -> ResultsView:
-    """The search's kept candidates: the open people who are not skipped by section, and the cards of the first shown.
-
-    A person skipped on this search keeps its card where it stood; one skipped elsewhere is counted as hidden and
-    shows only with show_skipped. Skipped people never take a place among the shown. total and order keep everyone.
-    """
-    candidates = store.list_candidates(search.id, kept_only=True)
-    views = person_views(store, [identity.on_card(store, c) for c in candidates], today,
-                         tie_ids=[fit_tie(c.fit) for c in candidates], reasons=[reason_ids(c) for c in candidates])
-    skipped = [is_skipped(store, c) for c in candidates]
-    kept = [(c, v) for c, v, s in zip(candidates, views, skipped) if not s]
+def shown_cards(store: Store, search: Search, rows: list[tuple[Candidate, PersonView, bool]], today: date, shown: int,
+                show_skipped: bool) -> tuple[list[CardView], int, int, str | None]:
+    """The cards of the rows' first shown people, how many people they are, how many people skipped elsewhere are
+    hidden and the key of the first person not shown."""
     cards, counted, hidden, next_key = [], 0, 0, None
-    for c, v, s in zip(candidates, views, skipped):
+    for c, v, s in rows:
         if s:
             mine = skipped_here(store, v.person_id, search.id)
             hidden += not mine
@@ -779,13 +846,58 @@ def results(store: Store, search: Search, today: date, shown: int = RESULTS_STEP
         else:
             counted += 1
         cards.append(card_view(store, search, c, v, s, today))
-    people = [(c, v) for c, v in kept if is_open(c, search.chips)]
+    return cards, counted, hidden, next_key
+
+
+def no_match_line(chips: Chips) -> str:
+    """The line over the list when nobody stands under the first heading: what FN found none of, and what follows."""
+    texts = [plain(c.text) for c in chips.roles] or [plain(c.text) for c in chips.topics]
+    texts = [t for t in dict.fromkeys(texts) if t]
+    what = ", ".join(texts[:-1]) + f" or {texts[-1]}" if len(texts) > 1 else texts[0] if texts else "people"
+    place = f" {area_words(chips.place)}" if chips.place and parse.place_must(chips) else ""
+    return (f"FN found no {what}{place} with a known tie to Flanders or Belgium. "
+            + (TIE_BELOW if parse.tie_must(chips) else CLOSEST))
+
+
+def results(store: Store, search: Search, today: date, shown: int = RESULTS_STEP,
+            show_skipped: bool = False, group_shown: dict[str, int] | None = None) -> ResultsView:
+    """The search's kept candidates: the open people who are not skipped by section, the cards of the first shown, and
+    the set-aside groups with their own first shown cards (group_shown holds a group's shown count, else 20).
+
+    A person skipped on this search keeps its card where it stood; one skipped elsewhere is counted as hidden and
+    shows only with show_skipped. Skipped people never take a place among the shown. total and order keep everyone.
+    """
+    candidates = store.list_candidates(search.id, kept_only=True)
+    views = person_views(store, [identity.on_card(store, c) for c in candidates], today,
+                         tie_ids=[fit_tie(c.fit) for c in candidates], reasons=[reason_ids(c) for c in candidates])
+    skipped = [is_skipped(store, c) for c in candidates]
+    kept = [(c, v) for c, v, s in zip(candidates, views, skipped) if not s]
+    chips = search.chips
+    keys = [group_key(c, chips) for c in candidates]
+    rows = list(zip(candidates, views, skipped))
+    cards, counted, hidden, next_key = shown_cards(store, search, [r for r, k in zip(rows, keys) if k is None], today,
+                                                   shown, show_skipped)
+    groups = []
+    for key in GROUP_KEYS:
+        mine = [r for r, k in zip(rows, keys) if k == key]
+        found, count, away, after = shown_cards(store, search, mine, today, (group_shown or {}).get(key, RESULTS_STEP),
+                                                show_skipped)
+        hidden += away
+        if found or any(not s for _, _, s in mine):
+            groups.append(AsideGroup(key=key, title=group_title(key, chips), count=sum(not s for _, _, s in mine),
+                                     cards=found, shown=count, next_key=after))
+    people = [(c, v) for c, v in kept if is_open(c, chips)]
+    first = any(c.section == "new" and c.tier is not None and rank.heading(c.tier, c.fit.tie_grade if c.fit else "none") == 1
+                for c, _ in people)
+    new = [v for c, v in people if c.section == "new"]
+    done = search.status == "done" and chips is not None and chips.version >= 2
     return ResultsView(network=[v for c, v in people if c.section == "network"],
-                       new=[v for c, v in people if c.section == "new"], cards=cards, total=len(kept), shown=counted,
+                       new=new, cards=cards, total=len(kept), shown=counted,
                        skipped_hidden=hidden, not_on_map=sum(1 for _, v in people if v.lat is None or v.lon is None),
                        matched=len(people),
                        next_key=next_key, order=[(v.person_id, c.person_id) for c, v in kept],
-                       headings=results_headings(candidates, skipped, [c.key for c in cards]))
+                       headings=results_headings(candidates, skipped, [c.key for c in cards], chips), groups=groups,
+                       no_match=no_match_line(chips) if done and kept and not first else None)
 
 
 def shown_for(position: int, shown: int) -> int:
@@ -794,18 +906,20 @@ def shown_for(position: int, shown: int) -> int:
 
 
 def walk(store: Store, search: Search, key: str) -> tuple[int, int, tuple[str, str] | None, tuple[str, str] | None] | None:
-    """The card's 1-based place among the kept people who are not skipped, the size of that list and the
-    (person id, card key) before and after it; None when the key is not in the list.
+    """The card's 1-based place among the people of its list who are not skipped, the size of that list and the
+    (person id, card key) before and after it; None when the key is not in a list.
 
-    The list is the one results().order gives, built without the person views.
+    The list is the open list, or the set-aside group the card stands in, in the order results() gives.
     """
     kept = [c for c in store.list_candidates(search.id, kept_only=True) if not is_skipped(store, c)]
+    lists = {c.person_id: group_key(c, search.chips) for c in kept}
+    if key not in lists:
+        return None
+    kept = [c for c in kept if lists[c.person_id] == lists[key]]
     firsts = [identity.on_card(store, c)[0] for c in kept]
     canonical = store.canonical_ids(firsts)
     order = [(canonical[first], c.person_id) for first, c in zip(firsts, kept)]
-    at = next((n for n, (_, found) in enumerate(order) if found == key), None)
-    if at is None:
-        return None
+    at = next(n for n, (_, found) in enumerate(order) if found == key)
     return at + 1, len(order), order[at - 1] if at else None, order[at + 1] if at + 1 < len(order) else None
 
 
