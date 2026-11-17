@@ -36,6 +36,11 @@ EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[A-Za-z]{2,}")
 PHONE = re.compile(r"(?<![\w.])\+?\(?\d[\d ().\-/]{6,18}\d(?!\w)")
 # Two years joined by a dash, or a dated line, is a number that is no phone.
 NOT_PHONE = re.compile(r"(?:1[89]|20)\d\d\s*[-–/]\s*(?:1[89]|20)\d\d|\d{4}-\d\d-\d\d|\d\d?/\d\d?/\d{4}|\d{5}-\d{4}")
+# A run is a phone number only with a mark: a leading +, the North American shape, or a label right before it.
+NORTH_AMERICAN = re.compile(r"(?:1[ .\-])?(?:\(\d{3}\) ?|\d{3}[ .\-])\d{3}[ .\-]\d{4}")
+PHONE_LABEL = re.compile(r"(?<!\w)(?:t[eé]l(?:[eé]phone|efoon|efon)?|phone|ph|mobile|cell|gsm)\.?[^\S\n]*:?[^\S\n]*\Z",
+                         re.IGNORECASE)
+LABEL_REACH = 40
 EDGE = "<>()[]{}\"',.;:"
 # An email or phone counts as a person's when it starts this near a place the text writes their name.
 CONTACT_REACH = 300
@@ -322,12 +327,23 @@ def _near(text: str, phrase: str, name: str) -> list[tuple[int, int, int]]:
                   for m in re.finditer(rf"(?<!\w){r'\s+'.join(map(re.escape, words))}(?!\w)", text, re.IGNORECASE))
 
 
+def _is_phone(text: str, start: int, run: str) -> bool:
+    """True when the PHONE run at start is a phone number: 7 to 15 digits, no date or fax, and a mark."""
+    digits = len(re.sub(r"\D", "", run))
+    if not 7 <= digits <= 15 or NOT_PHONE.fullmatch(run.strip("()")) \
+            or "fax" in text[max(0, start - 8):start].casefold():
+        return False
+    return (run.startswith("+") and digits >= 8) or bool(NORTH_AMERICAN.fullmatch(run)) \
+        or bool(PHONE_LABEL.search(text, max(0, start - LABEL_REACH), start))
+
+
 def contacts(person_id: str, source: Source, name: str) -> list[ClaimDraft]:
     """At most one email and one phone claim for the person, read from the page text by rule.
 
     An email is the person's when the surname (3 letters or more) stands in its local part, or when it starts within
     CONTACT_REACH characters of a place the text writes the name; the first that qualifies, surname matches first.
-    A phone starts within CONTACT_REACH of such a place or of the email; the nearest wins.
+    A phone is a PHONE run with a mark (`_is_phone`) that starts within CONTACT_REACH of such a place or of the
+    email; the nearest wins.
     """
     text, parts, words = source.text, name_key(name).split(), clean_name(name).split()
     surname = parts[-1] if parts else ""
@@ -350,10 +366,8 @@ def contacts(person_id: str, source: Source, name: str) -> list[ClaimDraft]:
     email = min(emails, default=None)
     phones = []
     for m in PHONE.finditer(text):
-        digits = len(re.sub(r"\D", "", m.group()))
         gap = reach(m.start(), places + ([email[1]] if email else []))
-        if 7 <= digits <= 15 and gap is not None and not NOT_PHONE.fullmatch(m.group().strip("()")) \
-                and "fax" not in text[max(0, m.start() - 8):m.start()].casefold():
+        if gap is not None and _is_phone(text, m.start(), m.group()):
             phones.append((gap, m.start(), m.end()))
     found = []
     for kind, at in (("email", email and email[1:]), ("phone", phones and min(phones)[1:])):
