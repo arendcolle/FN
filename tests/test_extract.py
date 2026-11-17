@@ -701,6 +701,61 @@ class PersonTest(unittest.TestCase):
         self.assertEqual(self.contacts("Jan Peeters (1950-2020) was a physicist."), [])
         self.assertEqual(self.contacts(text + " Tel 617-555-0100"), [("phone", "617-555-0100")])
 
+    def phone(self, text: str) -> list[tuple]:
+        return self.contacts(f"Jan Peeters, physics. {text}")
+
+    def test_a_page_range_or_an_issue_is_no_phone(self):
+        """A run of digits that is a page range or an issue number carries no mark, so it is no phone."""
+        for run in ("2001, pp. 1234-5678", "59, p. 123-456. 78", "Waves, 12(3). 123-456", "36 (Dec 2023): 1234-5678"):
+            with self.subTest(run=run):
+                self.assertEqual(self.phone(run), [])
+
+    def test_a_doi_a_handle_or_an_id_in_an_address_is_no_phone(self):
+        """Digits inside a DOI, a handle or an author id are no phone; a + number in an address still is."""
+        for run in ("doi: 10.1007/s13280-019-01234-5", "https://hdl.handle.net/2066.1/123456",
+                    "detail.uri?authorId=12345678901"):
+            with self.subTest(run=run):
+                self.assertEqual(self.phone(run), [])
+        self.assertEqual(self.phone("https://example.org/?tel=+3216321000"), [("phone", "+3216321000")])
+
+    def test_a_bare_run_is_no_phone_and_a_label_on_its_line_makes_it_one(self):
+        """A label marks a run only when it stands right before it on the same line."""
+        self.assertEqual(self.phone("\n12 Example Street\n12345678\n"), [])
+        self.assertEqual(self.phone("Phone:\n016 32 10 00"), [])
+        self.assertEqual(self.phone("Tel 016/32 10 00"), [("phone", "016/32 10 00")])
+        self.assertEqual(self.phone("Phone : 016 32 10 00"), [("phone", "016 32 10 00")])
+
+    def test_each_label_marks_a_run(self):
+        """Every phone label word, with or without accent, dot or colon, marks the run after it."""
+        for label in ("Mobile: ", "Tél.: ", "Téléphone ", "Telefoon ", "Telefon: ", "GSM ", "Mobile ", "cell: "):
+            with self.subTest(label=label):
+                self.assertEqual(self.phone(f"{label}0470 12 34 56"), [("phone", "0470 12 34 56")])
+        self.assertEqual(self.phone("016/32 10 00"), [])
+        self.assertEqual(self.phone("Peeters, M. 12345678"), [])
+
+    def test_a_label_inside_a_longer_word_is_no_label(self):
+        """A label counts only as a whole word, and a year range after a label is still no phone."""
+        for run in ("hotel 2019 2020", "Intel 8086 4004", "cell biology 2019-2020", "Cell 2019-2020",
+                    "Ph.D. 2019 2023"):
+            with self.subTest(run=run):
+                self.assertEqual(self.phone(run), [])
+
+    def test_the_north_american_shape_and_a_plus_mark_a_run(self):
+        """The shape 999-999-9999 or a leading + with 8 digits or more marks a run; a longer id does not."""
+        for run in ("(617) 555-0100", "617.555.0100", "617 555 0100", "1-617-555-0100", "+32 16 32 10 00",
+                    "+32-(0)16 32 10 00"):
+            with self.subTest(run=run):
+                self.assertEqual(self.phone(run), [("phone", run)])
+        self.assertEqual(self.phone("1234-617-555-0100"), [])
+        self.assertEqual(self.phone("+1234567"), [])
+
+    def test_a_marked_number_wins_over_a_nearer_unmarked_run(self):
+        """Only marked runs compete, the nearest wins, and an extension is left out."""
+        self.assertEqual(self.contacts("Jan Peeters, pp. 1234-5678. Tel 617-555-0100"), [("phone", "617-555-0100")])
+        self.assertEqual(self.contacts("Jan Peeters. Fax +32 16 32 19 99. Tel +32 16 32 10 00"),
+                         [("phone", "+32 16 32 10 00")])
+        self.assertEqual(self.contacts("Jan Peeters. 617-555-0100 x123"), [("phone", "617-555-0100")])
+
 
 class NamesTest(unittest.TestCase):
     def test_clean_name_drops_titles_and_credentials(self):
