@@ -1,10 +1,13 @@
 import json
+import shutil
+import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from fn import llm, parse
-from fn.contracts import Chip, Chips, Place, Span, WebQuery
-from fn.llm import FixtureLLM
+from fn.contracts import Chip, Chips, LLMResult, ParseIn, Place, Span, WebQuery
+from fn.llm import FixtureLLM, LLMCallError
 from fn.worker import Worker
 from tests.helpers import StubHttp, StubLLM, make_db, make_settings
 
@@ -250,6 +253,100 @@ class ParseTest(unittest.TestCase):
         for question, chips in ((EN, english), (NL, dutch)):
             for chip in [*chips.topics, chips.place]:
                 self.assertEqual(question[chip.span.start:chip.span.end], chip.text)
+
+
+SLIP = "Political scientists in New York City specializing in federal politics"
+
+
+def part(question: str, text: str, **fields) -> dict:
+    start = question.index(text)
+    return {"text": text, "span": {"start": start, "end": start + len(text)}, "origin": "parsed", **fields}
+
+
+ONE = {"topics": [part(SLIP, "federal politics")]}
+FULL = {"topics": [part(SLIP, "federal politics")], "roles": [part(SLIP, "Political scientists")],
+        "place": part(SLIP, "New York City")}
+
+
+class Turns:
+    """Answers each structured call with the next of its answers, raising the ones that are exceptions."""
+
+    def __init__(self, *answers):
+        self.answers, self.calls = list(answers), 0
+
+    def structured(self, task, data, schema):
+        answer = self.answers[self.calls]
+        self.calls += 1
+        if isinstance(answer, Exception):
+            raise answer
+        return LLMResult[schema](value=schema.model_validate(answer), model="stub", cost_usd=0.0, tokens_in=1,
+                                 tokens_out=1, billing="stub")
+
+
+class ReaskTest(unittest.TestCase):
+    def ask(self, question: str, *answers):
+        turns = Turns(*answers)
+        out = parse.run(SimpleNamespace(llm=turns), ParseIn(question=question))
+        return out.chips, turns.calls
+
+    def test_unread_counts_content_words_outside_every_chip(self):
+        """The question's content words that no chip's span covers, and the count of all chip kinds."""
+        one, full = Chips.model_validate(ONE), Chips.model_validate(FULL)
+        self.assertEqual(parse.unread(SLIP, one), ["political", "scientists", "new", "york", "city", "specializing"])
+        self.assertEqual((parse.unread(SLIP, full), parse.chip_count(one), parse.chip_count(full)), (["specializing"], 1, 3))
+        self.assertEqual(parse.unread("Who are the Belgian experts?", Chips()), [])
+
+    def test_a_thin_reading_is_asked_again_and_the_fuller_one_kept(self):
+        """A reading with one chip and three or more content words unread gets one more ask; the fuller reading wins."""
+        chips, calls = self.ask(SLIP, ONE, FULL)
+        self.assertEqual((chips.place.text, len(chips.roles), calls), ("New York City", 1, 2))
+
+    def test_two_chips_or_a_mostly_read_question_ask_once(self):
+        """Guard: two chips, or one chip with fewer than three words unread, is not asked again."""
+        two = {"topics": [part(SLIP, "federal politics")], "roles": [part(SLIP, "Political scientists")]}
+        wind, short = "Who knows offshore wind?", "Who knows wind?"
+        for question, answer in ((SLIP, two), (wind, {"topics": [part(wind, "offshore wind")]}),
+                                 (short, {"topics": [part(short, "wind")]})):
+            self.assertEqual(self.ask(question, answer)[1], 1)
+
+    def test_a_second_answer_without_more_chips_keeps_the_first(self):
+        """An empty second answer, one with the same count, or one whose only chip is dropped leaves the first reading."""
+        first = self.ask(SLIP, ONE, ONE)[0]
+        for second in ({}, {"topics": [part(SLIP, "politics")]}):
+            self.assertEqual(self.ask(SLIP, ONE, second), (first, 2))
+        dropped = {"topics": [{"text": "wind", "span": {"start": 0, "end": 4}, "origin": "parsed"}]}
+        with self.assertLogs("fn.parse", "WARNING"):
+            self.assertEqual(self.ask(SLIP, ONE, dropped), (first, 2))
+
+    def test_a_second_ask_that_raises_keeps_the_first_and_logs_one_line(self):
+        """A failed call, an answer that breaks the schema or one claiming an edited chip leaves the first reading."""
+        edited = {"topics": [{**part(SLIP, "federal politics"), "origin": "edited"}]}
+        for second in (LLMCallError("down", 1, "", 5), {"topics": "federal politics"}, edited):
+            with self.subTest(second=second), self.assertLogs("fn.parse", "WARNING") as logs:
+                chips, calls = self.ask(SLIP, ONE, second)
+                self.assertEqual(([c.text for c in chips.topics], calls, len(logs.records)), (["federal politics"], 2, 1))
+
+    def test_inputs_a_real_run_meets(self):
+        """An empty answer asks twice, so does a 1,000-character question with one chip; two equal topics ask once."""
+        self.assertEqual(self.ask(SLIP, {}, {})[1], 2)
+        long = ("federal politics " + " ".join(f"item{i}" for i in range(300)))[:1000]
+        self.assertEqual(self.ask(long, {"topics": [part(long, "federal politics")]}, {})[1], 2)
+        twin = {"topics": [part(SLIP, "federal politics"), part(SLIP, "federal politics")]}
+        self.assertEqual(self.ask(SLIP, twin)[1], 1)
+
+    def test_a_replayed_thin_question_gives_the_same_chips(self):
+        """Replaying a recorded thin answer serves it to both asks, keeps the first reading and records two llm calls."""
+        directory = Path(tempfile.mkdtemp(prefix="fn-fix-"))
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        settings = make_settings(self)
+        store = make_db(self, settings)
+        found = []
+        for llm in (FixtureLLM(directory, "record", StubLLM(ONE)), FixtureLLM(directory, "replay")):
+            worker = Worker(store, settings, llm=llm, http=StubHttp())
+            self.addCleanup(worker.shutdown)
+            found.append(worker.execute(worker.create_search(SLIP).id))
+        self.assertEqual(found[0].chips, found[1].chips)
+        self.assertEqual([c.kind for c in store.list_calls(store.list_steps(found[1].id)[0].id)], ["llm", "llm"])
 
 
 if __name__ == "__main__":
