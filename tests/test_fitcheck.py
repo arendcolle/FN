@@ -99,18 +99,31 @@ class FitCheckTest(unittest.TestCase):
         self.assertEqual(first, "1. Example University")
         self.assertEqual(len(second.split(". ", 1)[1].split()), fitcheck.LINE_WORDS)
 
-    def test_scout_people_cut_people_the_network_and_tiers_5_to_7_are_not_sent(self):
-        """Only kept new-section people of tiers 1 to 4 that the web researcher did not find are sent."""
+    def test_scout_people_cut_people_the_network_and_heading_4_are_not_sent(self):
+        """Kept new-section people of tiers 1 to 4 and under heading 3 that the web researcher did not find are sent."""
         keep = [self.person(f"Tier {t} Person", tier=t) for t in (1, 2, 3, 4)]
         self.person("Scout Person", lanes={"scout": 1})
         self.person("Cut Person", cut="no_tie")
         self.person("Network Person", section="network")
-        for t in (5, 6, 7):
+        keep.append(self.person("Tier 5 Person", tier=5))
+        for t in (6, 7):
             self.person(f"Tier {t} Person", tier=t)
         llm = BatchLLM()
         out = self.check(llm)
-        self.assertEqual(len(llm.calls[0][1]["people"].splitlines()), 4)
+        self.assertEqual(len(llm.calls[0][1]["people"].splitlines()), 5)
         self.assertEqual(set(out.verdicts), {c.person_id for c in keep})
+
+    def test_heading_3_people_follow_the_match_tiers_and_share_the_cap(self):
+        """Heading-3 people come after tiers 1 to 4 whatever their rank, a heading-4 person is left out, and both
+        groups together stay within MAX_PEOPLE."""
+        late = [self.person(f"Tier 5 Person {i}", tier=5) for i in range(5)]
+        match = [self.person(f"Match Person {i}", tier=1) for i in range(fitcheck.MAX_PEOPLE - 2)]
+        self.person("Heading 4 Person", tier=7)
+        self.person("Scout Person", tier=5, lanes={"scout": 1})
+        self.person("Aside Person", tier=5, aside="unfit")
+        sent = fitcheck.candidates(self.people)
+        self.assertEqual(sent, [*match, *late[:2]])
+        self.assertEqual(len(sent), fitcheck.MAX_PEOPLE)
 
     def test_people_set_aside_are_not_sent(self):
         """A kept tier-1 person set aside for any reason is left out of the check; an open one is sent."""

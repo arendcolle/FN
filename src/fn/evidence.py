@@ -23,6 +23,7 @@ RECENT_YEARS = 5
 # A claim date counts as the fact's year only when the source dates it, never the day FN read the page.
 SOURCE_DATED = ("record_field", "page_date", "sitemap", "stated_in_quote")
 ACTIVE_YEARS = 10
+STALE_YEARS = 10
 GAP_YEARS = 10
 OPENALEX_RECENT = 2
 EMERITUS = re.compile(r"\bemerit(us|a|i|e)\b")
@@ -106,6 +107,7 @@ class Age:
     current: bool = False
     emeritus: bool = False
     died: str | None = None
+    stale: bool = False
 
 
 @dataclass(frozen=True)
@@ -359,7 +361,8 @@ def death(claims: list[Claim]) -> Claim | None:
 def age(claims: list[Claim], today: date) -> Age:
     """The first dated year without births and deaths, a lone leading year GAP_YEARS before the next left out; whether
     a dated role or OPENALEX_RECENT OpenAlex years fall in the last ACTIVE_YEARS (recent) or RECENT_YEARS without
-    emeritus roles (current); whether a role reads emeritus; and the death claim."""
+    emeritus roles (current); whether a role reads emeritus; the death claim; and whether the newest year of every
+    dated claim, whatever its date method, lies more than STALE_YEARS back (stale)."""
     years = sorted({y for c in claims if c.relation != "born_in" and c.kind != "death" for y in stated_years(c, today)})
     if len(years) > 1 and years[1] - years[0] > GAP_YEARS:
         years = years[1:]
@@ -373,10 +376,11 @@ def age(claims: list[Claim], today: date) -> Age:
         return (any(y >= since for i, y in roles if i not in skip)
                 or sum(y >= since for y in openalex) >= OPENALEX_RECENT)
 
+    newest = [y for c in claims if (y := max([*c.years, *filter(None, map(rank.year, (c.valid_to, c.claim_date)))], default=None))]
     dead = death(claims)
     return Age(first=years[0] if years else None, back=today.year - years[0] if years else None,
                recent=within(ACTIVE_YEARS, set()), current=within(RECENT_YEARS, emeriti), emeritus=bool(emeriti),
-               died=dead.id if dead else None)
+               died=dead.id if dead else None, stale=bool(newest) and max(newest) < today.year - STALE_YEARS)
 
 
 def of(card: dict[str, frozenset[str]], claims: list[Claim], facts: dict[str, Org], question: Question, today: date,

@@ -28,10 +28,13 @@ def line_of(claims: list[Claim], facts: dict[str, Org]) -> str:
 
 def candidates(ranked: list[Candidate]) -> list[Candidate]:
     """The kept people of the new section in tiers 1 to 4 whom the web researcher did not find and nobody set aside,
-    in rank order, at most MAX_PEOPLE: the researcher chose its people for the question already."""
-    found = [c for c in ranked if c.section == "new" and c.cut_reason is None and c.tier in (1, 2, 3, 4)
-             and "scout" not in c.lane_ranks and c.aside is None]
-    return sorted(found, key=lambda c: c.rank)[:MAX_PEOPLE]
+    then those under heading 3 (a tie, topic not confirmed), each group in rank order, at most MAX_PEOPLE together:
+    the researcher chose its people for the question already."""
+    open_ = [c for c in ranked if c.section == "new" and c.cut_reason is None and "scout" not in c.lane_ranks
+             and c.aside is None]
+    first = [c for c in open_ if c.tier in (1, 2, 3, 4)]
+    then = [c for c in open_ if rank.heading(c.tier, c.fit.tie_grade if c.fit else "none") == 3]
+    return [*sorted(first, key=lambda c: c.rank), *sorted(then, key=lambda c: c.rank)][:MAX_PEOPLE]
 
 
 def run(ctx: StepContext, inp: FitIn) -> FitOut:

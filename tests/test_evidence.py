@@ -451,6 +451,13 @@ class AgeTest(unittest.TestCase):
         self.assertEqual((found.first, found.back), (2005, 21))
         self.assertFalse(self.age(published("c1", 2005, 2025, 2027)).recent)
 
+    def test_stale_means_the_newest_dated_claim_is_more_than_ten_years_back(self):
+        """Newest year 2004 is stale; a valid_to of last year, or a date set by this year's read, is not; no date is not."""
+        self.assertTrue(self.age(dated("c1", "Engineer", "2004"), claim("c2", years=[1998])).stale)
+        self.assertFalse(self.age(dated("c1", "Engineer", "2004"), claim("c2", valid_to="2025")).stale)
+        self.assertFalse(self.age(dated("c1", "Engineer", "2026-11-01", "read_date")).stale)
+        self.assertFalse(self.age(claim("c1")).stale)
+
 
 class RecentFactTest(unittest.TestCase):
     def test_a_recent_date_or_year_counts_and_a_read_date_does_not(self):
