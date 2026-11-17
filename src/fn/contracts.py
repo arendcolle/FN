@@ -892,6 +892,8 @@ class PlacesOut(Model):
 # The one step of the fn-orgs --match job.
 class OrgMatchIn(Model):
     pace_s: float = 0.2
+    person_ids: list[str] | None = None
+    most: int | None = None
 
 
 class OrgMatchOut(Model):
@@ -899,6 +901,7 @@ class OrgMatchOut(Model):
     chosen: int
     linked: int
     failed: int
+    left: int = 0
 
 
 # The one step of the fn-seed job.

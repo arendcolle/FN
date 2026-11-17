@@ -222,7 +222,7 @@ class SearchStepsTest(unittest.TestCase):
         steps = [(s.step, s.status) for s in self.store.list_steps(search_id)]
         names = [s for s, _ in steps]
         self.assertEqual((names[:2], names[-6:]), (["parse", "cities"], ["resolve", "rank", "save", "fit", "rank", "save"]))
-        self.assertEqual(sorted(names[2:-6]), ["lane:seeds", "lane:web", "publish"])
+        self.assertEqual(sorted(names[2:-6]), ["lane:seeds", "lane:web", "link", "publish"])
         self.assertEqual(self.llm.calls, 1)
         ids = {c.person_id for c in self.store.list_candidates(search_id)}
         self.assertEqual(self.rank_verdicts(search_id), [{}, {i: "partly" for i in ids}])

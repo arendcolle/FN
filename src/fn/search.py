@@ -6,7 +6,7 @@ from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextvars import copy_context
 
-from fn import fitcheck, geo, parse, rank, resolve
+from fn import fitcheck, geo, orgs, parse, rank, resolve
 from fn.contracts import (
     Chips,
     CitiesIn,
@@ -16,6 +16,7 @@ from fn.contracts import (
     FitOut,
     LaneIn,
     LaneOut,
+    OrgMatchIn,
     ParseIn,
     ParseOut,
     PublishIn,
@@ -36,6 +37,8 @@ from fn.steps import StepContext, run_step, skip_step
 FIRST = "seeds"
 # The lane that starts only once every lane before it in LANES has ended and been published.
 WAITS = "web_topic"
+# The most employer names the link step asks ROR about during one search.
+LINK_MOST = 40
 
 
 def save(ctx: StepContext, inp: SaveIn) -> SaveOut:
@@ -84,11 +87,20 @@ def rank_and_save(ctx: StepContext, resolved: ResolveOut, chips: Chips, fit: Fit
 
 
 def finish(ctx: StepContext, outs: list[LaneOut], chips: Chips) -> None:
-    """Run the steps after the lanes in order: resolve the lane outputs, rank the entries, save the candidates, ask
-    the model which stored people fit the question, and rank and save again when it answered.
+    """Run the steps after the lanes in order: link the employers of the hit people, resolve the lane outputs, rank the
+    entries, save the candidates, ask the model which stored people fit the question, and rank and save again when it
+    answered.
 
-    A fit step that raises leaves the first ranking saved.
+    The link step runs with version 2 chips and an HTTP client, and its failure is kept on its row. A fit step that
+    raises leaves the first ranking saved.
     """
+    if ctx.http is not None and chips.version >= 2:
+        by_rank = sorted((h for out in outs for h in out.hits), key=lambda h: h.rank)
+        hit = list(dict.fromkeys(h.person_id for h in by_rank))
+        try:
+            run_step(ctx, "link", orgs.match, OrgMatchIn(person_ids=hit, most=LINK_MOST, pace_s=orgs.SEARCH_PACE_S))
+        except Exception:  # noqa: BLE001 the error is kept on the step row and the people keep an unknown place
+            pass
     resolved = run_step(ctx, "resolve", resolve.run, ResolveIn(outs=outs))
     rank_and_save(ctx, resolved, chips, FitOut())
     try:

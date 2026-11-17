@@ -26,6 +26,7 @@ from fn.contracts import (
     OrgMatchOut,
     Place,
     PlacesOut,
+    RankOut,
     Search,
     Source,
     page_source,
@@ -350,6 +351,19 @@ class NamedTest(unittest.TestCase):
         self.assertEqual((orgs.named(record, "University"), orgs.named(record, "Exuni")), (False, True))
 
 
+class Routed:
+    """An HTTP client that sends ROR calls to a mock transport and every other call to StubHttp."""
+
+    def __init__(self, ror: net.Client):
+        self.ror, self.other = ror, StubHttp()
+
+    def get(self, url, params=None, **options):
+        return (self.ror if url == orgs.ROR_API else self.other).get(url, params, **options)
+
+    def __getattr__(self, name):
+        return getattr(self.other, name)
+
+
 class MatchTest(unittest.TestCase):
     def setUp(self):
         self.settings = make_settings(self)
@@ -548,6 +562,166 @@ class MatchTest(unittest.TestCase):
         search.refinish(ctx, self.store.get_search(search_id))
         (after,) = self.store.list_candidates(search_id)
         self.assertEqual((before.fit.place, after.fit.place), ("unknown", "abroad"))
+
+    def person_named(self, name: str):
+        return self.store.resolve_person([Identifier(scheme="mention", value=name)], name)
+
+    def claim_of(self, person, value: str, relation: str = "works_at", date: str | None = "2025"):
+        text = f"{person.display_name} works at {value}."
+        page = page_source(f"https://example.org/{hashlib.sha1((person.id + value + relation).encode()).hexdigest()}",
+                           "Page", text, {}, NOW, None)
+        start = text.index(value)
+        return self.store.upsert_claim(ClaimDraft(person_id=person.id, kind="affiliation", relation=relation, value=value,
+                                                  quote=value, quote_start=start, quote_end=start + len(value),
+                                                  source=page, claim_date=date))
+
+    def match_for(self, **fields) -> OrgMatchOut:
+        client = net.Client(self.settings.model_copy(update={"http_mode": "live"}), httpx.MockTransport(self.handler))
+        worker = Worker(self.store, self.settings, llm=None, http=client)
+        self.addCleanup(worker.shutdown)
+        job = worker.execute(worker.create_search(orgjob.MATCH_JOB, kind="job").id,
+                             lambda ctx, _: run_step(ctx, "match", orgs.match, OrgMatchIn(pace_s=0, **fields)))
+        return OrgMatchOut.model_validate_json(self.store.get_payload(self.store.list_steps(job.id)[-1].id)[1])
+
+    def routed(self) -> Routed:
+        client = net.Client(self.settings.model_copy(update={"http_mode": "live"}), httpx.MockTransport(self.handler))
+        return Routed(client)
+
+    def search_with(self, lanes: dict[str, tuple[object, int]], http, version: int = 2) -> str:
+        """Run a search whose fake lanes each hit one person at a rank; returns the search id."""
+        def lane(name, person, rank):
+            def run(ctx, inp):
+                hit = LaneHit(person_id=person.id, name_key=person.name_key, lane=name, rank=rank, score=1.0, matched_on="x")
+                return LaneOut(lane=name, query="x", total_seen=1, hits=[hit])
+            return SimpleNamespace(name=name, run=run)
+
+        place = Place(text="the US", origin="edited", kind="anywhere_us")
+        chips = Chips(topics=[Chip(text="wind", origin="edited")], place=place, version=version)
+        worker = Worker(self.store, self.settings, llm=StubLLM(), http=http)
+        self.addCleanup(worker.shutdown)
+        search_id = worker.create_search("Who knows wind?", chips, "edited").id
+        with mock.patch("fn.search.LANES", [lane(n, p, r) for n, (p, r) in lanes.items()]):
+            worker.execute(search_id)
+        return search_id
+
+    def steps_of(self, search_id: str, name: str):
+        return [s for s in self.store.list_steps(search_id) if s.step == name]
+
+    def first_place(self, search_id: str, person) -> str:
+        (rank,) = self.steps_of(search_id, "rank")[:1]
+        out = RankOut.model_validate_json(self.store.get_payload(rank.id)[1])
+        return next(c.fit.place for c in out.candidates if c.person_id == person.id)
+
+    def test_a_scoped_match_links_only_the_claims_of_the_given_persons_and_an_empty_list_asks_nothing(self):
+        """person_ids limits the claims read to those persons; an empty list reads none and makes no call."""
+        ada, bo = self.person_named("Ada Moss"), self.person_named("Bo Rink")
+        mine, theirs = self.claim_of(ada, INBO), self.claim_of(bo, INBO)
+        self.assertEqual(self.match_for(person_ids=[]), OrgMatchOut(asked=0, chosen=0, linked=0, failed=0))
+        self.assertEqual(self.match_for(person_ids=[ada.id]), OrgMatchOut(asked=1, chosen=1, linked=1, failed=0))
+        self.assertEqual(self.org_of(mine, theirs), ["ror:00j54wy13", None])
+        self.assertEqual(list(self.store.org_answers()), [orgs.fold(INBO)])
+
+    def test_most_stops_asking_after_the_limit_in_the_order_of_the_persons_and_counts_the_names_left(self):
+        """Names are asked in person order up to most; the rest count as left, and a one-letter name is not counted."""
+        ada, bo = self.person_named("Ada Moss"), self.person_named("Bo Rink")
+        self.claim_of(ada, "Zeta Works")
+        names = [f"Alpha Lab {n:02d}" for n in range(1, 41)]
+        for name in names:
+            self.claim_of(bo, name)
+        self.claim_of(bo, "X")
+        out = self.match_for(person_ids=[ada.id, bo.id], most=40)
+        self.assertEqual((out.asked, out.left), (40, 1))
+        self.assertEqual(self.asked, ["Zeta Works", *names[:39]])
+        self.assertNotIn(orgs.fold(names[-1]), self.store.org_answers())
+
+    def test_a_one_letter_name_beside_forty_names_leaves_none_left(self):
+        """Forty askable names fit most=40, so the unaskable one adds nothing to left."""
+        bo = self.person_named("Bo Rink")
+        for n in range(1, 41):
+            self.claim_of(bo, f"Alpha Lab {n:02d}")
+        self.claim_of(bo, "X")
+        self.assertEqual(self.match_for(person_ids=[bo.id], most=40).left, 0)
+
+    def test_a_person_given_twice_and_a_name_in_two_cases_make_one_call_and_two_links(self):
+        """Ada listed twice and Bo's upper-case INBO share one call and both claims link."""
+        ada, bo = self.person_named("Ada Moss"), self.person_named("Bo Rink")
+        claims = [self.claim_of(ada, INBO), self.claim_of(bo, INBO.upper())]
+        out = self.match_for(person_ids=[ada.id, ada.id, bo.id])
+        self.assertEqual((out.asked, out.linked, len(self.asked)), (1, 2, 1))
+        self.assertEqual(self.org_of(*claims), ["ror:00j54wy13"] * 2)
+
+    def test_a_hit_on_a_merged_record_links_the_claims_of_the_whole_person(self):
+        """The id of a record merged into Ada reaches Ada's own claim."""
+        ada, twin = self.person_named("Ada Moss"), self.person_named("Ada M Moss")
+        claim = self.claim_of(ada, INBO)
+        self.store.set_merged_into(twin.id, ada.id, NOW)
+        self.assertEqual(self.match_for(person_ids=[twin.id]).linked, 1)
+        self.assertEqual(self.org_of(claim), ["ror:00j54wy13"])
+
+    def test_the_search_links_the_hit_before_resolve_and_the_first_rank_knows_the_place_and_a_rerank_asks_nothing(self):
+        """A link step stands right before resolve with the match counts; a rerank adds no link row and no call."""
+        ada = self.person_named("Ada Moss")
+        self.claim_of(ada, INBO)
+        search_id = self.search_with({"seeds": (ada, 1)}, self.routed())
+        names = [s.step for s in self.store.list_steps(search_id)]
+        self.assertEqual(names[names.index("resolve") - 1], "link")
+        link = self.steps_of(search_id, "link")[0]
+        self.assertEqual(OrgMatchOut.model_validate_json(self.store.get_payload(link.id)[1]),
+                         OrgMatchOut(asked=1, chosen=1, linked=1, failed=0))
+        self.assertEqual(self.first_place(search_id, ada), "abroad")
+        self.claim_of(ada, "Example Lab")
+        ctx = StepContext(search_id=search_id, store=self.store, llm=None, http=None, now=now, new_id=new_id,
+                          log=mock.Mock(), settings=self.settings)
+        search.refinish(ctx, self.store.get_search(search_id))
+        self.assertEqual((self.asked, len(self.steps_of(search_id, "link"))), ([INBO], 1))
+
+    def test_the_search_asks_by_hit_rank_across_lanes_so_a_second_lane_is_not_behind_forty_names(self):
+        """Bo's lane comes first but ranks lower, so Ada's INBO is asked within the limit of 40."""
+        ada, bo = self.person_named("Ada Moss"), self.person_named("Bo Rink")
+        self.claim_of(ada, INBO)
+        for n in range(1, 41):
+            self.claim_of(bo, f"Alpha Lab {n:02d}")
+        search_id = self.search_with({"seeds": (bo, 2), "scout": (ada, 1)}, self.routed())
+        self.assertIn(INBO, self.asked)
+        self.assertEqual(self.first_place(search_id, ada), "abroad")
+
+    def test_a_stored_answer_links_the_hit_with_no_call(self):
+        """With INBO answered before the search, the link step links Ada and ROR is not called."""
+        ada = self.person_named("Ada Moss")
+        self.claim_of(self.person_named("Cy Dell"), INBO)
+        self.match_for()
+        claim = self.claim_of(ada, INBO)
+        self.asked.clear()
+        search_id = self.search_with({"seeds": (ada, 1)}, self.routed())
+        self.assertEqual((self.asked, self.org_of(claim)), ([], ["ror:00j54wy13"]))
+        self.assertEqual(self.first_place(search_id, ada), "abroad")
+
+    def test_a_503_fails_the_link_step_and_the_search_still_links_stored_answers_ranks_and_ends_done(self):
+        """INBO answers 503: the link step is an error, Zeta Works is linked from its stored answer, rank and save follow."""
+        ada = self.person_named("Ada Moss")
+        zeta, inbo = self.claim_of(ada, "Zeta Works"), self.claim_of(ada, INBO)
+        source, _ = record_source("https://example.org/zeta", "org", [("id", "z")], {}, NOW)
+        orgs.save(self.store, [OrgFacts(id="ror:0zeta0000", name="Zeta", country_code="BE")], source, replace=False)
+        self.store.save_org_answer(orgs.fold("Zeta Works"), "Zeta Works", "ror:0zeta0000", NOW)
+        self.answers[INBO] = (503, b"{}")
+        search_id = self.search_with({"seeds": (ada, 1)}, self.routed())
+        self.assertEqual(self.store.get_search(search_id).status, "done")
+        self.assertEqual([s.status for s in self.steps_of(search_id, "link")], ["error"])
+        self.assertEqual(self.org_of(zeta, inbo), ["ror:0zeta0000", None])
+        self.assertEqual(len(self.steps_of(search_id, "save")), 1)
+
+    def test_no_link_step_runs_without_an_http_client_or_with_version_1_chips(self):
+        """Version 2 with a client has a link row; version 2 without a client and version 1 with one have none."""
+        ada = self.person_named("Ada Moss")
+        self.claim_of(ada, INBO)
+        for http, version, rows in ((self.routed(), 2, 1), (None, 2, 0), (self.routed(), 1, 0)):
+            with self.subTest(http=http is not None, version=version):
+                self.asked.clear()
+                search_id = self.search_with({"seeds": (ada, 1)}, http, version)
+                self.assertEqual(len(self.steps_of(search_id, "link")), rows)
+                self.assertEqual(len(self.asked), rows)
+                self.store.conn.execute("UPDATE claims SET org_id = NULL")
+                self.store.conn.execute("DELETE FROM org_matches")
 
 
 if __name__ == "__main__":
