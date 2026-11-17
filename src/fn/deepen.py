@@ -34,10 +34,12 @@ STEP = "deepen"
 JOB = "fn-lookup"
 TASK = "lookup"
 KIND = "web_person"
-MAX_LOOKUPS = 20
+MAX_LOOKUPS = 12
 CONTACT_TOP = 10
 DAYS = 90
 PAGES = 2
+# A page is cut to this many characters around the person's name, so one model call reads it.
+PAGE_CHARS = 5_500
 FACTS = 14
 SECOND = ("works_at", "worked_at", "affiliated_with", "studied_at", "fellow_of")
 CONTACT_PAGES = ("employer", "own")
@@ -195,7 +197,7 @@ def look_up(ctx: StepContext, chosen: list[Pick]) -> DeepenOut:
             read = reads[scout.page_key(page.url)]
             if read.failed or not read.text:
                 continue
-            text = titled(read.title, pageread.windows(read.text, [plan.pick.name]))
+            text = titled(read.title, pageread.windows(read.text, [plan.pick.name], limit=PAGE_CHARS))
             sources[at, page.url] = page_source(
                 read.url, read.title, text, {"lookup": {"truncated": read.truncated}}, ctx.now(),
                 read.published or ctx.now().date().isoformat(), kind="page", plain=True,
