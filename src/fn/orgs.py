@@ -33,6 +33,7 @@ RANKS = ("preferred", "normal")
 MATCH_RELATIONS = ("works_at", "worked_at", "affiliated_with", "hosted_by", "studied_at")
 MIN_CHARS = 3
 MAX_NAME_CHARS = 200
+SEARCH_PACE_S = 0.0
 
 
 class OrgError(RuntimeError):
@@ -272,24 +273,45 @@ def chosen(body: dict, fetched_at: datetime, name: str) -> tuple[OrgFacts, Sourc
         raise OrgError(f"unexpected answer, {type(exc).__name__}: {exc}") from exc
 
 
+def unlinked(store: Store, person_ids: list[str] | None) -> list[tuple[str, str, int]]:
+    """The id, value and position of every claim without an org and with a match relation, rejected ones too.
+
+    With person_ids, only the claims of those persons, each at the first index of its person in the list; else all, at 0.
+    """
+    if person_ids is None:
+        return [(claim_id, value, 0) for claim_id, value in store.unlinked_affiliations(MATCH_RELATIONS)]
+    canonical = store.canonical_ids(person_ids)
+    places: dict[str, int] = {}
+    for i, person_id in enumerate(person_ids):
+        places.setdefault(canonical.get(person_id, person_id), i)
+    return [(c.id, c.value, places[c.person_id]) for c in store.claims_of(list(places), include_hidden=True)
+            if c.org_id is None and c.relation in MATCH_RELATIONS and c.person_id in places]
+
+
 def match(ctx: StepContext, inp: OrgMatchIn) -> OrgMatchOut:
     """Ask ROR once per employer name that has claims without an org, and link the chosen org to every claim of the name.
 
-    A stored answer is reused without a call. Raises OrgError naming the name at a 429, a 5xx or a failed call,
-    with the earlier answers stored, and RuntimeError without an HTTP client.
+    A stored answer is reused without a call. With person_ids only the claims of those persons are read, and names are
+    asked in the order of the ids; with most, no more than that many names are asked and the rest count as left.
+    Raises OrgError naming the name at a 429, a 5xx or a failed call, with the earlier answers stored, and RuntimeError
+    without an HTTP client.
     """
     if ctx.http is None:
         raise RuntimeError("fn-orgs --match needs an HTTP client")
-    groups: dict[str, tuple[str, list[str]]] = {}
-    for claim_id, value in ctx.store.unlinked_affiliations(MATCH_RELATIONS):
-        groups.setdefault(fold(value), (value, []))[1].append(claim_id)
+    groups: dict[str, tuple[str, list[str], int]] = {}
+    for claim_id, value, place in unlinked(ctx.store, inp.person_ids):
+        name, claim_ids, first = groups.get(fold(value), (value, [], place))
+        groups[fold(value)] = (name, [*claim_ids, claim_id], min(first, place))
     answers = ctx.store.org_answers()
-    asked = picked = linked = failed = 0
-    for key, (name, claim_ids) in sorted(groups.items()):
+    asked = picked = linked = failed = left = 0
+    for key, (name, claim_ids, _) in sorted(groups.items(), key=lambda g: (g[0] not in answers, g[1][2], g[0])):
         if key in answers:
             linked += ctx.store.link_claims(claim_ids, answers[key]) if answers[key] else 0
             continue
         if not askable(name):
+            continue
+        if inp.most is not None and asked >= inp.most:
+            left += 1
             continue
         if asked:
             time.sleep(inp.pace_s)
@@ -311,4 +333,4 @@ def match(ctx: StepContext, inp: OrgMatchIn) -> OrgMatchOut:
             ctx.store.save_org_answer(key, name, org, ctx.now())
             linked += ctx.store.link_claims(claim_ids, org) if org else 0
         picked += bool(found)
-    return OrgMatchOut(asked=asked, chosen=picked, linked=linked, failed=failed)
+    return OrgMatchOut(asked=asked, chosen=picked, linked=linked, failed=failed, left=left)
