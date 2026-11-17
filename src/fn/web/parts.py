@@ -168,8 +168,7 @@ def person_card(view: PersonView, search_id: str | None = None, acts: object = N
     return h.article(
         h.h3(h.a(view.name, href=href), class_="fn-card__name text-name"),
         h.p(role_line(view), class_="fn-card__role text-body") if role_line(view) else None,
-        h.p(aside.text, [" ", h.span(aside.year, class_="text-year")] if aside.year else None,
-            " · ", h.a(aside.source, href=with_back(aside.href, back), class_="fn-card__source"),
+        h.p(aside.text, " · ", h.a(aside.source, href=with_back(aside.href, back), class_="fn-card__source"),
             class_="fn-card__fit text-small") if aside else None,
         h.p(reason.text, " · ", h.a(reason.source, href=with_back(reason.href, back), class_="fn-card__source"),
             class_="fn-card__reason text-body") if reason else None,

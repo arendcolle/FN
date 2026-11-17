@@ -6,7 +6,7 @@ from html import unescape
 from fastapi.testclient import TestClient
 
 from fn import network
-from fn.contracts import ClaimDraft, Identifier, Org, PersonView, Source
+from fn.contracts import Candidate, ClaimDraft, Identifier, Org, PersonView, Search, Source
 from fn.web.app import create_app
 from fn.web.parts import person_card
 from fn.worker import now
@@ -60,6 +60,19 @@ class PersonPageTest(unittest.TestCase):
 
     def undo_id(self, html: str) -> str:
         return re.search(r'action="/events/([^"]+)/undo"', html).group(1)
+
+    def test_a_person_cut_as_died_opens_from_the_search_with_the_death_and_no_walk_line(self):
+        """The page of a person the search cut as died answers 200 with the death under Work and no place in the list."""
+        late = self.person("Late Example", "late", member=False)
+        self.claim(late, "death", "1966", claim_date="1966", date_precision="year", date_method="stated_in_quote")
+        self.store.create_search(Search(id="s1", question="q", status="done", created_at=now(), code_sha=None, dirty=False,
+                                        llm_mode="replay", settings_json="{}", boot_id="b"))
+        self.store.save_candidates("s1", [Candidate(search_id="s1", person_id=late, person_ids=[late], hit_person_ids=[late],
+                                                    section="new", rank=1, score=1.0, lane_ranks={"seeds": 1},
+                                                    cut_reason="died")], [])
+        html = self.page(late, search="s1", card=late, **{"from": "card"})
+        self.assertIn("Died 1966", html)
+        self.assertNotIn("fn-walk", html)
 
     def test_a_network_persons_page_shows_head_contact_and_groups_in_order(self):
         """The head names the person with their role line and network date; contact, then the three fact groups.

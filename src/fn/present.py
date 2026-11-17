@@ -77,9 +77,8 @@ ADDED = "Looked up on {date}: added {parts}."
 NOTHING = "Looked up on {date}. Nothing new found."
 NOT_SURE = "Looked up on {date}. Nothing added, because FN could not be sure the pages it found are about this person."
 STOPPED = "This lookup stopped before it finished. Nothing was added."
-GROUP_KEYS = ("other", "outside", "abroad", "unfit", "died")
-GROUP_TITLES = {"other": "Other people found", "abroad": "Outside the US", "unfit": "Other roles or topics",
-                "died": "People who have died"}
+GROUP_KEYS = ("other", "outside", "abroad", "unfit")
+GROUP_TITLES = {"other": "Other people found", "abroad": "Outside the US", "unfit": "Other roles or topics"}
 SET_ASIDE = "Set aside"
 CLOSEST = "The closest people are below."
 TIE_BELOW = "The people below have a known tie, but FN could not confirm their topic."
@@ -787,43 +786,26 @@ def aside_line(store: Store, candidate: Candidate, today: date) -> ReasonView | 
     return ReasonView(text=what, source=view.source, href=view.href)
 
 
-def death_line(store: Store, candidate: Candidate) -> ReasonView | None:
-    """The card's death fact, the one the ranker read, as the line that sets the card aside: 'Died', its year and its
-    source; None when the card has no death claim."""
-    claims = store.claims_of(identity.on_card(store, candidate))
-    if (claim := ev.death(claims)) is None:
-        return None
-    view = claim_view(claim, store.get_sources([claim.source_id])[claim.source_id], None)
-    return ReasonView(text="Died", year=claim.value, source=view.source, href=view.href)
-
-
 def card_view(store: Store, search: Search, candidate: Candidate, view: PersonView, skipped: bool,
               today: date) -> CardView:
     """The candidate's card: its state from the people's status now, the same-name network person and the Undo.
 
     An outside or abroad card also has the place fact that set it aside, and its role line then leaves the place out.
-    A died card has its death as that line, no role line and no reason, and its second line is the tie. An old first
-    record gives the year for a line of its own after the second line.
+    An old first record gives the year for a line of its own after the second line.
     """
     reason = reason_of(view.evidence, view.evidence.href) if view.evidence else None
-    died = death_line(store, candidate) if candidate.aside == "died" else None
-    line = died or (aside_line(store, candidate, today) if candidate.aside in ("outside", "abroad") else None)
+    line = aside_line(store, candidate, today) if candidate.aside in ("outside", "abroad") else None
     fit, old = fit_words(candidate, view), None
-    if died:
-        reason, fit = None, view.tie or NO_TIE
-    elif search.chips and search.chips.version >= 2 and candidate.section == "new" and not candidate.aside:
+    if search.chips and search.chips.version >= 2 and candidate.section == "new" and not candidate.aside:
         age = ev.age(store.claims_of(identity.on_card(store, candidate)), today)
         old = age.first if rank.old(age) else None
-    shown = view.model_copy(update={"role": None, "employer": None, "place": None}) if died else (
-        view.model_copy(update={"place": None}) if line else view)
+    shown = view.model_copy(update={"place": None}) if line else view
     base = {"key": candidate.person_id, "section": candidate.section, "reason": reason, "fit": fit,
             "person": shown, "aside_line": line, "old_year": old}
     event = latest(store, view.person_id)
     if skipped:
         undo = LastView(event_id=event.id, kind="skip", words=DONE["skip"]) if event and event.kind == "skip" else None
         return CardView(**base, state="skipped", undo_event=undo)
-    if died:
-        return CardView(**base, state="died")
     if candidate.section == "network":
         return CardView(**base, state="network")
     if view.status == "in_list":

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from fn.contracts import (
+    Candidate,
     Chip,
     Chips,
     CitiesOut,
@@ -23,6 +24,7 @@ from fn.contracts import (
     PublishOut,
     RankIn,
     ResolveIn,
+    Search,
     Source,
 )
 from fn import geo, rank, search
@@ -140,6 +142,18 @@ class SearchStepsTest(unittest.TestCase):
         with mock.patch("fn.rank.tier", return_value=2):
             self.run_with(CHIPS, lanes)
         self.assertEqual(got, {"lane:web_topic": 2})
+
+    def test_first_heading_leaves_out_a_person_cut_as_died(self):
+        """Of 20 saved kept tier-1 people in the new section, one cut as died, first_heading counts 19."""
+        self.store.create_search(Search(id="s1", question="q", status="done", created_at=now(), code_sha=None, dirty=False,
+                                        llm_mode="replay", settings_json="{}", boot_id="b"))
+        people = [self.store.resolve_person([Identifier(scheme="seed", value=f"Person {n:02}")], f"Person {n:02}").id
+                  for n in range(20)]
+        rows = [Candidate(search_id="s1", person_id=p, person_ids=[p], hit_person_ids=[p], section="new", rank=n, score=1.0,
+                          lane_ranks={"seeds": n}, tier=1, cut_reason="died" if n == 20 else None)
+                for n, p in enumerate(people, 1)]
+        self.store.save_candidates("s1", rows, [])
+        self.assertEqual(search.first_heading(self.context("s1")), 19)
 
     def test_the_lane_input_carries_the_question_and_scout_runs_on_or_off(self):
         """LaneIn.question is the search's question; lane:scout runs once with the lane on and off, and off says why."""

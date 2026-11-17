@@ -894,21 +894,45 @@ class AgeOrderTest(unittest.TestCase):
     def order(self, ask: Question, **people) -> list[str]:
         return [c.person_id for c in self.fused(ask, **people)]
 
-    def test_a_dead_tier_1_person_stands_under_died_after_unfit_and_on_version_1_keeps_tier_1(self):
-        """A death sets the best-scored person aside after the unfit group; version-1 chips leave them open."""
+    def test_a_dead_tier_1_person_is_cut_as_died_and_on_version_1_keeps_tier_1(self):
+        """A death cuts the person as died with no aside and their tier; version-1 chips leave them open."""
         people = dict(dead=aged(found(**self.HERE), died="d1"), nope=found(**self.HERE), open=found(**self.HERE))
         out = self.fused(v2(), {"nope": "no", "dead": "yes", "open": "yes"}, **people)
-        self.assertEqual([(c.person_id, c.aside) for c in out], [("open", None), ("nope", "unfit"), ("dead", "died")])
-        self.assertEqual(out[-1].tier, 1)
+        kept = [(c.person_id, c.aside) for c in out if not c.cut_reason]
+        self.assertEqual(kept, [("open", None), ("nope", "unfit")])
+        dead = next(c for c in out if c.person_id == "dead")
+        self.assertEqual((dead.cut_reason, dead.aside, dead.tier), ("died", None, 1))
+        alive = {k: v for k, v in people.items() if k != "dead"}
+        again = self.fused(v2(), {"nope": "no", "open": "yes"}, **alive)
+        self.assertEqual([(c.person_id, c.rank, c.aside) for c in out if not c.cut_reason],
+                         [(c.person_id, c.rank, c.aside) for c in again])
         dead = self.fused(ASK, **people)[0]
-        self.assertEqual((dead.person_id, dead.tier, dead.aside), ("dead", 1, None))
+        self.assertEqual((dead.person_id, dead.tier, dead.aside, dead.cut_reason), ("dead", 1, None, None))
 
-    def test_died_beats_outside_and_a_dead_network_person_stays_open(self):
-        """A dead person outside a required area stands under died; the network section is never set aside."""
+    def test_a_dead_person_outside_a_must_area_is_cut_as_died_and_a_dead_network_person_stays_open(self):
+        """A dead person outside a required area is cut as died; the network section is never cut or set aside."""
         (c,) = self.fused(placed("must"), away=aged(found(**self.AWAY), died="d1"))
-        self.assertEqual(c.aside, "died")
+        self.assertEqual((c.cut_reason, c.aside), ("died", None))
         (c,) = self.fused(placed("must"), statuses={"dead": "in_list"}, dead=aged(found(**self.HERE), died="d1"))
-        self.assertEqual((c.section, c.aside), ("network", None))
+        self.assertEqual((c.section, c.aside, c.cut_reason), ("network", None, None))
+
+    def test_a_dead_person_with_a_weak_tie_under_a_required_tie_stays_cut_as_no_tie(self):
+        """Another cut reason wins over died."""
+        weak = aged(found(kinds=("belgian_text",), grade="weak", only_openalex=False), died="d1")
+        (c,) = self.fused(v2("must"), weak=weak)
+        self.assertEqual(c.cut_reason, "no_tie")
+
+    def test_a_dead_exempted_openalex_person_is_cut_as_died(self):
+        """The exemption brings back a topic expert without Belgian evidence, and the death then cuts them."""
+        dead = aged(found(kinds=(), years=0, last=None, fit="inside", km=5.0, countries=("US",)), died="d1")
+        (c,) = self.fused(placed("must"), oa=dead)
+        self.assertEqual((c.cut_reason, c.aside), ("died", None))
+
+    def test_a_dead_person_among_fifty_tied_tier_6_people_is_the_only_one_cut(self):
+        """Fifty tied tier-6 people fill the cap; the dead one is cut as died and no living one is cut."""
+        tied6 = found(match=False, words=(), only_openalex=False)
+        out = self.fused(v2(), dead=aged(tied6, died="d1"), **{f"t{k:02d}": tied6 for k in range(50)})
+        self.assertEqual([(c.person_id, c.cut_reason) for c in out if c.cut_reason], [("dead", "died")])
 
     def test_under_a_required_place_an_old_tier_1_person_follows_tier_2_and_precedes_heading_2(self):
         """An old first record with nothing recent goes last under its heading, not below it."""

@@ -33,7 +33,7 @@ TIED = ("strong", "medium")
 ROLES = ("met", "unknown", "fails")
 FITS = ("inside", "unknown", "none")
 FITS_MUST = ("inside", "none")
-ASIDES = (None, "outside", "abroad", "unfit", "died")
+ASIDES = (None, "outside", "abroad", "unfit")
 HEADING_CAP = 50
 CAPPED = (3, 4)
 PLACES = {"outside": 1, "abroad": 2}
@@ -273,12 +273,10 @@ def order_key(found: "evidence.Evidence | None", question: Question | None, leve
 
 def aside(section: Section, found: "evidence.Evidence | None", question: Question | None,
           verdict: FitVerdict | None) -> Aside | None:
-    """Why a person stands outside the open list: a source states a death, outside a required area, abroad under a US
-    place, or a fit check "no". None in the network section, without evidence or on chips stored before version 2."""
+    """Why a person stands outside the open list: outside a required area, abroad under a US place, or a fit check
+    "no". None in the network section, without evidence or on chips stored before version 2."""
     if section == "network" or found is None or question is None or question.chips.version < 2:
         return None
-    if found.age.died:
-        return "died"
     place = place_fit(found, question)
     if place == "outside" and parse.place_must(question.chips):
         return "outside"
@@ -291,6 +289,13 @@ def no_tie(section: Section, found: "evidence.Evidence | None", question: Questi
     """no_tie for a new-section person with evidence and a weak or no tie when the question requires a tie."""
     if section == "new" and found and question and parse.tie_must(question.chips) and found.belgian.grade not in TIED:
         return "no_tie"
+    return None
+
+
+def death_cut(section: Section, found: "evidence.Evidence | None", question: Question | None) -> CutReason | None:
+    """died for a new-section person with evidence whom a source states dead, on chips of version 2 or later."""
+    if section == "new" and found and question and question.chips.version >= 2 and found.age.died:
+        return "died"
     return None
 
 
@@ -409,7 +414,8 @@ def fuse(search_id: str, entries: list[Entry], statuses: dict[str, ListStatus],
                         level, reason, aside(section, ev, question, verdict)))
     rows.sort(key=lambda r: (*r.key, -score(r.parts), r.entry.person_ids[0]))
     back = exempt(rows, question)
-    rows = [r._replace(reason=None if n in back else r.reason or no_tie(r.section, r.found, question))
+    rows = [r._replace(reason=(None if n in back else r.reason or no_tie(r.section, r.found, question))
+                        or death_cut(r.section, r.found, question))
             for n, r in enumerate(rows)]
     rows.sort(key=lambda r: 0 if r.reason else ASIDES.index(r.aside))
     spots = [n for n, r in enumerate(rows) if r.section == "new" and not r.reason and not r.aside]
