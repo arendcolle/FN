@@ -2,6 +2,7 @@ import json
 import re
 import time
 import unittest
+from datetime import UTC, datetime
 from html import escape
 
 import httpx
@@ -448,6 +449,35 @@ class OpenAlexLaneTest(unittest.TestCase):
         self.assertIn("km from Boston, US (inside the radius)", out.hits[0].matched_on)
         self.assertIn("last known KU Leuven, Leuven", out.hits[1].matched_on)
         self.assertIn("(outside the radius)", out.hits[1].matched_on)
+
+
+class AuthorTopicsTest(unittest.TestCase):
+    AT = datetime(2026, 11, 17, tzinfo=UTC)
+
+    def record(self, **fields) -> dict:
+        topics = [{"id": f"https://openalex.org/T{i}", "display_name": f"Topic {i}", "count": 9 - i} for i in range(7)]
+        return {"id": "https://openalex.org/A9000001", "display_name": "Test Author", "topics": topics,
+                "counts_by_year": [{"year": 2024, "works_count": 3}, {"year": 2016, "works_count": 2},
+                                   {"year": 2020, "works_count": 0}], "updated_date": "2026-11-01"} | fields
+
+    def test_the_first_five_topics_are_claims_quoting_their_lines_with_no_years(self):
+        """Five topic claims, each quoting its own line of one source, dated by the last year with works, with no years."""
+        drafts = openalex.author_topics(self.record(), "p1", self.AT)
+        self.assertEqual([d.value for d in drafts], [f"Topic {i}" for i in range(5)])
+        self.assertEqual({(d.claim_date, d.date_precision, d.date_method, tuple(d.years)) for d in drafts},
+                         {("2024", "year", "record_field", ())})
+        self.assertEqual(len({d.source.id for d in drafts}), 1)
+        self.assertIn("years_with_works: 2016, 2024", drafts[0].source.text)
+        self.assertEqual(drafts[2].quote, "topics.2.display_name: Topic 2")
+
+    def test_no_topics_give_no_claims_and_no_years_with_works_give_undated_ones(self):
+        """An author without topics has no claim; without years with works the topic claims have no date."""
+        self.assertEqual(openalex.author_topics(self.record(topics=[]), "p1", self.AT), [])
+        self.assertEqual(openalex.author_topics(self.record(topics=None), "p1", self.AT), [])
+        undated = openalex.author_topics(self.record(counts_by_year=[{"year": 2020, "works_count": 0}]), "p1", self.AT)
+        self.assertEqual(len(undated), 5)
+        self.assertEqual({(d.claim_date, d.date_precision, d.date_method) for d in undated}, {(None, None, None)})
+        self.assertEqual(len(openalex.author_topics(self.record(counts_by_year=None), "p1", self.AT)), 5)
 
 
 if __name__ == "__main__":

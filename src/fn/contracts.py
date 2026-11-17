@@ -928,6 +928,20 @@ class EnrichOut(Model):
     lookups: list[Lookup]
 
 
+# The one step of the fn-index job: the stored copy of US authors with a Belgian affiliation.
+class IndexIn(Model):
+    pass
+
+
+class IndexOut(Model):
+    pages: int
+    authors: int
+    new: int
+    skipped: int
+    malformed: int
+    stopped: str = ""
+
+
 class GoldPick(Model):
     case_id: str
     name: str

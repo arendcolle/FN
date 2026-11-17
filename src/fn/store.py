@@ -583,6 +583,12 @@ class Store:
         row = self.conn.execute(f"SELECT {', '.join(CLAIM_COLUMNS)} FROM claims WHERE id = ?", (claim_id,)).fetchone()
         return _claim(row) if row else None
 
+    def source_kinds(self, source_ids: list[str]) -> dict[str, SourceKind]:
+        """The kind of each source id; an id nobody holds is left out."""
+        rows = self.conn.execute("SELECT id, kind FROM sources WHERE id IN (SELECT value FROM json_each(?))",
+                                 (json.dumps(source_ids),))
+        return {r[0]: r[1] for r in rows}
+
     def get_sources(self, source_ids: list[str]) -> dict[str, Source]:
         rows = self.conn.execute(
             f"SELECT {', '.join(SOURCE_COLUMNS)} FROM sources WHERE id IN (SELECT value FROM json_each(?))",
