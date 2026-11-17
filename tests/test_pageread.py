@@ -1,15 +1,18 @@
+import io
 import logging
+import subprocess
 import unittest
 from unittest import mock
 
 import httpx
+from pypdf import PdfReader, PdfWriter
 
-from fn import net, pageread
+from fn import net, pageread, pdftext
 from fn.contracts import ParseIn, ParseOut
 from fn.pageread import Read, allowed, html_text, page_date, read, read_all, windows
 from fn.steps import StepContext, run_step
 from fn.worker import Worker, new_id, now
-from tests.helpers import StubLLM, make_db, make_settings
+from tests.helpers import StubLLM, make_db, make_settings, pdf_bytes
 
 LONG = "Ada Example leads the Example Labs team on quiet measurement. " * 8
 
@@ -93,7 +96,8 @@ class PageReadTest(unittest.TestCase):
         self.assertEqual(got["403"].failed, "GET https://a.example/403 returned 403: no")
         self.assertEqual(got["999"].failed, "GET https://a.example/999 returned 999: no")
         self.assertIn("returned 404", got["404"].failed)
-        self.assertEqual(got["pdf"].failed, "a PDF, not a web page")
+        self.assertTrue(got["pdf"].failed.startswith("a PDF that could not be read: "))
+        self.assertGreater(len(got["pdf"].failed), len("a PDF that could not be read: "))
         self.assertEqual(got["js"].failed, "0 characters of text, under 300")
         self.assertEqual(got["r0"].failed, "GET https://a.example/r0 redirected more than 3 times")
         self.assertTrue(all(r.text is None for r in got.values()))
@@ -233,6 +237,94 @@ class PageReadTest(unittest.TestCase):
         self.assertEqual(self.run_in_step(self.settings, lambda c: (allowed(c, "https://a.example/ok"),
                                                                     allowed(c, "https://a.example/private/x"))),
                          (None, "robots.txt disallows it"))
+
+    def cv(self, name: str, pages: int = 1, **meta) -> bytes:
+        """A PDF of `pages` pages, each with 12 lines of 60 or more characters that start with name."""
+        return pdf_bytes([[f"{name} page {p} line {n} works on quiet measurement at Example Labs" for n in range(12)]
+                          for p in range(pages)], **meta)
+
+    def test_pdfs_are_read_by_their_first_bytes_side_by_side_and_a_web_page_at_a_pdf_address_stays_html(self):
+        """Each PDF gives its own text in page order, the title stripped and the day of the modification date."""
+        self.serve("https://a.example/cv", self.cv("Ada", 8, title="  CV of Ada Example ", modified="D:20240305120000Z",
+                                                   created="D:20210101120000Z"))
+        self.serve("https://b.example/cv", self.cv("Bea", 2))
+        self.serve("https://c.example/page.pdf", page(LONG))
+        a, b, c = self.reading("https://a.example/cv", "https://b.example/cv", "https://c.example/page.pdf")
+        self.assertEqual((a.title, a.published, a.failed, a.truncated), ("CV of Ada Example", "2024-03-05", None, False))
+        self.assertTrue(a.text.startswith("Ada page 0 line 0"))
+        self.assertLess(a.text.index("Ada page 3 "), a.text.index("Ada page 4 "))
+        self.assertIn("Ada page 7 line 11", a.text)
+        self.assertTrue(b.text.startswith("Bea page 0") and "Ada" not in b.text and b.title is None)
+        self.assertEqual((c.title, c.failed), ("Example page", None))
+        self.assertIn("Ada Example leads", c.text)
+
+    def test_a_pdf_date_falls_back_to_creation_and_an_impossible_or_missing_date_gives_none(self):
+        """A modification date of 1970 gives the creation day; 2999, garbage or no date give None."""
+        cases = {"old": dict(modified="D:19700101000000Z", created="D:20210615000000Z"),
+                 "far": dict(modified="D:29990101000000Z"), "junk": dict(modified="D:garbage"), "none": {}}
+        for key, meta in cases.items():
+            self.serve(f"https://a.example/{key}", self.cv("Ada", **meta))
+        got = {r.url.rsplit("/", 1)[1]: r for r in self.reading(*(f"https://a.example/{k}" for k in cases))}
+        self.assertEqual({k: r.published for k, r in got.items()}, {"old": "2021-06-15", "far": None, "junk": None, "none": None})
+        self.assertTrue(all(r.failed is None and r.title is None for r in got.values()))
+
+    def test_a_scan_fails_with_its_character_count(self):
+        """Three pages without text give the count and no retry."""
+        self.serve("https://a.example/scan", pdf_bytes([[], [], []]))
+        [got] = self.reading("https://a.example/scan")
+        self.assertEqual((got.failed, got.text, got.retry), ("a PDF with 0 characters of text, under 300", None, False))
+
+    def test_a_300_page_pdf_reads_60_pages_and_is_truncated(self):
+        """Pages 0 to 59 are read, page 60 is not, and the read says text was left."""
+        self.serve("https://a.example/big", pdf_bytes([[f"page {p} of a very long report on quiet measurement" * 2] for p in range(300)]))
+        [got] = self.reading("https://a.example/big")
+        self.assertIn("page 59 ", got.text)
+        self.assertNotIn("page 60 ", got.text)
+        self.assertTrue(got.truncated)
+
+    def test_a_2_mb_pdf_is_cut_at_max_chars(self):
+        """900 pages of 45 lines give MAX_CHARS characters and a truncated read."""
+        line = "Ada Example measures quiet things at Example Labs in Ghent"
+        self.serve("https://a.example/huge", pdf_bytes([[line] * 45 for _ in range(900)]))
+        [got] = self.reading("https://a.example/huge")
+        self.assertEqual((len(got.text), got.truncated), (pageread.MAX_CHARS, True))
+
+    def test_a_nul_character_is_removed(self):
+        """A NUL byte drawn in a page's text is gone from the read text."""
+        self.serve("https://a.example/nul", pdf_bytes([["Ada\x00 Example works at Example Labs on quiet measurement. " * 6]]))
+        [got] = self.reading("https://a.example/nul")
+        self.assertTrue(got.text.startswith("Ada Example works"))
+        self.assertNotIn("\x00", got.text)
+
+    def test_text_a_database_can_store_has_no_nul_and_no_lone_surrogate(self):
+        """clean drops a NUL and turns a lone surrogate into a question mark."""
+        self.assertEqual(pdftext.clean("a\x00b\ud800c"), "ab?c")
+
+    def test_an_encrypted_pdf_fails(self):
+        """A PDF with an owner password and an empty user password is refused, not read."""
+        writer = PdfWriter(clone_from=PdfReader(io.BytesIO(self.cv("Ada"))))
+        writer.encrypt("", "owner", algorithm="RC4-128")
+        out = io.BytesIO()
+        writer.write(out)
+        self.serve("https://a.example/locked", out.getvalue())
+        [got] = self.reading("https://a.example/locked")
+        self.assertEqual((got.failed, got.retry),
+                         ("a PDF that could not be read: FileNotDecryptedError: the PDF is encrypted", False))
+
+    def test_a_pdf_read_over_the_time_limit_fails_without_retry(self):
+        """The child is killed when PDF_SECONDS passes and the read fails with the limit in its reason."""
+        self.serve("https://a.example/slow", self.cv("Ada"))
+        with mock.patch.object(pageread, "PDF_SECONDS", 0.01):
+            [got] = self.reading("https://a.example/slow")
+        self.assertEqual((got.failed, got.retry), ("a PDF that took over 0.01s to read", False))
+
+    def test_a_crashed_reader_gives_its_last_error_line_cut_to_120_characters(self):
+        """The last non-empty stderr line, on one line, is cut to 120 characters."""
+        crash = subprocess.CompletedProcess([], 1, b"", b"Traceback (most recent call last):\n  File x\nMemoryError: " + b"x" * 300 + b"\n\n")
+        self.serve("https://a.example/crash", self.cv("Ada"))
+        with mock.patch.object(pageread.subprocess, "run", return_value=crash):
+            [got] = self.reading("https://a.example/crash")
+        self.assertEqual((got.failed, got.retry), ("a PDF that could not be read: MemoryError: " + "x" * 107, False))
 
 
 class HtmlTextTest(unittest.TestCase):
