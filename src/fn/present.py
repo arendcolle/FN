@@ -1,13 +1,15 @@
 """How a person reads on every staff page: the view models of people and claims, and plain-words helpers."""
+import json
 import re
 from calendar import month_name
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from html import unescape
 from urllib.parse import urlsplit
 
+from fn import deepen
 from fn import evidence as ev
 from fn import identity, network, orgs, parse, rank
 from fn.contracts import (
@@ -24,6 +26,7 @@ from fn.contracts import (
     FoldView,
     LaneOut,
     LastView,
+    LookupView,
     NetworkFilter,
     NetworkView,
     Org,
@@ -68,7 +71,12 @@ DONE = {"add": "Added to your network", "skip": "Skipped", "edit_contact": "Save
         "not_same": "Marked as a different person"}
 RESULTS_STEP = 20
 HEADINGS = {1: "Topic and a tie to Flanders or Belgium", 2: "Topic, no known tie", 3: "Tie, topic not confirmed", 4: "Other people found"}
+LOOKUP_WINDOW = timedelta(seconds=60)
 OLD_LINE = "First record {year}, nothing recent"
+ADDED = "Looked up on {date}: added {parts}."
+NOTHING = "Looked up on {date}. Nothing new found."
+NOT_SURE = "Looked up on {date}. Nothing added, because FN could not be sure the pages it found are about this person."
+STOPPED = "This lookup stopped before it finished. Nothing was added."
 GROUP_KEYS = ("other", "outside", "abroad", "unfit", "died")
 GROUP_TITLES = {"other": "Other people found", "abroad": "Outside the US", "unfit": "Other roles or topics",
                 "died": "People who have died"}
@@ -366,10 +374,16 @@ def claim_view(claim: Claim, source: Source, org: Org | None, seen_at: datetime 
                      source=source_name(source), url=None if source.url.startswith("fn:") else source.url)
 
 
+def day_words(at: datetime) -> str:
+    """The local day of the time, such as '3 November 2026'."""
+    local = at.astimezone()
+    return f"{local.day} {local:%B %Y}"
+
+
 def added_on(store: Store, person_id: str) -> str | None:
     """The day of the person's latest add event, such as '3 November 2026', or None when there is none."""
-    at = next((e.at.astimezone() for e in store.events_of(person_id) if e.kind == "add"), None)
-    return f"{at.day} {at:%B %Y}" if at else None
+    at = next((e.at for e in store.events_of(person_id) if e.kind == "add"), None)
+    return day_words(at) if at else None
 
 
 @dataclass(eq=False)
@@ -773,13 +787,14 @@ def aside_line(store: Store, candidate: Candidate, today: date) -> ReasonView | 
     return ReasonView(text=what, source=view.source, href=view.href)
 
 
-def death_reason(store: Store, candidate: Candidate, today: date) -> ReasonView | None:
-    """The card's death fact, the one the ranker read, as a reason line; None when the card has no death claim."""
+def death_line(store: Store, candidate: Candidate) -> ReasonView | None:
+    """The card's death fact, the one the ranker read, as the line that sets the card aside: 'Died', its year and its
+    source; None when the card has no death claim."""
     claims = store.claims_of(identity.on_card(store, candidate))
     if (claim := ev.death(claims)) is None:
         return None
     view = claim_view(claim, store.get_sources([claim.source_id])[claim.source_id], None)
-    return reason_of(view, view.href)
+    return ReasonView(text="Died", year=claim.value, source=view.source, href=view.href)
 
 
 def card_view(store: Store, search: Search, candidate: Candidate, view: PersonView, skipped: bool,
@@ -787,22 +802,28 @@ def card_view(store: Store, search: Search, candidate: Candidate, view: PersonVi
     """The candidate's card: its state from the people's status now, the same-name network person and the Undo.
 
     An outside or abroad card also has the place fact that set it aside, and its role line then leaves the place out.
-    A died card's reason line is its death fact, and an old first record ends the second line with OLD_LINE.
+    A died card has its death as that line, no role line and no reason, and its second line is the tie. An old first
+    record gives the year for a line of its own after the second line.
     """
     reason = reason_of(view.evidence, view.evidence.href) if view.evidence else None
-    if candidate.aside == "died":
-        reason = death_reason(store, candidate, today)
-    line = aside_line(store, candidate, today) if candidate.aside in ("outside", "abroad") else None
-    fit = fit_words(candidate, view)
-    if search.chips and search.chips.version >= 2 and candidate.section == "new" and not candidate.aside:
+    died = death_line(store, candidate) if candidate.aside == "died" else None
+    line = died or (aside_line(store, candidate, today) if candidate.aside in ("outside", "abroad") else None)
+    fit, old = fit_words(candidate, view), None
+    if died:
+        reason, fit = None, view.tie or NO_TIE
+    elif search.chips and search.chips.version >= 2 and candidate.section == "new" and not candidate.aside:
         age = ev.age(store.claims_of(identity.on_card(store, candidate)), today)
-        fit = " · ".join(p for p in (fit, OLD_LINE.format(year=age.first) if rank.old(age) else None) if p) or None
+        old = age.first if rank.old(age) else None
+    shown = view.model_copy(update={"role": None, "employer": None, "place": None}) if died else (
+        view.model_copy(update={"place": None}) if line else view)
     base = {"key": candidate.person_id, "section": candidate.section, "reason": reason, "fit": fit,
-            "person": view.model_copy(update={"place": None}) if line else view, "aside_line": line}
+            "person": shown, "aside_line": line, "old_year": old}
     event = latest(store, view.person_id)
     if skipped:
         undo = LastView(event_id=event.id, kind="skip", words=DONE["skip"]) if event and event.kind == "skip" else None
         return CardView(**base, state="skipped", undo_event=undo)
+    if died:
+        return CardView(**base, state="died")
     if candidate.section == "network":
         return CardView(**base, state="network")
     if view.status == "in_list":
@@ -1058,8 +1079,9 @@ def years_of(ids: list[str], claims: list[Claim], sources: dict[str, Source]) ->
     return span_words(frozenset().union(*(own_years(c, sources[c.source_id]) for c in claims if c.id in ids)))
 
 
-def summary_of(claims: list[Claim], facts: dict[str, Org], sources: dict[str, Source], ids: Sequence[str]) -> list[SummaryRow]:
-    """The rows under the head: the newest study, the tie and the contact values or 'Not found'.
+def summary_of(claims: list[Claim], facts: dict[str, Org], sources: dict[str, Source], ids: Sequence[str],
+               member: bool) -> list[SummaryRow]:
+    """The rows under the head: the newest study, the tie and, for a network person, the contact values or 'Not found'.
 
     The tie is the first of ids that shows one; it reads 'Tie to Flanders' when it lies in Flanders. The study is
     left out when it is the tie.
@@ -1075,6 +1097,8 @@ def summary_of(claims: list[Claim], facts: dict[str, Org], sources: dict[str, So
         org, line = facts.get(tie.org_id or ""), same_fact(tie, claims)
         rows.append(SummaryRow(key="Tie to Flanders" if ev.in_flanders(tie, org) else "Tie to Belgium", value=what_of(tie, org),
                                years=years_of(line, claims, sources), claim_ids=line))
+    if not member:
+        return rows
     found = [c for c in (contact_of(kind, claims, sources) for kind in ("email", "phone")) if c.claim]
     return rows + [SummaryRow(key="Contact", value=" · ".join(c.value for c in found) or "Not found",
                               claim_ids=[c.claim.claim_id for c in found])]
@@ -1090,7 +1114,7 @@ def contact_of(kind: str, claims: list[Claim], sources: dict[str, Source]) -> Co
     view = claim_view(claim, source, None)
     if source.kind == "import":
         view = view.model_copy(update={"label": f"From import {source.title}"})
-    return ContactView(kind=kind, value=claim.value, claim=view)
+    return ContactView(kind=kind, value=claim.value, claim=view, found=prose(source))
 
 
 def work_org(claims: list[Claim], facts: dict[str, Org], sources: dict[str, Source], today: date) -> str | None:
@@ -1137,6 +1161,46 @@ def separated_label(store: Store, record_id: str) -> str:
         return store.get_persons([record_id])[record_id].display_name
     top = Counter(c.source_id for c in claims).most_common(1)[0][0]
     return record_label(store.get_sources([top])[top])
+
+
+def looking(store: Store, search: Search) -> bool:
+    """Whether the search is running its lookup step now; only version 2 chips and later have that step."""
+    return (search.status == "running" and search.chips is not None and search.chips.version >= 2
+            and any(s.step == deepen.STEP and s.status == "running" for s in store.list_steps(search.id)))
+
+
+def lookup_parts(store: Store, records: list[str], at: datetime, today: date) -> str:
+    """What a lookup row added, in words: the records' claims from pages a lookup read that were first stored up to
+    LOOKUP_WINDOW before the row, each counted once, as a job, a place, recent facts, an email and a phone number."""
+    near = [c for c in store.claims_of(records) if c.first_seen_at and at - LOOKUP_WINDOW <= c.first_seen_at <= at]
+    sources = store.get_sources(list({c.source_id for c in near}))
+    mine = [c for c in near if "lookup" in json.loads(sources[c.source_id].raw_json or "{}")]
+    job = [c for c in mine if (c.kind == "role" and c.relation is None) or c.relation == "works_at"]
+    recent = sum(ev.recent_fact([c], today) for c in mine if c not in job and c.kind not in ("location", "email", "phone"))
+    kinds = {c.kind for c in mine}
+    parts = [p for p in ("a current job" if job else None, "a place" if "location" in kinds else None,
+                         "a recent fact" if recent == 1 else f"{recent} recent facts" if recent else None,
+                         "an email address" if "email" in kinds else None,
+                         "a phone number" if "phone" in kinds else None) if p]
+    return " and ".join([", ".join(parts[:-1]), parts[-1]] if len(parts) > 1 else parts)
+
+
+def lookup_view(store: Store, records: list[str], person_id: str, today: date) -> LookupView:
+    """The person's lookup line: running while the latest lookup job of the person is queued or running; stopped when
+    that job ended without a row at or after its start, or the newest row failed; else the newest row's words."""
+    job, last = store.latest_job(deepen.job_question(person_id)), store.last_lookup(records, deepen.KIND)
+    if job and job.status in ("queued", "running"):
+        return LookupView(state="running")
+    if (job and not (last and last[1] >= job.created_at)) or (last and last[0].verdict == "failed"):
+        return LookupView(state="stopped", words=STOPPED)
+    if last is None:
+        return LookupView(state="before")
+    row, at = last
+    day = day_words(at)
+    parts = lookup_parts(store, records, at, today) if row.verdict == "added" else ""
+    words = (ADDED.format(date=day, parts=parts) if parts else NOT_SURE.format(date=day) if row.verdict == "not_sure"
+             else NOTHING.format(date=day))
+    return LookupView(state="after", words=words)
 
 
 def latest(store: Store, person_id: str) -> Event | None:
@@ -1235,5 +1299,6 @@ def profile(store: Store, person_id: str, today: date, card: list[str] | None = 
                for title in GROUPS if lines.get(title) or (title == "Work" and fold_line)],
         found_as=rows, possible=views[2:] if name_match else views[1:],
         name_match=views[1] if name_match else None, last=last_of(store, person, event, removed),
-        summary=summary_of(claims, facts, sources, shown_tie), records=len(rows) if len(persons) > 1 else 1,
+        summary=summary_of(claims, facts, sources, shown_tie, member), records=len(rows) if len(persons) > 1 else 1,
+        lookup=lookup_view(store, list(dict.fromkeys(r.id for p in persons for r in store.records_of(p))), canonical, today),
     )

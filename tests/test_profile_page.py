@@ -169,7 +169,7 @@ class ProfilePageTest(unittest.TestCase):
 
     def test_the_summary_has_the_newest_study_the_tie_and_the_contact_or_not_found(self):
         """Studied is the newest study with its years unless it is the tie; Contact links or reads Not found."""
-        ada = self.person("Ada Fictief", "ada")
+        ada = self.person("Ada Fictief", "ada", member=True)
         self.claim(ada, "affiliation", "Example College", relation="studied_at", claim_date="2006")
         self.claim(ada, "affiliation", "Gent University", relation="studied_at", org_id=GENT_UNI.id, claim_date="2012")
         html = self.page(ada)
@@ -184,6 +184,38 @@ class ProfilePageTest(unittest.TestCase):
         bo = self.person("Bo Fictief", "bo")
         self.claim(bo, "topic", "Wind energy")
         self.assertNotIn("Studied", self.page(bo))
+
+    def test_a_found_contact_value_has_its_source_name_and_proof_and_only_a_member_gets_edit(self):
+        """A non-member's page holds only the kinds FN found, with no Edit and no summary row; a member's found value keeps
+        Edit and an imported value keeps its citation line."""
+        long = "a" * 190 + "@health.example.gov"
+        ada = self.person("Ada Fictief", "ada")
+        self.claim(ada, "email", long, url="https://health.example.gov/staff", title="Staff directory", claim_date="2026-10")
+        html = self.page(ada)
+        contact = self.section(html, "Contact")
+        self.assertEqual(re.findall(r'<dt class="text-label">([^<]+)</dt>', contact), ["Email"])
+        self.assertIn(f'<div class="fn-contact__value text-body"><a href="mailto:{long}">{long}</a> <details class="fn-proof">'
+                      '<summary class="fn-proof__name text-small" aria-label="Source for the email address: '
+                      'health.example.gov">health.example.gov</summary>', contact)
+        self.assertIn('>Staff directory</a>, ', contact)
+        self.assertNotIn("fn-quote", contact)
+        for gone in ("Edit", "Not provided", 'class="fn-summary-list'):
+            self.assertNotIn(gone, html)
+        bo = self.person("Bo Fictief", "bo", member=True)
+        self.claim(bo, "email", "bo@health.example.gov", url="https://health.example.gov/staff")
+        self.claim(bo, "phone", "+1 301 555 0100", source_kind="import", title="people.csv", url="https://example.org/f")
+        shown = self.section(self.page(bo), "Contact")
+        self.assertIn('aria-label="Source for the email address: health.example.gov"', shown)
+        self.assertEqual(shown.count(">Edit</a>"), 2)
+        self.assertNotIn("Source for the phone number", shown)
+
+    def test_a_person_outside_the_network_without_contact_has_no_contact_section(self):
+        """A non-member with no email and no phone has no Contact section and no Contact row in the summary."""
+        ada = self.person("Ada Fictief", "ada")
+        self.claim(ada, "topic", "Wind energy")
+        html = self.page(ada)
+        self.assertEqual(HEADING.findall(html), ["Work"])
+        self.assertNotIn(">Contact<", html)
 
     def test_a_card_of_two_records_shows_both_and_not_this_person_separates_the_second(self):
         """With search and card the page combines the records; without search the second is a possible match."""

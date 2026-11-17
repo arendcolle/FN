@@ -356,7 +356,7 @@ class PlacesAndTieRowTest(PersonContentCase):
         self.assertIn("Studied", self.summary(html))
         weak = self.person("Wim Proef", "wim")
         self.search_with([[weak]], [CardFit(tie_grade="weak", tie_claim_ids=[degree])], "s2")
-        self.assertFalse({"Tie to Belgium", "Tie to Flanders"} & set(self.summary(self.page(weak, search="s2", card=weak))))
+        self.assertNotIn('class="fn-summary-list"', self.page(weak, search="s2", card=weak))
 
     def test_without_a_search_the_degree_is_the_tie_and_the_studied_row_goes(self):
         """A degree at UCLouvain (Wallonia) reads 'Tie to Belgium' and leaves out Studied and the Education section."""

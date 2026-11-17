@@ -244,7 +244,7 @@ class PersonPageTest(unittest.TestCase):
         html = self.page(twin)
         self.assertIn(f'Same name as <a href="/people/{ada}?back=%2Fpeople%2F{twin}">Ada Example</a> in your network', html)
         self.assertEqual(re.findall(r'class="fn-btn fn-btn--quiet text-control">([^<]+)<', html),
-                         ["Same person", "Add as new", "Skip"])
+                         ["Same person", "Add as new", "Skip", "Look up more"])
         self.assertEqual(self.post(f"/people/{ada}/merge", other=twin, next=f"/people/{ada}"), f"/people/{ada}")
         self.assertIn('<span class="fn-new text-label">New</span>Topic: Wind energy', self.page(ada))
         self.assertEqual(self.client.get(f"/people/{twin}").status_code, 303)

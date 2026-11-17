@@ -156,6 +156,12 @@ class Store:
         row = self.conn.execute("SELECT * FROM searches WHERE id = ?", (search_id,)).fetchone()
         return self._search(row) if row else None
 
+    def latest_job(self, question: str) -> Search | None:
+        """The newest job row with the question, or None."""
+        row = self.conn.execute("SELECT * FROM searches WHERE kind = 'job' AND question = ? "
+                                "ORDER BY created_at DESC, rowid DESC LIMIT 1", (question,)).fetchone()
+        return self._search(row) if row else None
+
     def list_searches(self, limit: int | None) -> list[Search]:
         """The newest searches of kind search first, at most limit of them, or all with None; jobs are left out."""
         rows = self.conn.execute("SELECT * FROM searches WHERE kind = 'search' ORDER BY created_at DESC LIMIT ?",
@@ -903,6 +909,14 @@ class Store:
             f"SELECT person_id FROM lookups WHERE kind = ? AND at >= ? AND verdict NOT IN ('failed', 'error') "
             f"AND person_id IN ({', '.join('?' * len(person_ids))})", (kind, _iso(since), *person_ids))
         return {r[0] for r in rows}
+
+    def last_lookup(self, person_ids: list[str], kind: str) -> tuple[Lookup, datetime] | None:
+        """The newest lookup row of the kind among the records, with its time, or None."""
+        row = self.conn.execute(
+            f"SELECT person_id, kind, verdict, detail, at FROM lookups WHERE kind = ? "
+            f"AND person_id IN ({', '.join('?' * len(person_ids))}) ORDER BY at DESC, person_id LIMIT 1",
+            (kind, *person_ids)).fetchone()
+        return (Lookup(person_id=row[0], kind=row[1], verdict=row[2], detail=row[3]), _at(row[4])) if row else None
 
     def save_lookup(self, lookup: Lookup, at: datetime) -> None:
         """Store the lookup, replacing an earlier one of the same record and kind."""

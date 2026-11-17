@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
-from fn import exporter, identity, importer, network
+from fn import deepen, exporter, identity, importer, network
 from fn.contracts import (
     IMPORT_COLUMNS,
     AsideGroup,
@@ -34,6 +34,7 @@ from fn.present import (
     geo,
     group_key,
     label_of,
+    looking,
     network_view,
     passage,
     person_views,
@@ -68,6 +69,7 @@ from fn.web.parts import (
     import_rows,
     importable,
     is_filtered,
+    lookup_line,
     name_matches,
     network_href,
     network_row,
@@ -251,10 +253,12 @@ def results_list(store: Store, search: Search, view: str, shown: int, show_skipp
                                          ("skipped", 1 if show_skipped else None),
                                          ("view", "map" if view == "map" else None), ("group", group),
                                          ("group_shown", group_shown if group and group_shown != RESULTS_STEP else None)) if v})
-    poll = {"data_status": f"/searches/{search.id}/status", "data_progress": f"{progress.status} {progress.version}",
+    busy = looking(store, search) if progress else False
+    poll = {"data_status": f"/searches/{search.id}/status",
+            "data_progress": f"{progress.status} {progress.version}{' looking' if busy else ''}",
             "data_cards": f"/searches/{search.id}/cards" + (f"?{query}" if query else "")} if progress else {}
     read = reading_line(reading(search.chips)) if progress else None
-    return h.div(top, h.div(status_line(progress.people) if progress else count, role="status"), found,
+    return h.div(top, h.div(status_line(progress.people, busy) if progress else count, role="status"), found,
                  h.template(read, data_read=True) if read else None,
                  class_="fn-results__list", data_placed=placed, **poll), bool(found), placed, facts
 
@@ -469,7 +473,8 @@ async def search_status(request: Request, search_id: str) -> JSONResponse:
     if progress is None:
         raise HTTPException(404, "No such search")
     request.state.facts = {"version": progress.version, "people": progress.people}
-    return JSONResponse(progress.model_dump())
+    busy = looking(store_of(request), store_of(request).get_search(search_id))
+    return JSONResponse(progress.model_dump() | ({"looking": True} if busy else {}))
 
 
 @router.get("/searches/{search_id}/cards")
@@ -639,8 +644,9 @@ def person_here(person_id: str, params: dict[str, str]) -> str:
 
 
 def person_page(store: Store, person_id: str, params: dict[str, str], error: str | None = None,
-                typed: str | None = None, edit: str | None = None) -> str:
-    """The Person page of a canonical id; a network person's New marks are then cleared for the next visit.
+                typed: str | None = None, edit: str | None = None, fetched: bool = False) -> str:
+    """The Person page of a canonical id; a network person's New marks are then cleared for the next visit, except
+    on a page a script fetched.
 
     params is the page's query; error and typed re-open the edit field of kind edit with a refused value.
     """
@@ -664,13 +670,15 @@ def person_page(store: Store, person_id: str, params: dict[str, str], error: str
         view.person.name,
         profile_banner(view, params.get("undo") == "refused", here),
         h.main(h.div(profile_head(view, back, place, here, route), why_block(view.why) if view.why else None,
-                     summary_list(view.summary),
+                     summary_list(view.summary), lookup_line(view.lookup, person_id, here),
                      fact_groups(view, here, params.get("all")),
-                     contact_block(view, here, edit, error, typed) if member else None, found_as_block(view, here),
+                     contact_block(view, here, edit, error, typed), found_as_block(view, here),
                      possible_block(view, here), class_="fn-column"), class_="fn-page"),
         current="search" if leads_to_search(back) else "network",
+        refresh=2 if view.lookup.state == "running" else None,
+        extra_head=h.script(src="/static/lookup.js", defer=True) if view.lookup.state == "running" else None,
     )
-    if member:
+    if member and not fetched:
         network.mark_seen(store, person_id, now=now())
     return text
 
@@ -699,7 +707,20 @@ async def person(request: Request, person_id: str) -> Response:
         return RedirectResponse(f"/people/{canonical}?{query}" if query else f"/people/{canonical}", 303)
     origin = request.query_params.get("from")
     request.state.facts = {"from": origin} if origin in ORIGINS else {}
-    return HTMLResponse(person_page(store, person_id, dict(request.query_params)))
+    return HTMLResponse(person_page(store, person_id, dict(request.query_params),
+                                    fetched=request.headers.get("x-requested-with") == "fetch"))
+
+
+@router.post("/people/{person_id}/lookup")
+async def look_up_person(request: Request, person_id: str) -> Response:
+    """Start a lookup job for the person unless one is queued or running; back to the lookup line either way."""
+    store, form = store_of(request), await form_of(request)
+    canonical = canonical_of(store, person_id)
+    question = deepen.job_question(canonical)
+    if (job := store.latest_job(question)) is None or job.status not in ("queued", "running"):
+        worker = worker_of(request)
+        worker.submit(worker.create_search(question, kind="job").id, deepen.run_job)
+    return back_to(form, f"/people/{canonical}#lookup")
 
 
 @router.post("/people/{person_id}/add")

@@ -68,7 +68,7 @@ async function swap() {
 async function poll() {
   const response = await fetch(live.dataset.status).catch(() => null);
   const progress = response?.ok ? await response.json() : null;
-  if (progress) wanted = `${progress.status} ${progress.version}`;
+  if (progress) wanted = `${progress.status} ${progress.version}${progress.looking ? " looking" : ""}`;
   if (wanted !== seen) await swap();
   if (!progress || ["queued", "running"].includes(progress.status) || wanted !== seen) setTimeout(poll, 2000);
 }

@@ -94,6 +94,14 @@ class WorkerTest(unittest.TestCase):
         self.assertEqual(worker.submit(search_id).result(timeout=10).status, "done")
         self.assertEqual(self.store.get_search(search_id).status, "done")
 
+    def test_submit_runs_a_given_workflow_instead_of_the_search_steps(self):
+        """submit() with a workflow runs that workflow on the search and ends it done."""
+        worker = self.worker()
+        seen = []
+        job_id = worker.create_search("fn-job", kind="job").id
+        self.assertEqual(worker.submit(job_id, lambda ctx, found: seen.append(found.question)).result(timeout=10).status, "done")
+        self.assertEqual((seen, self.store.list_steps(job_id)), (["fn-job"], []))
+
     def test_search_records_code_state_and_redacted_settings(self):
         """A search stores its boot, llm mode and settings, with the secret replaced."""
         worker = self.worker()

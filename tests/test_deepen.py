@@ -14,6 +14,7 @@ from fn.contracts import (
     Identifier,
     Lookup,
     LookupAnswer,
+    LookupIn,
     LookupPage,
     Place,
     Search,
@@ -328,6 +329,35 @@ class DeepenTest(unittest.TestCase):
         out = self.deepen(chips=V1)
         self.assertEqual((out.lookups, self.llm.calls), ([], []))
         self.assertTrue(out.note)
+
+    def lookup_ctx(self, search_id: str, http=True) -> StepContext:
+        return StepContext(search_id=search_id, store=self.store, llm=self.llm, http=StubHttp() if http else None, now=now,
+                           new_id=new_id, log=logging.getLogger("fn.step"), settings=self.settings)
+
+    def test_one_looks_a_person_up_within_ninety_days_and_run_job_reads_the_id_from_the_question(self):
+        """A lookup of 1 day ago does not stop a staff lookup; the job's question names the person it looks up."""
+        person_id = self.person("Jan Peeters")
+        with self.store.tx():
+            self.store.save_lookup(Lookup(person_id=person_id, kind="web_person", verdict="nothing_new", detail=""),
+                                   datetime.now(UTC) - timedelta(days=1))
+        self.serve(URL.format("jan"), page_text("Jan Peeters"))
+        self.llm = LookupLLM({"Jan Peeters": [page(URL.format("jan"))]}, lambda text, who: [named("Jan Peeters")])
+        job = Search(id="j1", kind="job", question=deepen.job_question(person_id), status="running", code_sha="abc",
+                     dirty=False, llm_mode="replay", settings_json="{}", boot_id="boot", created_at=CREATED)
+        self.store.create_search(job)
+        with mock.patch("fn.pageread.read_all", self.read_all):
+            deepen.run_job(self.lookup_ctx("j1"), job)
+        self.assertEqual(self.looked_up(), ["Jan Peeters"])
+        self.assertEqual([(s.step, s.status) for s in self.store.list_steps("j1")], [(deepen.STEP, "ok")])
+        self.assertEqual(self.store.last_lookup([person_id], "web_person")[0].verdict, "added")
+
+    def test_one_makes_no_call_without_a_client_or_for_an_unknown_id(self):
+        """Without an HTTP client, or for an id no person has, the output is a note and the model is never called."""
+        person_id = self.person("Jan Peeters")
+        self.llm = LookupLLM({})
+        self.assertEqual(deepen.one(self.lookup_ctx("j1", http=False), LookupIn(person_id=person_id)).note, deepen.NO_CLIENT)
+        self.assertEqual(deepen.one(self.lookup_ctx("j1"), LookupIn(person_id="nobody")).note, "no such person")
+        self.assertEqual(self.llm.calls, [])
 
     def test_a_name_that_closes_the_person_block_fails(self):
         """A name holding </person> cannot be sent, so its lookup fails."""
