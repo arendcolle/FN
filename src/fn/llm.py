@@ -21,9 +21,9 @@ from fn.steps import current_recorder
 PROMPTS = Path(__file__).parent / "prompts"
 CLI_ENV = ("PATH", "HOME", "USER", "LANG", "TMPDIR")
 TIMEOUT_S = 60
-TIMEOUTS = {"extract": 120, "extract_leads": 120, "scout": 420}
+TIMEOUTS = {"extract": 120, "extract_leads": 120, "scout": 150}
 BASES = {"extract_leads": "extract"}
-TOOLS = {"scout": "WebSearch,WebFetch"}
+TOOLS = {"scout": "WebSearch"}
 MODEL = "haiku"
 DATA_NAME = re.compile(r"[a-z][a-z_]*")
 

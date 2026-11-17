@@ -218,7 +218,7 @@ class LLMTest(unittest.TestCase):
 
     def test_each_task_waits_for_its_own_timeout_and_the_message_names_it(self):
         """A task listed in TIMEOUTS waits that many seconds, any other task waits 60 s, and a timeout names the seconds it waited."""
-        self.assertEqual(TIMEOUTS, {"extract": 120, "extract_leads": 120, "scout": 420})
+        self.assertEqual(TIMEOUTS, {"extract": 120, "extract_leads": 120, "scout": 150})
         for table, expected in (({}, 60), ({"parse": 7}, 7)):
             proc = FakeProc(json.dumps(GOOD))
             with mock.patch.dict(TIMEOUTS, table), mock.patch("fn.llm.Popen", proc):
@@ -292,15 +292,17 @@ class LLMTest(unittest.TestCase):
                         self.assertRaises(ValidationError):
                     config.from_env()
 
-    def test_only_the_scout_task_gets_web_tools_in_its_argv(self):
-        """The scout argv lists the two tools after --tools and as --allowedTools values; the parse argv has no tools."""
+    def test_only_the_scout_task_gets_web_search_in_its_argv(self):
+        """The scout argv lists web search alone after --tools and as the --allowedTools value, so the researcher opens
+        no page; the parse argv has no tools."""
         scout = ClaudeCli(self.dev).argv("system", "{}", TOOLS["scout"])
-        at = scout.index("--tools=WebSearch,WebFetch")
-        self.assertEqual(scout[at + 1:at + 4], ["--allowedTools", "WebSearch", "WebFetch"])
+        at = scout.index("--tools=WebSearch")
+        self.assertEqual(scout[at + 1:at + 3], ["--allowedTools", "WebSearch"])
+        self.assertNotIn("WebFetch", " ".join(scout))
         parse = ClaudeCli(self.dev).argv("system", "{}")
         self.assertIn("--tools=", parse)
         self.assertNotIn("--allowedTools", parse)
-        self.assertEqual(TOOLS, {"scout": "WebSearch,WebFetch"})
+        self.assertEqual(TOOLS, {"scout": "WebSearch"})
         proc = FakeProc(json.dumps(GOOD))
         with mock.patch("fn.llm.Popen", proc):
             self.search_with(self.worker_for(ClaudeCli(self.dev)), "--dangerously-skip-permissions")
