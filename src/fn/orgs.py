@@ -1,5 +1,6 @@
 """Institution identity from data/org_aliases.csv, and institution facts from ROR, Wikidata and OpenAlex."""
 import csv
+import re
 import time
 from datetime import datetime
 from functools import cache
@@ -235,14 +236,38 @@ def askable(name: str) -> bool:
             and fold(name) not in unmapped())
 
 
-def chosen(body: dict, fetched_at: datetime) -> tuple[OrgFacts, Source] | None:
-    """The facts and record Source of the one chosen item of a ROR affiliation answer; None for none or several chosen.
+def ror_names(record: dict) -> list[str]:
+    """Every name of a ROR record, whatever its type, leaving out an acronym of under 3 characters."""
+    return [n["value"] for n in record.get("names") or []
+            if n.get("value") and not ("acronym" in n["types"] and len(n["value"]) < 3)]
 
+
+def words(text: str) -> list[str]:
+    """The words of the folded text, with a lone "u" read as "university"."""
+    return ["university" if w == "u" else w for w in re.findall(r"\w+", fold(text))]
+
+
+def _inside(inner: list[str], outer: list[str]) -> bool:
+    return any(outer[i:i + len(inner)] == inner for i in range(len(outer) - len(inner) + 1))
+
+
+def named(record: dict, name: str) -> bool:
+    """Whether a name of the record stands as a run of whole words in the employer text, or an employer text of two
+    words or more stands in a name of the record."""
+    given = words(name)
+    return bool(given) and any(w and (_inside(w, given) or (len(given) > 1 and _inside(given, w)))
+                               for w in map(words, ror_names(record)))
+
+
+def chosen(body: dict, fetched_at: datetime, name: str) -> tuple[OrgFacts, Source] | None:
+    """The facts and record Source of the one chosen item of a ROR affiliation answer, if its names stand in the name.
+
+    None for no chosen item, several, or a chosen organization none of whose names stands in the employer name.
     Raises OrgError for a body without items and for a record ror_record refuses.
     """
     try:
         picked = [item["organization"] for item in body["items"] if item.get("chosen")]
-        return ror_record(picked[0], fetched_at) if len(picked) == 1 else None
+        return ror_record(picked[0], fetched_at) if len(picked) == 1 and named(picked[0], name) else None
     except (ValueError, KeyError, TypeError) as exc:
         raise OrgError(f"unexpected answer, {type(exc).__name__}: {exc}") from exc
 
@@ -270,7 +295,7 @@ def match(ctx: StepContext, inp: OrgMatchIn) -> OrgMatchOut:
             time.sleep(inp.pace_s)
         asked += 1
         try:
-            found = chosen(ctx.http.get(ROR_API, {"affiliation": name, "single_search": ""}).json(), ctx.now())
+            found = chosen(ctx.http.get(ROR_API, {"affiliation": name, "single_search": ""}).json(), ctx.now(), name)
         except HttpError as exc:
             if exc.status is None or exc.status == 429 or exc.status >= 500:
                 raise OrgError(f"{name!r}: {exc}") from exc

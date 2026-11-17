@@ -335,6 +335,21 @@ AGRICULTURE = "Research Institute for Agriculture"
 ROR_ANSWERS = FIXTURES / "http" / "ror-affiliation"
 
 
+class NamedTest(unittest.TestCase):
+    def test_named_is_false_for_an_empty_name_and_for_a_record_without_names(self):
+        """Nothing stands in an empty or punctuation-only employer text, and a record with no names names nothing."""
+        record = {"names": [{"types": ["ror_display"], "value": "Example University"}]}
+        self.assertEqual((orgs.named(record, ""), orgs.named(record, "-- . --"), orgs.named({}, "Example University"),
+                          orgs.named({"names": []}, "Example University")), (False,) * 4)
+        self.assertTrue(orgs.named(record, "Example U"))
+
+    def test_a_one_word_employer_text_must_hold_a_whole_name(self):
+        """One generic word such as "University" stands inside many names, so it names no organization on its own."""
+        record = {"names": [{"types": ["ror_display"], "value": "Example University"},
+                            {"types": ["alias"], "value": "Exuni"}]}
+        self.assertEqual((orgs.named(record, "University"), orgs.named(record, "Exuni")), (False, True))
+
+
 class MatchTest(unittest.TestCase):
     def setUp(self):
         self.settings = make_settings(self)
@@ -418,13 +433,50 @@ class MatchTest(unittest.TestCase):
         bare = {**item, "organization": {k: v for k, v in item["organization"].items() if k != "locations"}}
         other = {**item, "organization": {**item["organization"], "id": "https://ror.org/0aaaaaa11"}}
         self.answers = {"Two Place": (200, json.dumps({"items": [item, other]}).encode()),
-                        "No Place": (200, json.dumps({"items": [bare]}).encode())}
-        both, nowhere = self.claim("Two Place"), self.claim("No Place")
+                        INBO: (200, json.dumps({"items": [bare]}).encode())}
+        both, nowhere = self.claim("Two Place"), self.claim(INBO)
         _, out = self.run_match()
         self.assertEqual((out.chosen, out.linked), (1, 1))
         self.assertEqual(self.org_of(both, nowhere), [None, "ror:00j54wy13"])
         org = self.store.get_orgs(["ror:00j54wy13"])["ror:00j54wy13"]
         self.assertEqual((org.city, org.lat, org.lon), (None, None, None))
+
+    def answer_with(self, employer: str, *names: tuple[str, str]) -> None:
+        """Make the answer for the employer text one chosen organization that goes by the given (type, value) names."""
+        item = json.loads((ROR_ANSWERS / "inbo.json").read_text())["items"][0]
+        record = {**item["organization"], "names": [{"lang": None, "types": [t], "value": v} for t, v in names]}
+        self.answers = {employer: (200, json.dumps({"items": [{**item, "organization": record}]}).encode())}
+
+    def test_a_chosen_organization_none_of_whose_names_stands_in_the_employer_is_not_linked(self):
+        """The name is stored as asked with no organization, so a second run makes no call."""
+        self.answer_with("Sample Medical School", ("ror_display", "Example Technology Institute"))
+        claim = self.claim("Sample Medical School")
+        _, out = self.run_match()
+        self.assertEqual((out.chosen, self.org_of(claim)), (0, [None]))
+        self.assertEqual(self.store.org_answers(), {orgs.fold("Sample Medical School"): None})
+        self.assertEqual(self.run_match()[1].asked, 0)
+
+    def test_a_chosen_organization_is_linked_when_a_name_stands_in_the_employer_or_the_other_way_round(self):
+        """A display name inside a longer text, an alias equal to the text, the text inside the name, "U." for University."""
+        cases = [("Example University Department of Physics", [("ror_display", "Example University")]),
+                 ("CalExample", [("ror_display", "Example Institute of Technology"), ("alias", "CalExample")]),
+                 ("Example Institute", [("ror_display", "Example Institute of Technology")]),
+                 ("Example U. Graduate School", [("ror_display", "Example University")])]
+        for employer, names in cases:
+            with self.subTest(employer=employer):
+                self.answer_with(employer, *names)
+                claim = self.claim(employer)
+                self.assertEqual(self.run_match()[1].linked, 1)
+                self.assertEqual(self.org_of(claim), ["ror:00j54wy13"])
+
+    def test_a_two_letter_acronym_alone_is_no_match_and_a_four_letter_acronym_is(self):
+        """The acronym "EX" in the employer text does not link the organization; "EXAM" does."""
+        self.answer_with("EX Group", ("ror_display", "Sample Foundation"), ("acronym", "EX"))
+        short = self.claim("EX Group")
+        self.assertEqual((self.run_match()[1].chosen, self.org_of(short)), (0, [None]))
+        self.answer_with("EXAM Group", ("ror_display", "Sample Foundation"), ("acronym", "EXAM"))
+        long = self.claim("EXAM Group")
+        self.assertEqual((self.run_match()[1].chosen, self.org_of(long)), (1, ["ror:00j54wy13"]))
 
     def test_a_stored_org_keeps_its_city(self):
         """When the org is stored with a city, a match of the name leaves that city alone."""
