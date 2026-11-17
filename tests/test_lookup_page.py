@@ -126,7 +126,7 @@ class LookupPageTest(unittest.TestCase):
     def test_forty_added_claims_and_a_row_on_a_merged_record_read_as_one_line(self):
         """Forty email claims are one 'an email address'; a row saved on a merged record shows on the canonical person."""
         ada, twin = self.person("Ada Voorbeeld", "ada"), self.person("Ada Voorbeeld", "ada-2")
-        network.merge(self.store, [twin], ada, now=now())
+        network.merge(self.store, [twin], ada, now=AT - timedelta(days=1))
         for n in range(40):
             self.found(twin, "email", f"ada{n}@example.org")
         self.row(twin, "added")
