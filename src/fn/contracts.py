@@ -981,12 +981,16 @@ class LookupAnswer(Model):
 
 class DeepenIn(Model):
     chips: Chips
+    skip: list[str] = []
+    used: int = 0
 
 
 class DeepenOut(Model):
     lookups: list[Lookup] = []
     claim_ids: list[str] = []
     note: str = ""
+    picked: list[str] = []
+    gaps: int = 0
 
 
 # The one step of the fn-index job: the stored copy of US authors with a Belgian affiliation.

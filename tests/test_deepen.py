@@ -112,8 +112,10 @@ class DeepenTest(unittest.TestCase):
     def serve(self, url: str, text: str | None, failed: str | None = None, retry: bool = False) -> None:
         self.pages[url] = pageread.Read(url, "Faculty", text, failed, retry=retry)
 
-    def deepen(self, answers: dict | None = None, people=None, chips: Chips = V2, order=None):
-        """Save the people as a new search's candidates (in order when given) and run the deepen step on them."""
+    def deepen(self, answers: dict | None = None, people=None, chips: Chips = V2, order=None,
+               skip: list[str] | None = None, used: int = 0):
+        """Save the people as a new search's candidates (in order when given) and run the deepen step on them, leaving
+        out the records in skip after used lookups with a gap."""
         self.searches += 1
         search_id = f"s{self.searches}"
         self.store.create_search(Search(id=search_id, question="Who knows physics?", chips=chips, status="done",
@@ -126,7 +128,7 @@ class DeepenTest(unittest.TestCase):
         ctx = StepContext(search_id=search_id, store=self.store, llm=self.llm, http=StubHttp(), now=now, new_id=new_id,
                           log=logging.getLogger("fn.step"), settings=self.settings)
         with mock.patch("fn.pageread.read_all", self.read_all):
-            out = run_step(ctx, "deepen", deepen.run, DeepenIn(chips=chips))
+            out = run_step(ctx, "deepen", deepen.run, DeepenIn(chips=chips, skip=skip or [], used=used))
         self.step = self.store.list_steps(search_id)[-1]
         return out
 
@@ -352,6 +354,49 @@ class DeepenTest(unittest.TestCase):
         self.assertEqual(len(self.held(fine, "role")), 1)
         self.assertEqual(self.store.conn.execute("SELECT verdict FROM lookups WHERE person_id = ?", (broken,)).fetchone()[0],
                          "failed")
+
+    def test_past_the_used_lookups_only_the_rest_of_twenty_gaps_are_looked_up_and_no_gap_gets_contact_alone(self):
+        """With used lookups the step looks up at most 20 minus used people with a gap; past that cap a top-10 person
+        with a gap gets no contact-only lookup, while a top-10 person without a gap still gets one."""
+        for n in range(300):
+            self.person(f"Ann Person{n:03}", complete=n < 10 and n % 2 == 0)
+        top = [c.person_id for c in self.people[:10]]
+        out = self.deepen(used=20)
+        self.assertEqual(out.picked, top[::2])
+        self.assertEqual((out.gaps, sorted(self.looked_up())), (0, [f"Ann Person{n:03}" for n in range(0, 10, 2)]))
+        out = self.deepen(used=15)
+        self.assertEqual((out.picked, out.gaps), (top[1::2], 5))
+
+    def test_a_person_in_skip_is_not_looked_up_even_after_a_failed_lookup_or_as_a_card_s_second_record(self):
+        """A record in skip keeps its person out of the step, whatever lookup row it has and wherever it sits on a
+        card."""
+        failed = self.person("Ann Failed")
+        with self.store.tx():
+            self.store.save_lookup(Lookup(person_id=failed, kind="web_person", verdict="failed", detail=""),
+                                   datetime.now(UTC) - timedelta(days=1))
+        main = self.person("Bob Card")
+        second = self.store.resolve_person([Identifier(scheme="seed", value="Bob Second")], "Bob Second").id
+        self.people[-1] = self.people[-1].model_copy(update={"card_person_ids": [main, second]})
+        out = self.deepen(skip=[failed, second])
+        self.assertEqual((out.picked, out.note, self.llm.calls), ([], "nobody to look up", []))
+
+    def test_missing_recordings_still_name_the_picked_people_and_count_their_gaps(self):
+        """A replay without recordings returns the picks and how many had a gap, so a second pass leaves them out."""
+        gap, contact = self.person("Jan Peeters"), self.person("Eva Maes", complete=True)
+        missing = FixtureMissing("no LLM fixture lookup-0123")
+        out = self.deepen({"Jan Peeters": missing, "Eva Maes": missing})
+        self.assertEqual((out.note, out.picked, out.gaps), ("no recorded lookup", [gap, contact], 1))
+
+    def test_version_one_chips_pick_nobody(self):
+        """Chips stored before this round give no picks, no gaps and no call."""
+        self.person("Jan Peeters")
+        out = self.deepen(chips=V1)
+        self.assertEqual((out.picked, out.gaps, self.llm.calls), ([], 0, []))
+
+    def test_a_stored_input_without_skip_or_used_reads_as_a_first_pass(self):
+        """A deepen input stored with chips only reads back with nobody to skip and no lookups used."""
+        found = DeepenIn.model_validate_json(f'{{"chips": {V2.model_dump_json()}}}')
+        self.assertEqual((found.skip, found.used), ([], 0))
 
 
 if __name__ == "__main__":

@@ -525,7 +525,7 @@ class WebTest(unittest.TestCase):
         self.assertEqual(steps[-5:], [("resolve", "ok"), ("rank", "ok"), ("save", "ok"), ("deepen", "ok"), ("fit", "ok")])
         self.assertEqual(sorted(steps[2:-5]), sorted([(f"lane:{n}", "ok") for n in
                                                       ("seeds", "openalex", "web", "web_topic", "scout", "linkedin")]
-                                                     + [("publish", "ok")] * 5))
+                                                     + [("publish", "ok")] * 5 + [("deepen", "ok")]))
         self.assertIn(source_id, client.get(f"/debug/searches/{new_id}").text)
 
     def test_rerun_accepts_no_chips_and_refuses_bad_ones(self):

@@ -10,6 +10,8 @@ from fn.contracts import (
     Chip,
     Chips,
     CitiesOut,
+    ClaimDraft,
+    DeepenIn,
     DeepenOut,
     FitAnswer,
     FitRow,
@@ -21,8 +23,9 @@ from fn.contracts import (
     PublishOut,
     RankIn,
     ResolveIn,
+    Source,
 )
-from fn import geo, search
+from fn import geo, rank, search
 from fn.lanes import scout as scout_lane
 from fn.net import HttpError
 from fn.steps import StepContext, run_step
@@ -101,7 +104,7 @@ class SearchStepsTest(unittest.TestCase):
                          {"status": "done", "people": 2, "version": 2})
         steps = [s.step for s in self.store.list_steps(search_id)]
         self.assertEqual((steps[:2], steps[-5:]), (["parse", "cities"], ["resolve", "rank", "save", "deepen", "fit"]))
-        self.assertEqual(sorted(steps[2:-5]), ["lane:seeds", "lane:web", "publish"])
+        self.assertEqual(sorted(steps[2:-5]), ["deepen", "lane:seeds", "lane:web", "publish"])
 
     def run_with(self, given: Chips, lanes) -> str:
         search_id = self.worker.create_search("Who knows wind?", given, "edited").id
@@ -224,7 +227,7 @@ class SearchStepsTest(unittest.TestCase):
         names = [s for s, _ in steps]
         self.assertEqual((names[:2], names[-7:]),
                          (["parse", "cities"], ["resolve", "rank", "save", "deepen", "fit", "rank", "save"]))
-        self.assertEqual(sorted(names[2:-7]), ["lane:seeds", "lane:web", "link", "publish"])
+        self.assertEqual(sorted(names[2:-7]), ["deepen", "lane:seeds", "lane:web", "link", "publish"])
         self.assertEqual(self.llm.calls, 3)
         ids = {c.person_id for c in self.store.list_candidates(search_id)}
         self.assertEqual(self.rank_verdicts(search_id), [{}, {i: "partly" for i in ids}])
@@ -420,8 +423,8 @@ class SearchStepsTest(unittest.TestCase):
             if steps:
                 self.assertEqual(CitiesOut.model_validate_json(self.store.get_payload(steps[0].id)[1]).names, 0)
 
-    def test_each_lane_closes_its_thread_s_connection(self):
-        """Store.close runs once on a lane thread for every lane."""
+    def test_each_lane_and_the_first_lookup_pass_close_their_thread_s_connection(self):
+        """Store.close runs once on a lane thread for every lane and once for the first lookup pass."""
         closed = []
         close = Store.close
 
@@ -431,7 +434,112 @@ class SearchStepsTest(unittest.TestCase):
 
         with mock.patch.object(Store, "close", note):
             self.execute([self.finds("seeds", "Ann Smith"), self.finds("web", "Pat Lee"), self.sleeps("linkedin", 0)])
-        self.assertEqual(len([n for n in closed if n.startswith("fn-lane")]), 3)
+        self.assertEqual(len([n for n in closed if n.startswith("fn-lane")]), 4)
+
+    def passes(self, *runs):
+        """A stand-in for deepen.run that calls runs[n] on its nth call (the last one after that) and keeps each input."""
+        self.inputs = []
+
+        def run(ctx: StepContext, inp: DeepenIn) -> DeepenOut:
+            self.inputs.append(inp)
+            return runs[min(len(self.inputs), len(runs)) - 1](ctx, inp)
+
+        return mock.patch("fn.deepen.run", run)
+
+    def first_slow(self, seconds: float):
+        return self.passes(lambda ctx, inp: time.sleep(seconds) or DeepenOut(), lambda ctx, inp: DeepenOut())
+
+    def test_the_first_lookup_pass_runs_beside_the_other_lanes(self):
+        """The first deepen step starts after the seeds publish and before a slower lane ends, so the search takes about
+        the longer of the two."""
+        with self.first_slow(1.0):
+            started = time.monotonic()
+            search_id = self.execute([self.finds("seeds", "Ann Smith"), self.sleeps("web", 1.0)])
+            elapsed = time.monotonic() - started
+        steps = self.store.list_steps(search_id)
+        first = next(s for s in steps if s.step == "deepen")
+        self.assertLess(first.started_at, next(s for s in steps if s.step == "lane:web").ended_at)
+        self.assertLess(elapsed, 1.8)
+
+    def test_the_first_pass_s_claims_reach_the_rank_after_the_lanes_and_the_second_pass_skips_its_people(self):
+        """Claims the first pass stores are absent at the seeds publish and present at the first rank after the lanes;
+        the second pass gets the first one's picks and gaps."""
+        found = self.finds("seeds", "Ann Smith")
+        person_id = self.store.resolve_person([Identifier(scheme="seed", value="Ann Smith")], "Ann Smith").id
+        stored, seen, run = [], [], rank.run
+
+        def first(ctx: StepContext, inp: DeepenIn) -> DeepenOut:
+            time.sleep(0.6)
+            text = "Example University"
+            stored.append(ctx.store.upsert_claim(ClaimDraft(
+                person_id=person_id, kind="affiliation", relation="works_at", value=text, quote=text, quote_start=0,
+                quote_end=len(text), source=Source(id="src-a", kind="record", url="https://example.org/a", text=text,
+                                                   content_hash="h-a"))).id)
+            return DeepenOut(picked=[person_id], gaps=1)
+
+        def ranks(ctx: StepContext, inp: RankIn):
+            seen.append({c.id for c in ctx.store.claims_of([person_id])})
+            return run(ctx, inp)
+
+        with self.passes(first, lambda ctx, inp: DeepenOut()), mock.patch("fn.rank.run", ranks):
+            self.fitted([found, self.sleeps("web", 0.2)])
+        self.assertEqual((stored[0] in seen[0], stored[0] in seen[1]), (False, True))
+        self.assertEqual([(i.skip, i.used) for i in self.inputs], [([], 0), ([person_id], 1)])
+
+    def test_a_seeds_lane_without_hits_gives_a_first_pass_with_nobody_and_a_second_with_no_lookups_used(self):
+        """The first pass runs on an empty seeds publish and notes nobody; the second pass starts from zero used."""
+        given = []
+        real = search.deepen.run
+
+        def run(ctx: StepContext, inp: DeepenIn) -> DeepenOut:
+            given.append(inp)
+            return real(ctx, inp)
+
+        with mock.patch("fn.deepen.run", run):
+            search_id = self.run_with(V2, [self.sleeps("seeds", 0), self.sleeps("web", 0.3)])
+        first = next(s for s in self.store.list_steps(search_id) if s.step == "deepen")
+        self.assertEqual(DeepenOut.model_validate_json(self.store.get_payload(first.id)[1]).note, "nobody to look up")
+        self.assertEqual([i.used for i in given], [0, 0])
+
+    def test_seeds_as_the_only_lane_gives_one_lookup_pass(self):
+        """With no publish after the seeds lane no first pass starts; the one pass after the save uses no lookups."""
+        with self.passes(lambda ctx, inp: DeepenOut()):
+            search_id = self.execute([self.finds("seeds", "Ann Smith")])
+        self.assertEqual([s.step for s in self.store.list_steps(search_id)].count("deepen"), 1)
+        self.assertEqual([(i.skip, i.used) for i in self.inputs], [([], 0)])
+
+    def test_a_first_pass_that_raises_keeps_its_error_row_and_the_search_ends_done(self):
+        """The first pass's error stays on its deepen row; the second pass runs and the search ends done."""
+        def fails(ctx: StepContext, inp: DeepenIn) -> DeepenOut:
+            raise ConnectionError("search is down")
+
+        with self.passes(fails, lambda ctx, inp: DeepenOut()):
+            search_id = self.execute([self.finds("seeds", "Ann Smith"), self.sleeps("web", 0.3)])
+        steps = [(s.step, s.status) for s in self.store.list_steps(search_id) if s.step == "deepen"]
+        self.assertEqual(steps, [("deepen", "error"), ("deepen", "ok")])
+        self.assertEqual(self.store.get_search(search_id).status, "done")
+
+    def test_when_every_lane_fails_the_search_fails_after_the_first_pass_closed_its_connection(self):
+        """A search whose lanes all raise ends failed only once the first pass has ended, and that pass's thread closed
+        its connection."""
+        events = []
+        close = Store.close
+
+        def note(store: Store) -> None:
+            events.append(("close", threading.current_thread().name))
+            close(store)
+
+        def slow(ctx: StepContext, inp: DeepenIn) -> DeepenOut:
+            time.sleep(0.3)
+            events.append(("deepen", threading.current_thread().name))
+            return DeepenOut()
+
+        with self.passes(slow), mock.patch.object(Store, "close", note):
+            search_id = self.execute([self.raises("seeds"), self.raises("web")])
+        self.assertEqual(self.store.get_search(search_id).status, "failed")
+        ended = [e for e in events if e[0] == "deepen"]
+        self.assertEqual(len(ended), 1)
+        self.assertIn(("close", ended[0][1]), events[events.index(ended[0]) + 1:])
 
     def test_progress_of_an_unknown_search_is_none(self):
         """search_progress returns None for an id with no search."""
