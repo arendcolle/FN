@@ -6,10 +6,26 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from fn.contracts import Chip, Chips, FitAnswer, FitRow, Identifier, LaneHit, LaneIn, LaneOut, RankIn
-from fn import search
+from fn.contracts import (
+    Chip,
+    Chips,
+    CitiesOut,
+    FitAnswer,
+    FitRow,
+    Identifier,
+    LaneHit,
+    LaneIn,
+    LaneOut,
+    PublishIn,
+    PublishOut,
+    RankIn,
+    ResolveIn,
+)
+from fn import geo, search
 from fn.lanes import scout as scout_lane
-from fn.steps import StepContext
+from fn.net import HttpError
+from fn.steps import StepContext, run_step
+from fn.store import Store
 from fn.worker import Worker, new_id, now
 from tests.helpers import StubHttp, StubLLM, make_db, make_settings
 
@@ -82,8 +98,9 @@ class SearchStepsTest(unittest.TestCase):
             self.assertEqual(future.result(timeout=10).status, "done")
         self.assertEqual(self.store.search_progress(search_id).model_dump(),
                          {"status": "done", "people": 2, "version": 2})
-        self.assertEqual([s.step for s in self.store.list_steps(search_id)],
-                         ["parse", "lane:seeds", "publish", "lane:web", "resolve", "rank", "save", "fit"])
+        steps = [s.step for s in self.store.list_steps(search_id)]
+        self.assertEqual((steps[:2], steps[-4:]), (["parse", "cities"], ["resolve", "rank", "save", "fit"]))
+        self.assertEqual(sorted(steps[2:-4]), ["lane:seeds", "lane:web", "publish"])
 
     def run_with(self, given: Chips, lanes) -> str:
         search_id = self.worker.create_search("Who knows wind?", given, "edited").id
@@ -120,8 +137,8 @@ class SearchStepsTest(unittest.TestCase):
             self.run_with(CHIPS, lanes)
         self.assertEqual(got, {"lane:web_topic": 2})
 
-    def test_the_lane_input_carries_the_question_and_scout_runs_after_web_topic_on_or_off(self):
-        """LaneIn.question is the search's question; lane:scout follows lane:web_topic with the lane on and off, and off says why."""
+    def test_the_lane_input_carries_the_question_and_scout_runs_on_or_off(self):
+        """LaneIn.question is the search's question; lane:scout runs once with the lane on and off, and off says why."""
         for scout in (True, False):
             with self.subTest(scout=scout):
                 settings = self.settings.model_copy(update={"scout": scout})
@@ -139,7 +156,9 @@ class SearchStepsTest(unittest.TestCase):
                     worker.execute(search_id)
                 steps = self.store.list_steps(search_id)
                 self.assertEqual(seen, ["Who knows wind?"])
-                self.assertEqual([s.step for s in steps][:5], ["parse", "lane:web_topic", "publish", "lane:scout", "publish"])
+                names = [s.step for s in steps]
+                self.assertEqual(names[:2], ["parse", "cities"])
+                self.assertEqual(sorted(names[2:7]), ["lane:linkedin", "lane:scout", "lane:web_topic", "publish", "publish"])
                 (scouted,) = [s for s in steps if s.step == "lane:scout"]
                 self.assertEqual(scouted.status, "ok")
                 if not scout:
@@ -201,8 +220,9 @@ class SearchStepsTest(unittest.TestCase):
         """Publishes between lanes run no fit step; after the first save fit runs, then rank and save run again."""
         search_id = self.fitted([self.finds("seeds", "Ann Smith"), self.finds("web", "Pat Lee")])
         steps = [(s.step, s.status) for s in self.store.list_steps(search_id)]
-        self.assertEqual([s for s, _ in steps], ["parse", "lane:seeds", "publish", "lane:web", "resolve", "rank", "save",
-                                                 "fit", "rank", "save"])
+        names = [s for s, _ in steps]
+        self.assertEqual((names[:2], names[-6:]), (["parse", "cities"], ["resolve", "rank", "save", "fit", "rank", "save"]))
+        self.assertEqual(sorted(names[2:-6]), ["lane:seeds", "lane:web", "publish"])
         self.assertEqual(self.llm.calls, 1)
         ids = {c.person_id for c in self.store.list_candidates(search_id)}
         self.assertEqual(self.rank_verdicts(search_id), [{}, {i: "partly" for i in ids}])
@@ -256,6 +276,134 @@ class SearchStepsTest(unittest.TestCase):
         self.assertEqual(len(self.store.list_candidates(first)), 2)
         self.assertEqual(self.store.list_candidates(other), [])
         self.assertEqual(printed.getvalue().splitlines(), [f"{first}: kept 0 -> 2", "no-such-search: no such search"])
+
+    def sleeps(self, lane: str, seconds: float, events: list | None = None, name: str | None = None):
+        """A fake lane that notes its start and end in events, sleeps, and hits one stored person when name is given."""
+        found = self.finds(lane, name) if name else None
+
+        def run(ctx: StepContext, inp: LaneIn) -> LaneOut:
+            if events is not None:
+                events.append(("start", lane))
+            time.sleep(seconds)
+            out = found.run(ctx, inp) if found else LaneOut(lane=lane, query="", total_seen=0)
+            if events is not None:
+                events.append(("end", lane))
+            return out
+
+        return SimpleNamespace(name=lane, run=run)
+
+    def payloads(self, search_id: str, step: str, part: int) -> list[str]:
+        return [self.store.get_payload(s.id)[part] for s in self.store.list_steps(search_id) if s.step == step]
+
+    def test_the_lanes_after_seeds_take_about_the_slowest_lane_not_the_sum(self):
+        """Lanes sleeping 0.5, 1.0 and 1.5 s after the seeds lane end in under 2.5 s, not the 3 s of their sum."""
+        lanes = [self.sleeps("seeds", 0), self.sleeps("web", 0.5), self.sleeps("linkedin", 1.0), self.sleeps("scout", 1.5)]
+        started = time.monotonic()
+        search_id = self.execute(lanes)
+        self.assertLess(time.monotonic() - started, 2.5)
+        self.assertEqual(self.store.get_search(search_id).status, "done")
+
+    def test_seeds_is_published_first_then_each_lane_as_it_ends_and_resolve_gets_lane_order(self):
+        """Seeds runs and is published alone; a later lane that ends first is published next, the last one is not.
+
+        Resolve gets the outputs in lane order whatever the order in which the lanes ended.
+        """
+        lanes = [self.sleeps("seeds", 0, name="Ann Smith"), self.sleeps("web", 0.6, name="Pat Lee"),
+                 self.sleeps("linkedin", 0, name="Bo Lind")]
+        search_id = self.execute(lanes)
+        given = [PublishIn.model_validate_json(p).lanes for p in self.payloads(search_id, "publish", 0)]
+        counts = [PublishOut.model_validate_json(p).count for p in self.payloads(search_id, "publish", 1)]
+        self.assertEqual((given, counts), ([["seeds"], ["seeds", "linkedin"]], [1, 2]))
+        (resolved,) = self.payloads(search_id, "resolve", 0)
+        self.assertEqual([o.lane for o in ResolveIn.model_validate_json(resolved).outs], ["seeds", "web", "linkedin"])
+
+    def test_web_topic_waits_for_the_lanes_before_it_and_no_other(self):
+        """web_topic starts once seeds and web have ended and been published, while a later lane still runs.
+
+        Placed first in LANES, it starts after seeds and while web still runs.
+        """
+        events, got = [], []
+
+        def watch(ctx: StepContext, inp: LaneIn) -> LaneOut:
+            events.append(("start", "web_topic"))
+            got.append(inp.first_heading)
+            return LaneOut(lane="web_topic", query="", total_seen=0)
+
+        topic = SimpleNamespace(name="web_topic", run=watch)
+        lanes = [self.sleeps("seeds", 0, events, "Ann Smith"), self.sleeps("web", 0.3, events, "Pat Lee"), topic,
+                 self.sleeps("linkedin", 0.6, events)]
+        with mock.patch("fn.rank.tier", return_value=2):
+            self.execute(lanes)
+        at = events.index(("start", "web_topic"))
+        self.assertEqual(got, [2])
+        self.assertLess(events.index(("end", "web")), at)
+        self.assertLess(events.index(("start", "linkedin")), at)
+        self.assertLess(at, events.index(("end", "linkedin")))
+        events.clear()
+        self.execute([topic, self.sleeps("seeds", 0.3, events), self.sleeps("web", 0.5, events)])
+        at = events.index(("start", "web_topic"))
+        self.assertLess(events.index(("end", "seeds")), at)
+        self.assertLess(at, events.index(("end", "web")))
+
+    def test_refinish_gives_resolve_the_stored_lane_outputs_in_lane_order(self):
+        """Stored lane steps out of order, of a removed lane or twice of one lane reach resolve in LANES order.
+
+        Outputs of one lane keep their stored order and a lane missing from LANES comes last.
+        """
+        search_id = self.worker.create_search("Who knows wind?", CHIPS, "edited").id
+        ctx = self.context(search_id)
+        for lane, query in (("web", "first"), ("linkedin", "gone"), ("seeds", "seeds"), ("web", "second")):
+            run_step(ctx, f"lane:{lane}", lambda c, inp, lane=lane, query=query: LaneOut(lane=lane, query=query, total_seen=0),
+                     LaneIn(search_id=search_id, chips=CHIPS))
+        with mock.patch("fn.search.LANES", [SimpleNamespace(name="seeds"), SimpleNamespace(name="web")]):
+            search.refinish(ctx, self.store.get_search(search_id))
+        (resolved,) = self.payloads(search_id, "resolve", 0)
+        self.assertEqual([(o.lane, o.query) for o in ResolveIn.model_validate_json(resolved).outs],
+                         [("seeds", "seeds"), ("web", "first"), ("web", "second"), ("linkedin", "gone")])
+
+    def test_the_city_index_is_built_in_its_own_step_before_the_lanes(self):
+        """A cities step follows parse with the names it indexed, so no lane step fetches the dump.
+
+        A fetch that fails gives 0 names and an ok step; a worker without an HTTP client writes no cities step.
+        """
+        def area(ctx: StepContext, inp: LaneIn) -> LaneOut:
+            geo.cities(ctx.http)
+            return LaneOut(lane="seeds", query="", total_seen=0)
+
+        search_id = self.execute([SimpleNamespace(name="seeds", run=area)])
+        steps = self.store.list_steps(search_id)
+        self.assertEqual([(s.step, s.status) for s in steps][:2], [("parse", "skipped"), ("cities", "ok")])
+        self.assertGreater(CitiesOut.model_validate_json(self.store.get_payload(steps[1].id)[1]).names, 0)
+        (lane,) = [s for s in steps if s.step == "lane:seeds"]
+        self.assertFalse([c for c in self.store.list_calls(lane.id) if geo.CITIES_URL in c.request])
+
+        class Down(StubHttp):
+            def get(self, url: str, params: dict[str, str] | None = None, **options):
+                raise HttpError("GeoNames is down")
+
+        for http, expected in ((Down(), [("cities", "ok")]), (None, [])):
+            worker = Worker(self.store, self.settings, llm=StubLLM(), http=http)
+            self.addCleanup(worker.shutdown)
+            found = worker.create_search("Who knows wind?", CHIPS, "edited").id
+            with mock.patch("fn.search.LANES", [self.finds("seeds", "Ann Smith")]):
+                worker.execute(found)
+            steps = [s for s in self.store.list_steps(found) if s.step == "cities"]
+            self.assertEqual([(s.step, s.status) for s in steps], expected)
+            if steps:
+                self.assertEqual(CitiesOut.model_validate_json(self.store.get_payload(steps[0].id)[1]).names, 0)
+
+    def test_each_lane_closes_its_thread_s_connection(self):
+        """Store.close runs once on a lane thread for every lane."""
+        closed = []
+        close = Store.close
+
+        def note(store: Store) -> None:
+            closed.append(threading.current_thread().name)
+            close(store)
+
+        with mock.patch.object(Store, "close", note):
+            self.execute([self.finds("seeds", "Ann Smith"), self.finds("web", "Pat Lee"), self.sleeps("linkedin", 0)])
+        self.assertEqual(len([n for n in closed if n.startswith("fn-lane")]), 3)
 
     def test_progress_of_an_unknown_search_is_none(self):
         """search_progress returns None for an id with no search."""

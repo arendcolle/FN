@@ -209,10 +209,10 @@ def run_step[I: BaseModel, O: BaseModel](ctx: StepContext, name: str, fn: Callab
     """
     secrets = ctx.settings.secrets()
     run = StepRun(
-        id=ctx.new_id(), search_id=ctx.search_id, seq=ctx.store.next_step_seq(ctx.search_id), step=name,
+        id=ctx.new_id(), search_id=ctx.search_id, seq=0, step=name,
         status="running", started_at=ctx.now(), input_model=type(inp).__name__,
     )
-    ctx.store.start_step(run, redact(inp.model_dump_json(), secrets))
+    run = ctx.store.start_step(run, redact(inp.model_dump_json(), secrets))
     recorder = CallRecorder(ctx.store, run.id, secrets, search_id=ctx.search_id, step=name)
     capture = _LogCapture(recorder)
     token = _recorder.set(recorder)
@@ -252,10 +252,10 @@ def skip_step[I: BaseModel, O: BaseModel](ctx: StepContext, name: str, inp: I, o
     """Record step `name` as skipped, with inp as its input and out as the output it stands for, and return out."""
     secrets = ctx.settings.secrets()
     run = StepRun(
-        id=ctx.new_id(), search_id=ctx.search_id, seq=ctx.store.next_step_seq(ctx.search_id), step=name,
+        id=ctx.new_id(), search_id=ctx.search_id, seq=0, step=name,
         status="skipped", started_at=ctx.now(), ended_at=ctx.now(), input_model=type(inp).__name__,
         output_model=type(out).__name__,
     )
-    ctx.store.start_step(run, redact(inp.model_dump_json(), secrets))
+    run = ctx.store.start_step(run, redact(inp.model_dump_json(), secrets))
     ctx.store.finish_step(run, redact(out.model_dump_json(), secrets))
     return out

@@ -1,10 +1,12 @@
 """Structured LLM calls; every value in data reaches the model as tagged data."""
 import contextlib
+import functools
 import hashlib
 import json
 import os
 import re
 import signal
+import threading
 import time
 from pathlib import Path
 from subprocess import PIPE, Popen, TimeoutExpired
@@ -75,6 +77,12 @@ def schema_json(schema: type[BaseModel]) -> str:
     return json.dumps(schema.model_json_schema(), sort_keys=True)
 
 
+@functools.cache
+def proc_slots(limit: int) -> threading.BoundedSemaphore:
+    """The process-wide slots for model processes running at once, one semaphore per limit."""
+    return threading.BoundedSemaphore(limit)
+
+
 class ClaudeCli:
     """Calls `claude -p` on the owner's subscription; the user turn goes to stdin, never argv."""
 
@@ -82,6 +90,7 @@ class ClaudeCli:
         if settings.env == "test":
             raise RuntimeError("ClaudeCli refuses to run under FN_ENV=test; use FixtureLLM in replay mode")
         self.model = model
+        self.slots = proc_slots(settings.llm_procs)
 
     def argv(self, system: str, schema_text: str, tools: str = "") -> list[str]:
         return [
@@ -99,52 +108,53 @@ class ClaudeCli:
         """
         system, user, schema_text = system_prompt(task), user_turn(data), schema_json(schema)
         sha = prompt_sha(system, user, schema_text, self.model)
-        recorder, started = current_recorder(), time.monotonic()
-        timeout_s = TIMEOUTS.get(task, TIMEOUT_S)
+        with self.slots:
+            recorder, started = current_recorder(), time.monotonic()
+            timeout_s = TIMEOUTS.get(task, TIMEOUT_S)
 
-        def fail(message: str, returncode: int | None, stderr: str) -> LLMCallError:
+            def fail(message: str, returncode: int | None, stderr: str) -> LLMCallError:
+                ms = round((time.monotonic() - started) * 1000)
+                error = LLMCallError(message, returncode, stderr, ms)
+                recorder.record("llm", f"{task} {sha[:12]}: {user}", ms, status=returncode, error=str(error),
+                                model=self.model, prompt_sha=sha)
+                return error
+
+            env = {k: os.environ[k] for k in CLI_ENV if k in os.environ}
+            try:
+                proc = Popen(
+                    self.argv(system, schema_text, TOOLS.get(task, "")), stdin=PIPE, stdout=PIPE, stderr=PIPE,
+                    text=True, env=env, start_new_session=True,
+                )
+            except OSError as exc:
+                raise fail("claude could not start", None, str(exc)) from exc
+            try:
+                stdout, stderr = proc.communicate(user, timeout=timeout_s)
+            except TimeoutExpired:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(proc.pid, signal.SIGKILL)
+                _, stderr = proc.communicate()
+                raise fail(f"claude timed out after {timeout_s}s", None, stderr or "") from None
+            try:
+                payload = json.loads(stdout)
+            except ValueError:
+                payload = None
+            if not isinstance(payload, dict):
+                raise fail("claude printed no JSON result", proc.returncode, stderr or stdout)
+            if payload.get("is_error") or proc.returncode != 0:
+                raise fail(f"claude reported an error: {payload.get('result')}", proc.returncode, stderr)
+            if payload.get("structured_output") is None:
+                raise fail("claude result has no structured_output", proc.returncode, stderr or str(payload.get("result")))
+            usage = payload.get("usage", {})
+            tokens_in = sum(usage.get(k, 0) for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+            model = next(iter(payload.get("modelUsage", {})), self.model)
+            cost = float(payload.get("total_cost_usd", 0.0))
             ms = round((time.monotonic() - started) * 1000)
-            error = LLMCallError(message, returncode, stderr, ms)
-            recorder.record("llm", f"{task} {sha[:12]}: {user}", ms, status=returncode, error=str(error),
-                            model=self.model, prompt_sha=sha)
-            return error
-
-        env = {k: os.environ[k] for k in CLI_ENV if k in os.environ}
-        try:
-            proc = Popen(
-                self.argv(system, schema_text, TOOLS.get(task, "")), stdin=PIPE, stdout=PIPE, stderr=PIPE,
-                text=True, env=env, start_new_session=True,
+            recorder.record("llm", f"{task} {sha[:12]}: {user}", ms, status=proc.returncode, tokens_in=tokens_in,
+                            tokens_out=usage.get("output_tokens", 0), cost_usd=cost, model=model, prompt_sha=sha)
+            return LLMResult[schema](
+                value=schema.model_validate(payload["structured_output"]), model=model, cost_usd=cost,
+                tokens_in=tokens_in, tokens_out=usage.get("output_tokens", 0), billing="subscription",
             )
-        except OSError as exc:
-            raise fail("claude could not start", None, str(exc)) from exc
-        try:
-            stdout, stderr = proc.communicate(user, timeout=timeout_s)
-        except TimeoutExpired:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(proc.pid, signal.SIGKILL)
-            _, stderr = proc.communicate()
-            raise fail(f"claude timed out after {timeout_s}s", None, stderr or "") from None
-        try:
-            payload = json.loads(stdout)
-        except ValueError:
-            payload = None
-        if not isinstance(payload, dict):
-            raise fail("claude printed no JSON result", proc.returncode, stderr or stdout)
-        if payload.get("is_error") or proc.returncode != 0:
-            raise fail(f"claude reported an error: {payload.get('result')}", proc.returncode, stderr)
-        if payload.get("structured_output") is None:
-            raise fail("claude result has no structured_output", proc.returncode, stderr or str(payload.get("result")))
-        usage = payload.get("usage", {})
-        tokens_in = sum(usage.get(k, 0) for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
-        model = next(iter(payload.get("modelUsage", {})), self.model)
-        cost = float(payload.get("total_cost_usd", 0.0))
-        ms = round((time.monotonic() - started) * 1000)
-        recorder.record("llm", f"{task} {sha[:12]}: {user}", ms, status=proc.returncode, tokens_in=tokens_in,
-                        tokens_out=usage.get("output_tokens", 0), cost_usd=cost, model=model, prompt_sha=sha)
-        return LLMResult[schema](
-            value=schema.model_validate(payload["structured_output"]), model=model, cost_usd=cost,
-            tokens_in=tokens_in, tokens_out=usage.get("output_tokens", 0), billing="subscription",
-        )
 
 
 class FixtureLLM:

@@ -2,10 +2,12 @@ import contextlib
 import io
 import json
 import logging
+import threading
 import unittest
+import uuid
 
 from fn.contracts import ParseIn, ParseOut
-from fn.steps import StepContext, current_recorder, redact, run_step, setup_logging
+from fn.steps import StepContext, current_recorder, redact, run_step, setup_logging, skip_step
 from fn.worker import Worker
 from tests.helpers import SECRET, StubHttp, StubLLM, make_db, make_settings
 
@@ -127,6 +129,28 @@ class StepTest(unittest.TestCase):
         self.assertIn(f"fn.step [{ctx.search_id} parse] calling with ***", text)
         self.assertIn("KeyError: '***'", text)
         self.assertIn("fn.test [- -] outside a step ***", text)
+
+    def test_steps_started_at_once_get_unique_numbers(self):
+        """Eight threads starting run_step and skip_step at the same moment get the step numbers 1 to 8, each once."""
+        search = self.worker(StubLLM()).create_search("question")
+        ctx = StepContext(search_id=search.id, store=self.store, llm=None, http=None, now=lambda: search.created_at,
+                          new_id=lambda: str(uuid.uuid4()), log=logging.getLogger("fn.step"), settings=self.settings)
+        barrier = threading.Barrier(8)
+
+        def start(i: int) -> None:
+            barrier.wait()
+            if i % 2:
+                run_step(ctx, "parse", lambda c, inp: ParseOut(chips={}), ParseIn(question="q"))
+            else:
+                skip_step(ctx, "parse", ParseIn(question="q"), ParseOut(chips={}))
+            self.store.close()
+
+        threads = [threading.Thread(target=start, args=(i,)) for i in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(sorted(s.seq for s in self.store.list_steps(search.id)), list(range(1, 9)))
 
     def test_redact_replaces_each_secret(self):
         self.assertEqual(redact("a s1 b s2 s1", ["s1", "s2"]), "a *** b *** ***")

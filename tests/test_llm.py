@@ -1,15 +1,21 @@
 import hashlib
 import json
+import logging
 import shutil
 import signal
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
 
+from pydantic import ValidationError
+
 from fn import config
-from fn.contracts import Chips, PagePeople
+from fn.contracts import Chips, PagePeople, ParseIn, ParseOut
 from fn.llm import (
     MODEL,
     PROMPTS,
@@ -25,6 +31,7 @@ from fn.llm import (
     system_prompt,
     user_turn,
 )
+from fn.steps import StepContext, fan_out, run_step
 from fn.worker import Worker
 from tests.helpers import StubHttp, StubLLM, make_db, make_settings
 
@@ -236,6 +243,54 @@ class LLMTest(unittest.TestCase):
         own = (PROMPTS / "extract_leads.md").read_text()
         self.assertEqual(system_prompt("extract_leads"), base + "\n" + own)
         self.assertNotIn(base.splitlines()[0], own)
+
+    def test_at_most_llm_procs_model_processes_run_at_once(self):
+        """With llm_procs 2, four calls fanned out on four threads in one step run two processes at a time and all answer.
+
+        FN_LLM_PROCS sets the limit; 0 and a non-number are refused.
+        """
+        release, lock = threading.Event(), threading.Lock()
+        running, peak = [0], [0]
+
+        class Blocking(FakeProc):
+            def communicate(self, input=None, timeout=None):
+                with lock:
+                    running[0] += 1
+                    peak[0] = max(peak[0], running[0])
+                release.wait(10)
+                with lock:
+                    running[0] -= 1
+                return self.stdout, self.stderr
+
+        cli = ClaudeCli(self.dev.model_copy(update={"llm_procs": 2}))
+        search = self.worker_for(StubLLM()).create_search("question")
+        ctx = StepContext(search_id=search.id, store=self.store, llm=cli, http=None, now=lambda: search.created_at,
+                          new_id=lambda: str(uuid.uuid4()), log=logging.getLogger("fn.step"), settings=self.dev)
+        answers = []
+
+        def ask(c: StepContext, inp: ParseIn) -> ParseOut:
+            results = fan_out(lambda q: cli.structured("parse", {"question": q}, Chips), list("abcd"), workers=4)
+            answers.extend(results)
+            return ParseOut(chips={})
+
+        with mock.patch("fn.llm.Popen", lambda argv, **kwargs: Blocking(json.dumps(GOOD))):
+            thread = threading.Thread(target=run_step, args=(ctx, "parse", ask, ParseIn(question="q")))
+            thread.start()
+            deadline = time.monotonic() + 10
+            while running[0] < 2 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            time.sleep(0.2)
+            release.set()
+            thread.join(10)
+        self.assertEqual(peak[0], 2)
+        self.assertEqual([type(a).__name__ for a in answers], ["LLMResult[Chips]"] * 4)
+        with mock.patch("fn.config.keychain", return_value=None):
+            with mock.patch.dict("os.environ", {"FN_LLM_PROCS": "3"}):
+                self.assertEqual(config.from_env().llm_procs, 3)
+            for bad in ("0", "x"):
+                with self.subTest(bad=bad), mock.patch.dict("os.environ", {"FN_LLM_PROCS": bad}), \
+                        self.assertRaises(ValidationError):
+                    config.from_env()
 
     def test_only_the_scout_task_gets_web_tools_in_its_argv(self):
         """The scout argv lists the two tools after --tools and as --allowedTools values; the parse argv has no tools."""

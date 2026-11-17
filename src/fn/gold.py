@@ -24,6 +24,7 @@ from fn.contracts import (
     TopCard,
 )
 from fn.llm import from_settings
+from fn.search import lane_index
 from fn.store import Store
 from fn.web.debug import titles, trace_rows
 from fn.worker import Worker
@@ -104,7 +105,7 @@ def lost_at(rows: list[list[object]], near: Candidate | None) -> tuple[str, str]
     kept = [r for r in rows if r[3] == "kept"]
     if kept:
         return str(kept[-1][1]), "kept there, but no candidate carries its name or id"
-    lanes = [r for r in rows if str(r[1]).startswith("lane:")]
+    lanes = sorted((r for r in rows if str(r[1]).startswith("lane:")), key=lambda r: lane_index(str(r[1])[5:]))
     return (", ".join(str(r[1]) for r in lanes),
             "not found by any lane; " + "; ".join(f"{r[1]} {str(r[4]).removeprefix('not present; ')}" for r in lanes))
 

@@ -1,3 +1,5 @@
+import threading
+import time
 import unittest
 
 import httpx
@@ -33,6 +35,29 @@ class GeoTest(unittest.TestCase):
         http = Http()
         self.assertEqual(geo.cities(http), CITIES)
         geo.cities(http)
+        self.assertEqual(calls, [geo.CITIES_URL])
+
+    def test_two_threads_asking_at_once_fetch_the_dump_once(self):
+        """While one thread's slow fetch runs, a second thread asking for the index waits for it instead of fetching."""
+        calls = []
+
+        class Slow:
+            def get(self, url: str, params: dict[str, str] | None = None) -> httpx.Response:
+                calls.append(url)
+                time.sleep(0.2)
+                return httpx.Response(200, content=cities_zip())
+
+        http, barrier = Slow(), threading.Barrier(2)
+
+        def ask() -> None:
+            barrier.wait()
+            geo.cities(http)
+
+        threads = [threading.Thread(target=ask) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
         self.assertEqual(calls, [geo.CITIES_URL])
 
     def test_area_locates_only_a_metro_place_and_fetches_the_dump_only_then(self):
