@@ -34,6 +34,7 @@ MAX_PAGES = 4
 BATCH = 100
 MAX_AUTHORS = 2000
 WORKS_PER_AUTHOR = 3
+TOPICS = 5
 FETCH_WORKERS = 3
 NO_QUERY = "no topic or institution chip"
 
@@ -233,6 +234,29 @@ def topic_drafts(works: list[dict], person_id: str, fetched_at: datetime) -> lis
         drafts.append(ClaimDraft(person_id=person_id, kind="topic", value=title, **dated,
                                  **quote(source, spans, "display_name", "display_name")))
     return drafts
+
+
+def author_topics(record: dict, person_id: str, fetched_at: datetime) -> list[ClaimDraft]:
+    """One topic claim per main topic of the author, up to TOPICS, quoting its line of one topics source.
+
+    The claims carry no years, which are not per topic. With years that have works, each is dated by the last.
+    """
+    topics = [t for t in (record.get("topics") or [])[:TOPICS] if t.get("display_name")]
+    if not topics:
+        return []
+    years = sorted(c["year"] for c in record.get("counts_by_year") or [] if c.get("works_count", 0) > 0)
+    fields: list[tuple[str, object]] = [("id", record["id"]), ("display_name", record["display_name"]),
+                                        ("years_with_works", ", ".join(str(y) for y in years))]
+    fields += [(f"topics.{i}.display_name", t["display_name"]) for i, t in enumerate(topics)]
+    raw = {"id": record["id"], "counts_by_year": record.get("counts_by_year") or [],
+           "topics": [{k: t.get(k) for k in ("id", "display_name", "count")} for t in topics]}
+    updated = (record.get("updated_date") or "")[:10] or None
+    source, spans = record_source(record["id"], f"OpenAlex author topics {record['display_name']}", fields, raw,
+                                  fetched_at, updated)
+    dated = {"claim_date": str(years[-1]), "date_precision": "year", "date_method": "record_field"} if years else {}
+    return [ClaimDraft(person_id=person_id, kind="topic", value=normalize(t["display_name"]), **dated,
+                       **quote(source, spans, f"topics.{i}.display_name", f"topics.{i}.display_name"))
+            for i, t in enumerate(topics)]
 
 
 def place_area(ctx: StepContext, chips: Chips, considered: list[Considered]) -> GeoArea | None:

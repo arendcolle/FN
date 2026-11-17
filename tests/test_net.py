@@ -65,6 +65,15 @@ class NetTest(unittest.TestCase):
         run_step(ctx, "fetch", fetch, ParseIn(question="wind"))
         return self.store.list_steps(search.id)[-1]
 
+    def step_with(self, client: net.Client, out: list) -> None:
+        """Run one step that GETs the OpenAlex works URL through client and appends the response to out."""
+        worker = Worker(self.store, self.settings, llm=StubLLM())
+        self.addCleanup(worker.shutdown)
+        ctx = StepContext(search_id=worker.create_search("question").id, store=self.store, llm=None, http=client,
+                          now=now, new_id=new_id, log=logging.getLogger("fn.step"), settings=self.settings)
+        run_step(ctx, "fetch", lambda c, i: (out.append(c.http.get("https://api.openalex.org/works")),
+                                             ParseOut(chips={}))[1], ParseIn(question="wind"))
+
     def test_key_goes_in_the_header_to_openalex_only_and_is_never_stored(self):
         """The OpenAlex call carries the key as a Bearer header; no other host gets it, and no call, payload or log holds it."""
         client = self.client([httpx.Response(200, json={"meta": {"cost_usd": 0.0001}, "results": []}),
@@ -79,6 +88,15 @@ class NetTest(unittest.TestCase):
         for text in stored:
             self.assertNotIn(SECRET, text)
         self.assertIn("GET https://api.openalex.org/works?q=wind", calls[0].request)
+
+    def test_a_live_answer_keeps_the_rate_limit_headers_and_no_other_header(self):
+        """A live 2xx answer carries its x-ratelimit headers; the rest of the headers are dropped."""
+        client = self.client([httpx.Response(200, json={"results": []}, headers={
+            "X-RateLimit-Remaining": "2999", "Set-Cookie": "a=b", "X-Other": "1"})])
+        out = []
+        self.step_with(client, out)
+        self.assertEqual(out[0].headers["x-ratelimit-remaining"], "2999")
+        self.assertTrue({"set-cookie", "x-other"}.isdisjoint(out[0].headers))
 
     def test_every_request_names_fn_and_its_repository_in_the_user_agent(self):
         """Each request to any host carries FN's agent with the repository URL as contact, never httpx's default."""

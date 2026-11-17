@@ -196,7 +196,8 @@ class Client:
                     self._write_cache(path, body)
                 recorder.record("http", shown, ms, status=response.status_code, response_sha=sha,
                                 response_path=str(path) if saved else None, cost_usd=price)
-                return httpx.Response(response.status_code, content=body, request=request)
+                kept = {k: v for k, v in response.headers.items() if k.lower().startswith("x-ratelimit-")}
+                return httpx.Response(response.status_code, content=body, headers=kept, request=request)
             location = response.headers.get("location")
             if response.status_code in REDIRECTS and location:
                 error = f"{shown} returned {response.status_code} to {location}"

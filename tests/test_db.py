@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from fn import db
-from fn.contracts import Candidate, CardFit, Search
+from fn.contracts import Candidate, CardFit, Search, Source
 from fn.store import Store
 from fn.worker import now
 from tests.helpers import make_db, make_settings
@@ -194,6 +194,17 @@ class ClaimsFtsTest(unittest.TestCase):
         for term in ('"universite"', '"run"'):
             rows = conn.execute("SELECT rowid FROM claims_fts WHERE claims_fts MATCH ?", (term,)).fetchall()
             self.assertEqual(len(rows), 1, term)
+
+
+class SourceKindsTest(unittest.TestCase):
+    def test_each_known_id_gives_its_kind_and_an_unknown_id_is_left_out(self):
+        """source_kinds maps the ids the database holds to their kinds and omits the others."""
+        store = make_db(self)
+        for source_id, kind in (("s1", "record"), ("s2", "seed_page")):
+            store.upsert_source(Source(id=source_id, kind=kind, url="https://example.org/x", text="t",
+                                       content_hash=source_id))
+        self.assertEqual(store.source_kinds(["s1", "s2", "nope"]), {"s1": "record", "s2": "seed_page"})
+        self.assertEqual(store.source_kinds([]), {})
 
 
 if __name__ == "__main__":

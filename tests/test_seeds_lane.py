@@ -3,6 +3,7 @@ import json
 import logging
 import unittest
 from datetime import UTC, datetime
+from unittest import mock
 
 import httpx
 
@@ -396,6 +397,47 @@ class SeedPlaceTest(unittest.TestCase):
         self.lives("consul", "Boston", 42.36, -71.06)
         chips = Chips(version=2, roles=[Chip(text="founders", origin="edited", research=False)], place=BOSTON)
         self.assertEqual(self.keys(self.lane(chips)), ["founder1", "consul"])
+
+    def required(self, **place) -> Chips:
+        """Version 2 chips for the topic zebrafish with Boston as a place of the given need and kind."""
+        return Chips(version=2, topics=[Chip(text="zebrafish", origin="edited")],
+                     place=BOSTON.model_copy(update={"need": "must", **place}))
+
+    def test_a_required_place_starts_from_the_people_inside_the_area(self):
+        """With a required place, a match inside comes first, then a person inside without a word, then a match outside."""
+        self.claim("wordout", "Studies zebrafish")
+        self.lives("wordout", "New York City", 40.71427, -74.00597)
+        self.lives("plain", "Boston", 42.36, -71.06)
+        self.claim("wordin", "Studies zebrafish")
+        self.lives("wordin", "Boston", 42.40, -71.06)
+        out = self.lane(self.required())
+        self.assertEqual(self.keys(out), ["wordin", "plain", "wordout"])
+        self.assertEqual([h.rank for h in out.hits], [1, 2, 3])
+        self.assertEqual(out.hits[1].matched_on, "based in Boston")
+
+    def test_the_cap_drops_the_match_outside_before_the_people_inside(self):
+        """Three people inside and a cap of 2 keep two of them and drop the outside match."""
+        self.claim("wordout", "Studies zebrafish")
+        for i in range(3):
+            self.lives(f"in{i}", "Boston", 42.36 + i * 0.01, -71.06)
+        with mock.patch.object(seeds, "MAX_HITS", 2):
+            out = self.lane(self.required())
+        self.assertEqual(self.keys(out), ["in0", "in1"])
+        self.assertIn("below the top 2", [c.reason for c in out.considered if c.name == "wordout"][0])
+
+    def test_without_a_located_required_place_the_output_is_as_before(self):
+        """Version 1 chips, a nice place, an unknown place and a required anywhere_us place give a match-only output."""
+        self.claim("wordout", "Studies zebrafish")
+        self.lives("plain", "Boston", 42.36, -71.06)
+        baseline = self.lane(Chips(version=2, topics=[Chip(text="zebrafish", origin="edited")]))
+        self.assertEqual(self.keys(baseline), ["wordout"])
+        variants = {"version 1": Chips(topics=[Chip(text="zebrafish", origin="edited")],
+                                       place=BOSTON.model_copy(update={"need": "must"})),
+                    "nice": self.required(need="nice"), "unknown": self.required(text="Atlantis"),
+                    "anywhere_us": self.required(text="anywhere", kind="anywhere_us")}
+        for label, chips in variants.items():
+            with self.subTest(label=label):
+                self.assertEqual(self.lane(chips), baseline)
 
 
 if __name__ == "__main__":
