@@ -406,6 +406,33 @@ class TierTest(unittest.TestCase):
         self.assertEqual((c.tier, c.fit), (7, None))
 
 
+class WorkAndAgeOrderTest(unittest.TestCase):
+    HERE = dict(fit="inside", km=5.0, countries=("US",), only_openalex=False)
+
+    def key(self, ask: Question, stale: bool = False, **fields) -> tuple:
+        ev = dataclasses.replace(found(**self.HERE, **fields), age=evidence.Age(stale=stale))
+        return rank.order_key(ev, ask, 1)
+
+    def test_in_a_tier_a_known_job_comes_before_an_employer_before_none_and_a_fresh_fact_before_a_stale_one(self):
+        """With the same role fit and verdict a version-2 key sorts known, employer, none, then not stale before stale."""
+        ask = v2()
+        keys = [self.key(ask, job=j) for j in ("none", "known", "employer")]
+        self.assertEqual(sorted(range(3), key=keys.__getitem__), [1, 2, 0])
+        self.assertLess(self.key(ask, job="known"), self.key(ask, stale=True, job="known"))
+        self.assertLess(self.key(ask, stale=True, job="known"), self.key(ask, job="employer"))
+
+    def test_a_met_role_without_a_job_still_comes_before_an_unknown_role_with_a_known_job(self):
+        """The role fit stands before the job in the key."""
+        ask = v2()
+        self.assertLess(self.key(ask, role="met", job="none", stale=True), self.key(ask, job="known"))
+
+    def test_version_1_chips_ignore_job_and_age_and_a_person_without_evidence_gets_the_last_values(self):
+        """A version-1 key is the same for a known job and none; the blank version-2 key is as long as the others."""
+        self.assertEqual(self.key(ASK, job="known"), self.key(ASK, stale=True, job="none"))
+        self.assertEqual(len(rank.order_key(None, v2(), 7)), len(self.key(v2())))
+        self.assertGreater(rank.order_key(None, v2(), 7), self.key(v2(), stale=True, job="none"))
+
+
 class ConfirmedTest(unittest.TestCase):
     BIZ = Chip(text="founders", origin="edited", research=False)
     HERE = dict(fit="inside", km=5.0, countries=("US",), only_openalex=False)
@@ -664,6 +691,24 @@ class VerdictTest(unittest.TestCase):
         v1 = Question(chips=ASK.chips, area=BOSTON, country="US")
         out = self.fused(v1, {"partly": "partly", "yes": "yes"}, **people)
         self.assertEqual({c.tier for c in out.values()}, {1})
+
+    def test_a_yes_confirms_a_person_with_a_job_and_no_topic_word_and_leads_heading_3(self):
+        """On version 2 a yes with a known job is tier 1 inside the area and tier 2 with an unknown place under a
+        required place; without a job it stays tier 6. Under heading 3 the order is yes, partly, none, no."""
+        bare = dict(match=False, words=(), **{**self.HERE, "job": "known"})
+        out = self.fused(v2(), {"yes": "yes"}, yes=found(**bare), jobless=found(**{**bare, "job": "none"}))
+        self.assertEqual({k: c.tier for k, c in out.items()}, {"yes": 1, "jobless": 6})
+        ask = v2()
+        must = ask.model_copy(update={"chips": ask.chips.model_copy(update={
+            "place": Place(text="Boston", origin="edited", need="must")})})
+        lost = found(**{**bare, "fit": "unknown", "km": None, "countries": ()})
+        self.assertEqual(self.fused(must, {"yes": "yes"}, yes=lost)["yes"].tier, 2)
+        jobless = {k: found(**{**bare, "job": "none"}) for k in ("no", "none", "partly", "yes")}
+        out = self.fused(v2(), {"no": "no", "partly": "partly", "yes": "yes"}, **jobless)
+        self.assertEqual(sorted(out, key=lambda k: out[k].rank), ["yes", "partly", "none", "no"])
+        v1 = Question(chips=ASK.chips, area=BOSTON, country="US")
+        self.assertEqual(self.fused(v1, {"yes": "yes"}, yes=found(**bare))["yes"].tier,
+                         self.fused(v1, {}, yes=found(**bare))["yes"].tier)
 
     def test_a_person_the_check_sent_without_a_verdict_keeps_the_tier(self):
         """A person in unsure (failed batch, skipped line) is not demoted as an unchecked word match."""

@@ -39,6 +39,7 @@ CAPPED = (3, 4)
 PLACES = {"outside": 1, "abroad": 2}
 SPOTS = {"unknown": 1, "outside": 2, "abroad": 3}
 BLANK = (7, 4, False, 1, False, 2, 0, 0)
+JOBS = ("known", "employer", "none")
 OLD_YEARS = 60
 RETIRED_YEARS = 45
 # The last tier under each heading, where an old first record sorts.
@@ -199,7 +200,8 @@ def tier(found: "evidence.Evidence | None", question: Question | None, researche
     On a version-2 question, a person the web researcher named for this question (researched) counts as a
     confirmed match: the researcher chose them for the question, which word matching cannot do. For anyone else
     a verdict of "no" takes the match away, and so does "partly" unless the person meets the asked role. Once
-    the fit check ran (checked), a person it did not look at is no confirmed match either: a "yes" confirms.
+    the fit check ran (checked), a person it did not look at is no confirmed match either: a "yes" confirms a
+    person whose card shows a job, even without a topic word match.
     """
     if found is None or found.role.fit == "fails":
         return 7
@@ -210,6 +212,8 @@ def tier(found: "evidence.Evidence | None", question: Question | None, researche
     partly = verdict == "partly" and found.role.fit != "met"
     if current and (verdict == "no" or partly or (checked and verdict is None)):
         match = False
+    if current and verdict == "yes" and found.job != "none":
+        match = True
     if match or (current and researched):
         return (1 if fits else 2) if tied else (3 if fits else 4)
     if tied:
@@ -248,18 +252,19 @@ def order_key(found: "evidence.Evidence | None", question: Question | None, leve
     topic), own words before related words, tie grade, place, then more topic words; version-2 chips put the place
     before the tie grade, under a required place tiers 5 to 7 put it right after the heading, an old first record last
     under its heading and a retired-looking person last in its tier. BLANK is for people without evidence. In tiers 1
-    to 4 a "partly" verdict stands last; below them "partly" stands first and "no" last."""
+    to 4 a "partly" verdict stands last; below them the order is yes, partly, no verdict, no."""
     legacy = question is None or question.chips.version < 2
     if found is None:
-        return BLANK if legacy else (7, 4, 0, 7, 0, *BLANK[2:])
+        return BLANK if legacy else (7, 4, 0, 7, 0, *BLANK[2:4], 2, True, *BLANK[4:])
     place = place_fit(found, question)
     grade = found.belgian.grade
     spot = PLACES.get(place, 0) if legacy else SPOTS.get(place, 0)
-    doubt = int(verdict == "partly") if level <= 4 else {"partly": 0, "no": 2}.get(verdict, 1)
-    role = ROLES.index(found.role.fit) if legacy else 6 * ROLES.index(found.role.fit) + 2 * doubt + (not found.topic.match)
+    doubt = int(verdict == "partly") if level <= 4 else {"yes": 0, "partly": 1, "no": 3}.get(verdict, 2)
+    role = ROLES.index(found.role.fit) if legacy else 8 * ROLES.index(found.role.fit) + 2 * doubt + (not found.topic.match)
     tie = TIED.index(grade) if grade in TIED else len(TIED)
     lead = spot if not legacy and level >= 5 and parse.place_must(question.chips) else place == "abroad"
-    tail = (lead, role, found.topic.related, *((tie, spot) if legacy else (spot, tie)), -len(found.topic.words))
+    work = () if legacy else (JOBS.index(found.job), found.age.stale)
+    tail = (lead, role, *work, found.topic.related, *((tie, spot) if legacy else (spot, tie)), -len(found.topic.words))
     if legacy:
         return (level, heading(level, grade), *tail)
     under, aged = heading(level, grade), old(found.age)
