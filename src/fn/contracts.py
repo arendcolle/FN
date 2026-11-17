@@ -551,6 +551,8 @@ class CardView(Model):
     reason: ReasonView | None = None
     # The card's second line: the tie in words, then the place words.
     fit: str | None = None
+    # The fact that set the person aside as outside or abroad: their place and its source.
+    aside_line: ReasonView | None = None
 
 
 # One heading of the new section: how many people stand under it and the key of the first shown card under it.
@@ -558,6 +560,16 @@ class ResultsHeading(Model):
     title: str
     count: int
     first_key: str
+
+
+# One set-aside group: its title, how many people stand in it, the shown cards and the key of the first card not shown.
+class AsideGroup(Model):
+    key: str
+    title: str
+    count: int
+    cards: list[CardView] = []
+    shown: int = 0
+    next_key: str | None = None
 
 
 # network and new hold every kept person who is not skipped; cards are the ones the page shows, in order.
@@ -575,6 +587,9 @@ class ResultsView(Model):
     # The new section's headings in list order; empty when a person of the section has no tier.
     headings: list[ResultsHeading] = []
     matched: int = 0
+    # The set-aside groups in GROUP_KEYS order, and the line over the list when nobody stands under the first heading.
+    groups: list[AsideGroup] = []
+    no_match: str | None = None
 
 
 class NetworkFilter(Model):

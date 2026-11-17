@@ -4,11 +4,14 @@ from datetime import UTC, date, datetime, timedelta
 from fn import network, orgs, present
 from fn.contracts import (
     Candidate,
+    Chip,
+    Chips,
     Claim,
     ClaimDraft,
     Identifier,
     Org,
     OrgFacts,
+    Place,
     Search,
     Source,
 )
@@ -231,6 +234,59 @@ class DeathFactTest(unittest.TestCase):
         self.assertEqual(present.reason_of(view, view.href).text, "Died 1966")
         page = present.profile(self.store, person, TODAY)
         self.assertEqual([(g.title, [(f.what, f.years) for f in g.facts]) for g in page.facts], [("Work", [("Died 1966", "")])])
+
+
+class ReadingTest(unittest.TestCase):
+    def chip(self, text: str, need: str = "must") -> Chip:
+        return Chip(text=text, origin="parsed", need=need)
+
+    def place(self, text: str, kind: str | None, need: str = "must") -> Place:
+        return Place(text=text, origin="parsed", kind=kind, need=need)
+
+    def test_a_place_reads_as_an_area_a_region_or_the_us(self):
+        """A city or metro reads as an area, a state keeps its name, a free region takes 'the', the US reads 'the US'."""
+        rows = [("New York", "metro", "in the New York area"), ("Washington D.C.", None, "in the Washington D.C. area"),
+                ("the Bay Area", "metro", "in the Bay Area"), ("North Carolina", "anywhere_us", "in North Carolina"),
+                ("US West Coast", "anywhere_us", "in the US West Coast"), ("US", "anywhere_us", "in the US"),
+                ("United States", "anywhere_us", "in the US"), ("Belgium", "abroad", "in Belgium")]
+        for text, kind, words in rows:
+            with self.subTest(text=text):
+                self.assertEqual(present.area_words(self.place(text, kind)), words)
+
+    def test_the_reading_splits_required_from_wished_in_the_words_of_the_question(self):
+        """Roles, topics, institutions, the tie and the place stand under Required or Wished by their need."""
+        must = Chips(version=2, roles=[self.chip("scientists")], tie=self.chip("Belgian"),
+                     place=self.place("Washington D.C.", "metro"))
+        self.assertEqual(present.reading(must), ("Required: scientists, Belgian, in the Washington D.C. area", None))
+        wish = Chips(version=2, roles=[self.chip("founders")], tie=self.chip("Flemish", "nice"),
+                     place=self.place("Boston", "metro"))
+        self.assertEqual(present.reading(wish), ("Required: founders, in the Boston area", "Wished: Flemish"))
+        only = Chips(version=2, tie=self.chip("Flemish", "nice"))
+        self.assertEqual(present.reading(only), (None, "Wished: Flemish"))
+
+    def test_the_reading_drops_softeners_repeats_and_empty_parts_and_cuts_long_ones(self):
+        """'ideally' and a trailing 'if possible' go, a repeat by folded name stays once, an empty chip is skipped and a
+        300-character chip is cut to 60 characters."""
+        nice = Chips(version=2, tie=self.chip("ideally someone connected to Flanders", "nice"),
+                     topics=[self.chip("Tides"), self.chip("tides"), self.chip("  "), self.chip("wind if possible", "nice")])
+        self.assertEqual(present.reading(nice), ("Required: Tides", "Wished: wind, someone connected to Flanders"))
+        long = Chips(version=2, topics=[self.chip(" ".join(["tidal"] * 60))])
+        text = present.reading(long)[0].removeprefix("Required: ")
+        self.assertTrue(len(text) <= 61 and text.endswith("…"), text)
+
+    def test_there_is_no_reading_without_chips_on_version_1_or_without_a_part(self):
+        """None for no chips, version 1 chips, and version 2 chips that name nothing."""
+        self.assertIsNone(present.reading(None))
+        self.assertIsNone(present.reading(Chips(version=1, topics=[self.chip("tides")])))
+        self.assertIsNone(present.reading(Chips(version=2)))
+
+    def test_an_outside_person_under_a_question_without_a_place_stands_in_other(self):
+        """group_key sends an outside candidate to 'other' when the chips have no place; without chips the person is open."""
+        outside = Candidate(search_id="s", person_id="p", person_ids=["p"], hit_person_ids=["p"], card_person_ids=["p"],
+                            section="new", rank=1, score=1.0, lane_ranks={}, tier=2, aside="outside")
+        self.assertEqual(present.group_key(outside, Chips(version=2)), "other")
+        self.assertEqual(present.group_key(outside, Chips(version=2, place=self.place("Boston", "metro"))), "outside")
+        self.assertIsNone(present.group_key(outside, None))
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ from urllib.parse import quote
 from fastapi.testclient import TestClient
 
 from fn import network
-from fn.contracts import Candidate, ClaimDraft, Identifier, Search, Source
+from fn.contracts import Candidate, CardFit, Chips, ClaimDraft, Identifier, Place, Search, Source
 from fn.present import results, walk
 from fn.web.app import create_app
 from fn.worker import now
@@ -172,6 +172,59 @@ class WayBackTest(unittest.TestCase):
         words = re.fullmatch("Back to the results for “(.*)”", label).group(1)
         self.assertTrue(words.endswith("…") and len(words) <= 61, words)
         self.assertTrue(question.startswith(words[:-1]) and question[len(words) - 1] == " ")
+
+    def grouped(self, rows: list[str | None]) -> list[str]:
+        """A done search s1 on version 2 chips with a required place; one person per row, in the set-aside group
+        'abroad' for 'abroad' and in the open list for None."""
+        people = self.named(len(rows))
+        self.store.create_search(Search(id="s1", question="Example question", status="done", created_at=now(), code_sha=None,
+                                        dirty=False, llm_mode="replay", settings_json="{}", boot_id="b",
+                                        chips=Chips(version=2, place=Place(text="Boston", origin="parsed", kind="metro",
+                                                                           need="must"))))
+        self.store.save_candidates("s1", [
+            Candidate(search_id="s1", person_id=p, person_ids=[p], hit_person_ids=[p], card_person_ids=[p], section="new",
+                      rank=n, score=1.0, lane_ranks={"seeds": n}, tier=2, fit=CardFit(tie_grade="strong"), aside=aside)
+            for n, (p, aside) in enumerate(zip(people, rows), 1)], [])
+        return people
+
+    def test_an_open_card_walks_the_open_list_and_a_group_card_walks_its_group_and_returns_to_it_opened(self):
+        """The open list and each group have their own walk line; a group card's way back opens its group at its shown
+        count."""
+        people = self.grouped([None, "abroad", None, "abroad", "abroad"])
+        open_line = self.walk_line(self.get(f"/people/{people[2]}", search="s1", card=people[2]))
+        self.assertTrue(open_line.startswith("<span>2 of 2</span>"), open_line)
+        self.assertIn(f'/people/{people[0]}?', open_line)
+        self.assertNotIn(people[1], open_line)
+        line = self.walk_line(self.get(f"/people/{people[3]}", search="s1", card=people[3]))
+        self.assertTrue(line.startswith("<span>2 of 3</span>"), line)
+        self.assertIn(f'<a href="/people/{people[1]}?search=s1&card={people[1]}&from=card" rel="prev">Previous</a>', line)
+        self.assertIn(f'/people/{people[4]}?search=s1&card={people[4]}&from=card" rel="next">Next</a>', line)
+        label = "Back to the results for “Example question”"
+        self.assertEqual(self.back(self.get(f"/people/{people[3]}", search="s1", card=people[3])),
+                         [(f"/searches/s1?group=abroad#card-{people[3]}", label)])
+        self.assertEqual(self.back(self.get(f"/people/{people[3]}", search="s1", card=people[3], shown="40")),
+                         [(f"/searches/s1?group=abroad&group_shown=40#card-{people[3]}", label)])
+        self.assertEqual(self.back(self.get(f"/people/{people[2]}", search="s1", card=people[2])),
+                         [(f"/searches/s1#card-{people[2]}", label)])
+        self.assertEqual(walk(self.store, self.store.get_search("s1"), people[1])[:2], (1, 3))
+
+    def test_a_fetch_add_on_card_25_of_a_group_returns_the_card_with_the_groups_shown_count(self):
+        """The returned name link carries shown=40 from group_shown=40, and the forms keep the page they came from."""
+        people = self.grouped(["abroad"] * 30)
+        here = "/searches/s1?group=abroad&group_shown=40"
+        added = self.client.post(f"/searches/s1/people/{people[24]}/add", headers={"x-requested-with": "fetch"},
+                                 data={"next": here})
+        html = unescape(added.text)
+        self.assertIn(f'<a href="/people/{people[24]}?search=s1&shown=40&card={people[24]}&from=card">', html)
+        self.assertIn(f'name="next" value="{here}#card-{people[24]}"', html)
+        self.assertIn("Added to your network", html)
+
+    def test_a_fetch_add_on_an_open_card_ignores_the_opened_groups_shown_count(self):
+        """An open card keeps the open list's shown count while a group is opened beside it."""
+        people = self.grouped([None, "abroad"])
+        added = self.client.post(f"/searches/s1/people/{people[0]}/add", headers={"x-requested-with": "fetch"},
+                                 data={"next": "/searches/s1?group=abroad&group_shown=40"})
+        self.assertIn(f'<a href="/people/{people[0]}?search=s1&card={people[0]}&from=card">', unescape(added.text))
 
     def test_a_hostile_question_is_escaped_in_the_label(self):
         person = self.named(1)[0]

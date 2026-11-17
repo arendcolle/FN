@@ -45,13 +45,16 @@ th { color: var(--muted); }
 .fn-banner + .fn-search { padding-top: var(--space-5); }
 
 /* Search box */
-.fn-search { display: flex; gap: var(--space-2); align-items: flex-start; padding: var(--space-4) var(--fn-gutter) var(--space-5); max-width: calc(var(--search-width) + 2 * var(--fn-gutter)); }
+.fn-search { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: flex-start; padding: var(--space-4) var(--fn-gutter) var(--space-5); max-width: calc(var(--search-width) + 2 * var(--fn-gutter)); }
 .fn-search__field { flex: 1; min-width: 0; }
 .fn-input { display: block; width: 100%; background: var(--raised); color: var(--ink); border: 1px solid var(--field); border-radius: var(--radius-md); padding: var(--space-3) var(--space-4); resize: none; field-sizing: content; min-height: calc(1.5em + 2 * var(--space-3) + 2px); max-height: calc(4.5em + 2 * var(--space-3) + 2px); overflow-y: auto; }
 .fn-input::placeholder { color: var(--muted); opacity: 1; }
 .fn-input[aria-invalid="true"] { border-color: var(--failed); }
 .fn-search .fn-btn { min-height: calc(1.5em + 2 * var(--space-3) + 2px); }
 .fn-error { color: var(--failed); margin: var(--space-1) 0 0; }
+/* How FN read the question: one read-only line under the field and the button. */
+.fn-search__read { flex-basis: 100%; margin: 0; color: var(--muted); overflow-wrap: anywhere; }
+.fn-search__read > span { display: inline-block; } /* Required and Wished each wrap as a unit. */
 
 /* Field */
 .fn-field { max-width: var(--notice-width); margin: 0 0 var(--space-6); border: 0; padding: 0; }
@@ -110,6 +113,7 @@ input[type="file"].fn-input { padding: var(--space-2); cursor: pointer; }
 .fn-card__reason { margin: var(--space-2) 0 0; overflow-wrap: anywhere; }
 .fn-card__source { color: var(--muted); white-space: nowrap; }
 .fn-card__fit { margin: var(--space-1) 0 0; color: var(--muted); overflow-wrap: anywhere; }
+.fn-card__fit .text-year { font-size: inherit; } /* A year on a small card line keeps the line's size. */
 .fn-card__combined { margin: var(--space-2) 0 0; color: var(--muted); }
 .fn-card__combined a { color: inherit; }
 .fn-card__acts { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; margin-top: var(--space-4); min-height: calc(1em + 2 * var(--space-2) + 2px); }
@@ -161,6 +165,16 @@ input[type="file"].fn-input { padding: var(--space-2); cursor: pointer; }
 /* Show more, and the line for hidden skipped people */
 .fn-more { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); align-items: center; margin: var(--space-5) 0 0; color: var(--muted); }
 .fn-hidden { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: var(--space-4) 0 0; color: var(--muted); }
+
+/* Set aside: closed groups at the end of the results, one per reason */
+.fn-aside { border-top: 1px solid var(--rule); }
+.fn-aside:last-child { border-bottom: 1px solid var(--rule); }
+.fn-aside > summary { width: max-content; max-width: 100%; padding: var(--space-3) 0; cursor: pointer; list-style: none; }
+.fn-aside > summary::-webkit-details-marker { display: none; }
+.fn-aside__title { text-decoration: underline; text-underline-offset: 3px; }
+.fn-aside__count { margin-left: var(--space-2); color: var(--muted); }
+.fn-aside[open] { padding-bottom: var(--space-3); }
+.fn-aside[open] > summary .fn-aside__title { font-weight: 500; } /* An open group reads as open: the text-strong weight. */
 
 /* List and Map switch, narrow screens only */
 .fn-switch { display: none; width: max-content; margin: 0 var(--fn-gutter) var(--space-4); border: 1px solid var(--field); border-radius: var(--radius-md); }

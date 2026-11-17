@@ -31,12 +31,12 @@ This list holds every user-facing string the new and changed parts introduce, gr
 
 ## Results
 
-- Count line: "`{count}` people · `{n}` not on the map · Export", with "Export" as a link. Left out while the search runs. The count covers the people in your network and under the first three headings
+- Count line: "`{count}` people · `{n}` not on the map · Export", with "Export" as a link. Left out while the search runs
 - Status line while running: "Searching…", "Searching… 1 person so far", "Searching… `{n}` people so far"
 - Done with a source that could not be read: "Some sources could not be read, so this list may be incomplete." and the button "Search again"
 - Stopped after finding people: "This search stopped before it finished." and the button "Run again"
 - Stopped before finding anyone (Notice): title "This search stopped", text "FN ran into a problem before it found anyone. Your question is kept, so Try again runs it once more.", button "Try again"
-- Headings, in order, each followed by its count: "In your network", "Topic and a tie to Flanders or Belgium", "Topic, no known tie", "Tie, topic not confirmed", "Other people found", then the groups set aside at the end of the list: "Outside the area asked for", "Outside the US", "Work does not match the question". A search stored before this round: "New"
+- Headings, in order, each followed by its count: "In your network", "Topic and a tie to Flanders or Belgium", "Topic, no known tie", "Tie, topic not confirmed". "Topic, no known tie" shows only when the tie is a wish. Version 13: "Other people found" is a set-aside group, not a heading. A search stored before this round: "New"
 - Card reason line: "`{reason, from a stored fact}` · `{source short name}`", at most 15 words with the source, for example "Builds 6G channel models at Columbia · columbia.edu"
 - Card second line: the tie in words, for example "Studied at Ghent University". Under "Topic, no known tie" the line is left out unless the place is unknown. With no tie under another heading: "No known tie to Flanders". Place words stand only when the role line shows no place: "place unknown". Tie and "place unknown" together: "`{tie in words}` · place unknown"
 - Combined line: "Combined from `{n}` records", a link to Sources on the person page
@@ -46,6 +46,15 @@ This list holds every user-facing string the new and changed parts introduce, gr
 - After Add with a record kept apart: "Added to your network", "·", "1 possible match" (or "`{n}` possible matches"), "Undo"
 - Show more: "`{shown}` of `{count}` shown", "Show 20 more", "Show `{n}` more"
 - Skipped people: "`{n}` skipped people hidden" with "Show", "`{n}` skipped people shown" with "Hide", "1 skipped person hidden"
+- Version 13, reading line under the search box: "Required: `{required parts, joined by commas}`" then " · Wished: `{wished parts, joined by commas}`", for example "Required: founders, in the Boston area · Wished: Flemish" for "Founders in Boston, ideally Flemish". A nationality or a tie stands under Required when the question requires it and under Wished when the question only wishes for it. Required tie, no wish: "Required: scientists, Belgian, in the Washington D.C. area". A required city reads as an area: "in the Washington D.C. area"; a state or country keeps its name: "in Maryland"
+- Version 13, status line after the first ranking: "Looking up missing facts…"
+- Version 13, count line: counts the open list, the people under "In your network" plus the people under the three match headings, never the set-aside groups. "`{count}` people · `{n}` not on the map · Export". When the search is done it is the status element, so a screen reader hears it
+- Version 13, nobody under the first heading, above the list: "FN found no `{role or topic}` `{place words}` with a known tie to Flanders or Belgium. The closest people are below." For example "FN found no marine biologists in the Chicago area with a known tie to Flanders or Belgium. The closest people are below." Without a place: "FN found no `{role or topic}` with a known tie to Flanders or Belgium. The closest people are below." That second sentence stands only when the tie is a wish. With a required tie: "FN found no `{role or topic}` `{place words}` with a known tie to Flanders or Belgium. The people below have a known tie, but FN could not confirm their topic." When the question asks for no tie, a person under "Topic, no known tie" matches every wish, so the line shows only when nobody stands under the first two headings, and it leaves the tie out: "FN found no `{role or topic}` `{place words}`. The people below have a known tie, but FN could not confirm their topic."
+- Version 13, card line for an old record: "First record `{year}`, nothing recent"
+- Version 13, set-aside heading: "Set aside", then the total
+- Version 13, set-aside groups, each followed by its count: "Other people found", "Outside `{place}`", the place as the reading line names it without "in" (such as "Outside the Washington D.C. area", "Outside Maryland"), "Outside the US", "Other roles or topics", "People who have died"
+- Version 13, the line on a set-aside card: "Based in `{place}` · `{source}`", "Works at `{organization}`, `{place}` · `{source}`", "Died `{year}` · `{source}`" (in place of the role line). A network person in a group: "In your network"
+- Version 13, inside an opened group: "`{shown}` of `{count}` shown", "Show 20 more", "Show `{n}` more"
 
 ## Network
 
@@ -63,14 +72,14 @@ This list holds every user-facing string the new and changed parts introduce, gr
 ## Person
 
 - Back link, opened from a search: "Back to the results for “`{question, cut at 60 characters}…`”"; from the Network list: "Back to your network"; from another person's page: "Back to `{person name}`"
-- Walk line, opened from a search: "`{position}` of `{total}`", "Previous", "Next", joined by " · ". The first person has no Previous, the last no Next
+- Walk line, opened from a search: "`{position}` of `{total}`", "Previous", "Next", joined by " · ". The first person has no Previous, the last no Next. Version 13: from the open list the total is the count line's, the network people plus the three match headings ("5 of 8"); from a set-aside group it is that group's count ("3 of 59")
 - Head, opened from a search whose card combines records: "Combined from `{n}` records", a link to Sources
 - In the network: "In your network since `{d Month yyyy}`" with "Remove from network"
 - After Remove from network (Banner): "`{name}` removed from your network." with "Undo"
 - Not in the network: "Add", "Skip". With a same-name network person: "Same name as `{name}` in your network", "Same person", "Add as new", "Skip"
 - After Add: "Added to your network", "Undo"
 - Why block heading: "Why for this search". Lines, each fact once: the card's reason line, the tie in words or "No known tie to Flanders", and "Place unknown" when the head shows no place
-- Summary keys: "Studied", "Tie to Flanders" (the tie's organization or place lies in Flanders) or "Tie to Belgium" (any other tie, Brussels and an unknown region included), "Contact". The tie value is the tie in the words of a fact. "Studied" is left out when the tie is that study. Contact value: "`{email}` · `{phone}`", or "Not found"
+- Summary keys: "Studied", "Tie to Flanders" (the tie's organization or place lies in Flanders) or "Tie to Belgium" (any other tie, Brussels and an unknown region included), "Contact". The tie value is the tie in the words of a fact. "Studied" is left out when the tie is that study. Contact value, network people only: "`{email}` · `{phone}`", or "Not found"
 - Section headings: "Work", "Education", "Ties to Flanders and Belgium", "Places", "Contact", "Sources", "Possible matches"
 - Under a section of more than three facts: "Show `{n}` more"
 - Fact: "`{relation}` `{organization or place}`, `{years}`", then the source's short name. Years are the fact's own, one span ("2009–2026") or one year ("2015"). Relations, each with an example:
@@ -102,6 +111,13 @@ This list holds every user-facing string the new and changed parts introduce, gr
 - Source labels: a page by its host ("columbia.edu"), a list by its name ("BAEF Belgian Fellows"), a record by its kind ("OpenAlex record", "OpenAlex work", "LinkedIn record", "Import `{file name}`, row `{n}`", "Entered in FN")
 - Possible matches note: "These have the same name, but nothing in FN links them to this person for sure."
 - Possible match buttons: "Same person", "Different person". After: "Merged into this profile" or "Marked as a different person", with "Undo"
+- Version 13, lookup line under the summary, button: "Look up more" before any lookup, "Look up again" after one
+- Version 13, while looking: "Looking up more…"
+- Version 13, after a lookup that added facts: "Looked up on `{d Month yyyy}`: added `{parts}`." Parts, joined by commas and "and": "a current job", "a place", "a recent fact", "`{n}` recent facts", "an email address", "a phone number". For example "Looked up on 17 November 2026: added a place and an email address."
+- Version 13, after a lookup that found nothing new: "Looked up on `{d Month yyyy}`. Nothing new found."
+- Version 13, after a lookup FN could not tie to the person: "Looked up on `{d Month yyyy}`. Nothing added, because FN could not be sure the pages it found are about this person."
+- Version 13, a lookup that stopped: "This lookup stopped before it finished. Nothing was added." with the button "Try again"
+- Version 13, a contact value FN found: the value, then the source's short name, such as "health.example.gov". Accessible name: "Source for the email address: `{source}`", "Source for the phone number: `{source}`". The opened proof: "`{page title}`, `{Month yyyy}` · Original page"
 
 ## Source
 
@@ -111,7 +127,7 @@ This list holds every user-facing string the new and changed parts introduce, gr
 - Cite line under the sentence: "`{source label}`, `{date}`", the date left out when unknown: "BAEF Belgian Fellows, 2015", "columbia.edu, May 2024", "OpenAlex record, 2025", and the day FN read an undated page: "kslaw.com, read 13 November 2026"
 - Passage: about 60 words each side of the quote, "…" at a cut end
 - Link: "Open the original page", left out for `fn:` urls
-- Disclosure: "Show the stored record", for debugging only: shown when FN runs with FN_STORED_RECORD=1, left out by default
+- Disclosure: "Show the stored record". Version 13: shown only when the setting `stored_record` is on, off by default
 
 ## Import
 

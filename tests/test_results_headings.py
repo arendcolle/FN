@@ -3,10 +3,10 @@ import unittest
 from datetime import date
 
 from fn import network, present
-from fn.contracts import Candidate, CardFit, Chips, Search
-from fn.present import ASIDE_HEADINGS, HEADINGS, OLD_LINE, UNFIT_LINE
+from fn.contracts import Candidate, CardFit, Chip, Chips, Place, Search
+from fn.present import GROUP_TITLES, HEADINGS, OLD_LINE
 from fn.worker import now
-from tests.test_results_page import ResultsPageCase
+from tests.test_results_page import YEAR, ResultsPageCase
 
 NEW = [*HEADINGS.values()]
 
@@ -99,7 +99,8 @@ class AsideHeadingsTest(ResultsPageCase):
         people = [self.person(f"Person {n:02}") for n in range(len(rows))]
         self.store.create_search(Search(id="s1", question="q", status="done", created_at=now(), code_sha=None,
                                         dirty=False, llm_mode="replay", settings_json="{}", boot_id="b",
-                                        chips=Chips(version=version)))
+                                        chips=Chips(version=version, place=Place(text="Boston", origin="parsed", kind="metro",
+                                                                                 need="must"))))
         self.store.save_candidates("s1", [
             Candidate(search_id="s1", person_id=p, person_ids=[p], hit_person_ids=[p], card_person_ids=[p], section=section,
                       rank=n, score=1.0, lane_ranks={"seeds": n}, tier=tier, fit=CardFit(tie_grade="strong"), aside=aside)
@@ -116,10 +117,12 @@ class AsideHeadingsTest(ResultsPageCase):
         return present.results(self.store, self.store.get_search("s1"), date(2026, 11, 17))
 
     def test_the_aside_groups_follow_the_open_headings(self):
-        """Each group set aside stands under its own heading after the open headings, in list order."""
+        """The groups set aside stand under one Set aside heading after the open headings, each as a group in order."""
         self.listing([("new", 1, None), ("new", 3, None), ("new", 2, "outside"), ("new", 1, "abroad"), ("new", 5, "unfit")])
-        self.assertEqual(self.headings(self.page()), [(NEW[0], "1"), (NEW[1], "1"), (ASIDE_HEADINGS["outside"], "1"),
-                                                      (ASIDE_HEADINGS["abroad"], "1"), (ASIDE_HEADINGS["unfit"], "1")])
+        html = self.page()
+        self.assertEqual(self.headings(html), [(NEW[0], "1"), (NEW[1], "1"), ("Set aside", "3")])
+        self.assertEqual(re.findall(r'<span class="fn-aside__title">(.*?)</span>', html),
+                         ["Outside the Boston area", "Outside the US", "Other roles or topics"])
 
     def test_the_count_covers_the_network_and_headings_1_to_3(self):
         """A network person and tiers 1, 3 and 5 are counted; tier 7 and a person set aside are not."""
@@ -156,20 +159,210 @@ class AsideHeadingsTest(ResultsPageCase):
         (person,) = self.listing([("new", 2, "outside")])
         self.assertNotIn("Based in", self.card(self.page(), person))
 
-    def test_an_unfit_card_shows_the_fit_check_line(self):
-        """A card set aside by the fit check says so in its second line."""
+    def test_an_unfit_card_shows_no_line_beyond_the_tie_line(self):
+        """A card set aside by the fit check has its tie line and no line that says why it is set aside."""
         (person,) = self.listing([("new", 5, "unfit")])
-        self.assertIn(UNFIT_LINE, self.card(self.page(), person))
+        card = self.card(self.page(), person)
+        self.assertEqual(re.findall(r'<p class="(fn-card__[a-z]+)', card), ["fn-card__fit"])
+
+BOSTON = Place(text="Boston", origin="parsed", kind="metro", need="must")
+
+
+def chip(text: str, need: str = "must") -> Chip:
+    return Chip(text=text, origin="parsed", need=need)
+
+
+class SetAsideGroupsTest(ResultsPageCase):
+    def listing(self, rows: list[tuple[str, int, str | None]], chips: Chips | None = None, status: str = "done") -> list[str]:
+        """A search s1 with the chips, one made-up person per (section, tier, aside), a strong tie each."""
+        people = [self.person(f"Person {n:02}") for n in range(len(rows))]
+        self.store.create_search(Search(id="s1", question="q", status=status, created_at=now(), code_sha=None, dirty=False,
+                                        llm_mode="replay", settings_json="{}", boot_id="b",
+                                        chips=chips or Chips(version=2, place=BOSTON)))
+        self.store.save_candidates("s1", [
+            Candidate(search_id="s1", person_id=p, person_ids=[p], hit_person_ids=[p], card_person_ids=[p], section=section,
+                      rank=n, score=1.0, lane_ranks={"seeds": n}, tier=tier, fit=CardFit(tie_grade="strong"), aside=aside)
+            for n, (p, (section, tier, aside)) in enumerate(zip(people, rows), 1)], [])
+        return people
+
+    def titles(self, html: str) -> list[tuple[str, str]]:
+        return re.findall(r'<span class="fn-aside__title">(.*?)</span>(?: <span class="fn-aside__count text-meta">(.*?)</span>)?', html)
+
+    def opened(self, html: str) -> list[str]:
+        return re.findall(r'<details class="fn-aside" data-group="(\w+)" open>', html)
+
+    def cards_in(self, html: str, group: str) -> int:
+        body = re.search(rf'<details class="fn-aside" data-group="{group}"[^>]*>(.*?)</details>', html, re.DOTALL).group(1)
+        return body.count('<article class="fn-card"')
+
+    def count_text(self, html: str) -> str:
+        return re.sub(r"<[^>]*>", "", re.search(r'<p class="fn-count text-meta">(.*?)</p>', html, re.DOTALL).group(1))
+
+    def test_the_groups_follow_group_keys_under_set_aside_with_their_total_and_empty_ones_are_left_out(self):
+        """People set aside in any order stand in GROUP_KEYS order under one Set aside heading with their total."""
+        self.listing([("new", 1, None), ("new", 5, "unfit"), ("new", 2, "abroad"), ("new", 2, "abroad"), ("new", 7, None),
+                      ("new", 3, "outside")])
+        html = self.page()
+        self.assertIn('<h2 class="fn-section text-label">Set aside <span>5</span></h2>', html)
+        self.assertEqual(self.titles(html), [("Other people found", "1"), ("Outside the Boston area", "1"),
+                                             ("Outside the US", "2"), ("Other roles or topics", "1")])
+        self.assertEqual(self.opened(html), [])
+        self.setUp()
+        self.listing([("new", 1, None), ("new", 2, "abroad")])
+        self.assertEqual(self.titles(self.page()), [("Outside the US", "1")])
+
+    def test_everyone_set_aside_gives_zero_people_and_the_groups_without_a_notice(self):
+        """A done search whose people are all set aside has the count line, the groups and no empty-results notice."""
+        self.listing([("new", 2, "abroad"), ("new", 5, "unfit")])
+        html = self.page()
+        self.assertTrue(self.count_text(html).startswith("0 people"))
+        self.assertEqual(self.titles(html), [("Outside the US", "1"), ("Other roles or topics", "1")])
+        self.assertNotIn("fn-notice", html)
+        self.assertIn("FN found no", html)
+
+    def test_the_status_element_holds_the_status_line_while_running_and_the_count_when_done(self):
+        """One div with role status stands first in the list: the status line while running, the count line when done."""
+        self.listing([("new", 1, None)], status="running")
+        self.assertIn('<div role="status"><p class="fn-status text-strong">', self.page())
+        self.setUp()
+        self.listing([("new", 1, None)])
+        self.assertIn('<div role="status"><p class="fn-count text-meta">', self.page())
+
+    def test_a_group_of_61_shows_20_cards_and_show_more_opens_it_at_40(self):
+        """The first 20 cards, '20 of 61 shown' and a link that opens the group at 40; the group in the query opens
+        with its shown count and the others stay closed."""
+        people = self.listing([("new", 2, "abroad")] * 61 + [("new", 5, "unfit")])
+        html = self.page()
+        self.assertEqual((self.cards_in(html, "abroad"), self.opened(html)), (20, []))
+        self.assertIn('<span>20 of 61 shown</span><a class="fn-btn fn-btn--quiet text-control" '
+                      f'href="/searches/s1?group=abroad&group_shown=40#card-{people[20]}">Show 20 more</a>', html)
+        html = self.page(group="abroad", group_shown="40")
+        self.assertEqual((self.cards_in(html, "abroad"), self.opened(html)), (40, ["abroad"]))
+        self.assertIn(f'href="/searches/s1?group=abroad&group_shown=60#card-{people[40]}">Show 20 more</a>', html)
+        self.assertIn(f'<a href="/people/{people[0]}?search=s1&shown=40&card={people[0]}&from=card">', html)
+
+    def test_bad_group_values_give_the_default_page(self):
+        """An unknown group, a huge or non-numeric shown count and no group at all give closed groups of 20 cards."""
+        self.listing([("new", 2, "abroad")] * 25)
+        for params in ({"group": "died", "group_shown": "9999999"}, {"group": "abroad", "group_shown": "9999999"},
+                       {"group": "abroad", "group_shown": "x"}, {"group_shown": "40"}):
+            with self.subTest(params=params):
+                html = self.page(**params)
+                self.assertEqual(self.cards_in(html, "abroad"), 20)
+                self.assertEqual(self.opened(html), ["abroad"] if params.get("group") == "abroad" else [])
+
+    def test_a_group_whose_only_person_was_skipped_here_stays_with_the_skipped_card_and_no_number(self):
+        """The group keeps its title and the skipped card, and its count is left out."""
+        people = self.listing([("new", 2, "abroad")])
+        network.skip(self.store, [people[0]], now=now(), search_id="s1")
+        html = self.page()
+        self.assertEqual(self.titles(html), [("Outside the US", "")])
+        self.assertIn("Skipped Person 00", html)
+
+    def test_an_outside_card_has_no_place_in_its_role_line_and_its_set_aside_line_comes_before_the_reason(self):
+        """The role line ends after the employer; 'Based in …' with its source follows it and precedes the reason."""
+        (person,) = self.listing([("new", 2, "outside")])
+        self.claim(person, "affiliation", "Example Lab", relation="works_at", claim_date=YEAR)
+        self.claim(person, "location", "Denver, CO", lat=39.74, lon=-104.99, claim_date=YEAR)
+        reason = self.claim(person, "topic", "Tides", source_kind="record", title="OpenAlex work Tides")
+        self.store.save_candidates("s1", [self.store.list_candidates("s1")[0].model_copy(update={"reason_claim_ids": [reason]})], [])
+        card = self.card(self.page(), person)
+        self.assertIn('<p class="fn-card__role text-body">Example Lab</p>', card)
+        line = re.search(r'<p class="fn-card__fit text-small">Based in Denver, CO · <a href="[^"]+" class="fn-card__source">'
+                         r'example.org</a></p>', card)
+        self.assertTrue(line, card)
+        self.assertLess(line.start(), card.index("fn-card__reason"))
+
+    def test_an_employer_place_reads_works_at_the_organization_and_its_city(self):
+        """With no stated place the line names the employer and its city, and the role line does not repeat the city."""
+        (person,) = self.listing([("new", 2, "outside")])
+        self.org("ror:0fict0003", "Example Lab", "US", "Houston", 29.76, -95.37)
+        self.claim(person, "affiliation", "Example Lab", relation="works_at", org_id="ror:0fict0003", claim_date=YEAR)
+        card = self.card(self.page(), person)
+        self.assertIn("Works at Example Lab, Houston · ", card)
+        self.assertNotIn("Houston</p>", card.split("Works at")[0])
+
+    def test_the_reading_line_follows_the_button_and_a_running_list_holds_it_in_a_template(self):
+        """The line stands after the Search button on the page, not on Home or for version 1 chips; only a running
+        list holds it in template data-read."""
+        chips = Chips(version=2, roles=[chip("scientists")], tie=chip("Flemish", "nice"), place=BOSTON)
+        self.listing([("new", 1, None)], chips=chips)
+        html = self.page()
+        self.assertIn('text-control">Search</button><p class="fn-search__read text-small">'
+                      '<span>Required: scientists, in the Boston area</span><span> · Wished: Flemish</span></p></form>', html)
+        self.assertNotIn("<template", html)
+        self.assertNotIn("fn-search__read", self.page("/"))
+        self.setUp()
+        self.listing([("new", 1, None)], chips=Chips(version=1, roles=[chip("scientists")]))
+        self.assertNotIn("fn-search__read", self.page())
+        self.setUp()
+        self.listing([("new", 1, None)], chips=chips, status="running")
+        self.assertIn('<template data-read><p class="fn-search__read text-small">', self.page("/searches/s1/cards"))
+
+    def test_the_no_match_line_names_what_was_not_found_in_each_form(self):
+        """Nobody under the first heading gives the line; a required tie changes its second sentence, a required place
+        adds the place words, roles come before topics and join with 'or', and a question without a tie leaves the tie out."""
+        found = "with a known tie to Flanders or Belgium. "
+        rows = [("new", 5, None)]
+        cases = [
+            (Chips(version=2, roles=[chip("marine biologists")], place=BOSTON),
+             "FN found no marine biologists in the Boston area. "
+             "The people below have a known tie, but FN could not confirm their topic."),
+            (Chips(version=2, roles=[chip("marine biologists")], tie=chip("Flemish", "nice"), place=BOSTON),
+             f"FN found no marine biologists in the Boston area {found}The closest people are below."),
+            (Chips(version=2, topics=[chip("tides"), chip("wind")], tie=chip("Flemish", "nice")),
+             f"FN found no tides or wind {found}The closest people are below."),
+            (Chips(version=2, roles=[chip("a"), chip("b"), chip("c")], tie=chip("Flemish"), place=BOSTON),
+             f"FN found no a, b or c in the Boston area {found}"
+             "The people below have a known tie, but FN could not confirm their topic."),
+            (Chips(version=2, tie=chip("Flemish"), place=BOSTON.model_copy(update={"need": "nice"})),
+             f"FN found no people {found}The people below have a known tie, but FN could not confirm their topic."),
+        ]
+        for chips, line in cases:
+            with self.subTest(line=line[:40]):
+                self.setUp()
+                self.listing(rows, chips=chips)
+                self.assertIn(f'<p class="fn-note text-body">{line}</p>', self.page())
+
+    def test_the_no_match_line_is_left_out_while_running_with_a_first_heading_person_and_on_version_1(self):
+        """A running search, a first-heading person or version 1 chips give no line."""
+        chips = Chips(version=2, roles=[chip("scientists")])
+        self.listing([("new", 5, None)], chips=chips, status="running")
+        self.assertNotIn("FN found no", self.page())
+        self.setUp()
+        self.listing([("new", 1, None), ("new", 5, None)], chips=chips)
+        self.assertNotIn("FN found no", self.page())
+        self.setUp()
+        self.listing([("new", 5, None)], chips=Chips(version=1, roles=[chip("scientists")]))
+        self.assertNotIn("FN found no", self.page())
+
+    def test_without_a_tie_chip_a_person_with_the_topic_and_no_tie_is_a_full_match(self):
+        """A question that asks for no tie gives no line when someone stands under "Topic, no known tie"; with a wished
+        tie the same list still gets the line."""
+        rows = [("new", 3, None), ("new", 5, None)]
+        self.listing(rows, chips=Chips(version=2, roles=[chip("scientists")], place=BOSTON))
+        self.assertNotIn("FN found no", self.page())
+        self.setUp()
+        self.listing(rows, chips=Chips(version=2, roles=[chip("scientists")], tie=chip("Flemish", "nice"), place=BOSTON))
+        self.assertIn("FN found no scientists in the Boston area with a known tie", self.page())
+
+    def test_the_geo_answer_counts_only_open_people_when_it_says_who_is_shown(self):
+        """A set-aside person ahead of 21 open people does not move them: the first 20 are shown, the 21st is not."""
+        people = self.listing([("new", 2, "abroad")] + [("new", 1, None)] * 21)
+        for p in people:
+            self.claim(p, "location", "Gent", lat=51.05, lon=3.72)
+        listed = self.client.get("/api/searches/s1/geo").json()["list"]
+        self.assertEqual([listed[p]["shown"] for p in people[1:]], [True] * 20 + [False])
 
     def line(self, card: str, kind: str) -> str:
         found = re.search(rf'<p class="fn-card__{kind} [^"]*">(.*?)</p>', card, re.DOTALL)
         return re.sub(r"<[^>]*>", "", found.group(1)) if found else ""
 
     def test_the_died_group_follows_the_other_groups(self):
-        """People who have died stand under their own heading after every other group."""
+        """People who have died stand in their own group after every other group."""
         self.listing([("new", 1, None), ("new", 2, "outside"), ("new", 5, "unfit"), ("new", 1, "died")])
-        self.assertEqual([title for title, _ in self.headings(self.page())],
-                         [NEW[0], ASIDE_HEADINGS["outside"], ASIDE_HEADINGS["unfit"], "People who have died"])
+        self.assertEqual(self.titles(self.page()), [("Outside the Boston area", "1"), ("Other roles or topics", "1"),
+                                                    (GROUP_TITLES["died"], "1")])
 
     def test_a_died_card_names_the_death_and_its_source(self):
         """The reason line of a card set aside as died is the death fact, its year once, then the source."""
@@ -182,12 +375,13 @@ class AsideHeadingsTest(ResultsPageCase):
         for version, ends in ((2, True), (1, False)):
             with self.subTest(version=version):
                 self.setUp()
-                (person,) = self.listing([("new", 1, None)], version=version)
+                (person,) = self.listing([("new", 1, None)], chips=Chips(version=version, place=BOSTON))
                 self.claim(person, "affiliation", "Example University", relation="studied_at", claim_date="1958",
                            date_method="record_field")
                 fit = self.line(self.card(self.page(), person), "fit")
                 self.assertEqual(fit.endswith(OLD_LINE.format(year=1958)), ends, fit)
                 self.assertEqual(fit.endswith("First record 1958, nothing recent"), ends)
+
 
 if __name__ == "__main__":
     unittest.main()
