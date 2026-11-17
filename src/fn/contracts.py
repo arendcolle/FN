@@ -22,7 +22,7 @@ NORMALIZE_VERSION = 1
 
 ListStatus = Literal["candidate", "in_list", "skipped"]
 Section = Literal["network", "new"]
-ClaimKind = Literal["topic", "affiliation", "role", "location", "availability", "email", "phone"]
+ClaimKind = Literal["topic", "affiliation", "role", "location", "availability", "email", "phone", "death"]
 Relation = Literal[
     "studied_at", "works_at", "worked_at", "affiliated_with", "hosted_by",
     "fellow_of", "member_of", "consul_for", "born_in", "lives_in", "origin",
@@ -51,7 +51,7 @@ PickVerdict = Literal["found", "event page", "missed", "no lane in slice"]
 GoldGroup = Literal["dev", "held-out", "other"]
 EventKind = Literal["add", "skip", "merge", "not_same", "reject_claim", "edit_contact", "remove", "import", "export", "undo"]
 CutReason = Literal["no_belgian_evidence", "weak_openalex", "no_claim", "outside_country", "no_tie", "over_cap"]
-Aside = Literal["outside", "abroad", "unfit"]
+Aside = Literal["outside", "abroad", "unfit", "died"]
 TieGrade = Literal["strong", "medium", "weak", "none"]
 RoleFit = Literal["met", "fails", "unknown"]
 JobFit = Literal["known", "employer", "none"]
@@ -887,6 +887,16 @@ class CitiesOut(Model):
 class PlacesOut(Model):
     orgs: int
     claims: int
+
+
+# The one step of the fn-orgs --deaths job.
+class DeathsIn(Model):
+    pass
+
+
+class DeathsOut(Model):
+    pages: int
+    deaths: int
 
 
 # The one step of the fn-orgs --match job.

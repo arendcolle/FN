@@ -607,5 +607,39 @@ class WebPeopleTest(unittest.TestCase):
         self.assertEqual(sent, [])
 
 
+class WebDeathTest(unittest.TestCase):
+    LIST = ("Famous Belgian scientists\n\nAnna Vermeulen\nDied: June 20, 1966\n"
+            "Anna Vermeulen was a professor of physics at Ghent University.\n\n"
+            "Joris Lambrecht\nJoris Lambrecht is a chemist at KU Leuven.")
+    PEOPLE = (mention("Anna Vermeulen", "Anna Vermeulen was a professor of physics at Ghent University.",
+                      "professor of physics", relation("works_at", "Ghent University", "physics at Ghent University")),
+              mention("Joris Lambrecht", "Joris Lambrecht is a chemist at KU Leuven.", "chemist"))
+
+    def people(self, text: str) -> tuple[list[tuple], list[tuple], list[tuple]]:
+        """web.people over one page in a fresh store: the hits and rows without ids, and the stored death claims."""
+        settings = make_settings(self)
+        store = make_db(self, settings)
+        ctx = StepContext(search_id="s", store=store, llm=PageLLM(lambda page: list(self.PEOPLE)), http=None, now=now,
+                          new_id=new_id, log=logging.getLogger("fn.step"), settings=settings)
+        considered = []
+        source = page_source("https://lists.example.org/scientists", "Famous Belgian scientists", text, {},
+                             datetime(2026, 11, 3, tzinfo=UTC), None)
+        hits = web.people(ctx, [(1, source)], considered, "web")
+        persons = store.get_persons([h.person_id for h in hits])
+        deaths = store.conn.execute("SELECT p.display_name, c.value, c.quote FROM claims c JOIN persons p "
+                                    "ON p.id = c.person_id WHERE c.kind = 'death'").fetchall()
+        ids = {c for h in hits for c in h.claim_ids}
+        self.assertFalse(ids & {r[0] for r in store.conn.execute("SELECT id FROM claims WHERE kind = 'death'")})
+        return ([(persons[h.person_id].display_name, h.rank, h.score, h.matched_on, len(h.claim_ids)) for h in hits],
+                [(c.name, c.stage, c.kept, c.reason) for c in considered], [tuple(r) for r in deaths])
+
+    def test_a_death_line_stores_a_death_claim_and_leaves_hits_and_rows_as_without_it(self):
+        """The person whose own entry states a death gets the claim; it joins no hit and no considered row."""
+        hits, rows, deaths = self.people(self.LIST)
+        alive = self.people(self.LIST.replace("Died: June 20, 1966\n", ""))
+        self.assertEqual(deaths, [("Anna Vermeulen", "1966", "Died: June 20, 1966")])
+        self.assertEqual((hits, rows, []), alive)
+
+
 if __name__ == "__main__":
     unittest.main()

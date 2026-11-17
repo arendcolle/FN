@@ -382,5 +382,75 @@ class JobTest(unittest.TestCase):
         self.assertEqual(self.job_of([title, job("c2", MIT, "2024")], MENTION), "employer")
 
 
+def death(claim_id: str = "d1", year: str = "1966", quote: str = "Died: June 20, 1966") -> Claim:
+    return claim(claim_id, kind="death", value=year, quote=quote, claim_date=year, date_precision="year",
+                 date_method="stated_in_quote")
+
+
+def dated(claim_id: str, value: str, stamp: str, method: str = "record_field", relation: str | None = None) -> Claim:
+    return claim(claim_id, kind="role", relation=relation, value=value, quote=value, claim_date=stamp, date_method=method)
+
+
+def published(claim_id: str, *years: int) -> Claim:
+    return claim(claim_id, relation="affiliated_with", value="MIT", org_id=MIT.id, years=list(years))
+
+
+class AgeTest(unittest.TestCase):
+    def age(self, *claims: Claim) -> evidence.Age:
+        return evidence.age(list(claims), TODAY.date())
+
+    def test_a_death_with_openalex_years_to_2024_leaves_no_job_and_names_its_claim(self):
+        """A death claim sets died and takes the job away, whatever recent OpenAlex years and a role say."""
+        claims = [death(), published("c2", 2019, 2020, 2024), role_claim("Professor of physics")]
+        found = of(claims)
+        self.assertEqual((found.age.died, found.job), ("d1", "none"))
+        self.assertEqual(of(claims[1:]).job, "known")
+
+    def test_the_lowest_death_year_wins(self):
+        """Two death claims give the one with the lower year."""
+        self.assertEqual(evidence.death([death("d2", "1970"), death("d9", "1966")]).id, "d9")
+
+    def test_a_death_quote_naming_belgium_adds_no_tie_topic_or_source(self):
+        """Every reading but the job and the age leaves the death claim out."""
+        found = of([death(quote="Died: June 20, 1966, Leuven, Belgium")], question("leuven"))
+        self.assertEqual((found.belgian.grade, found.belgian.kinds, found.topic.words, found.sources), ("none", {}, (), 0))
+
+    def test_a_lone_year_more_than_ten_years_before_the_next_is_left_out(self):
+        """1910 then 1991 onward gives a first record of 1991; a gap of ten years keeps the earlier year."""
+        self.assertEqual(self.age(published("c1", 1910, 1991, 1995)).first, 1991)
+        self.assertEqual(self.age(published("c1", 1981, 1991)).first, 1981)
+
+    def test_a_birth_year_is_no_first_record(self):
+        """A born_in claim dated 1940 is left out; the first record is the 1950 role."""
+        born = claim("c1", kind="location", relation="born_in", value="Ghent", claim_date="1940",
+                     date_method="stated_in_quote")
+        found = self.age(born, dated("c2", "Engineer", "1950"), dated("c3", "Manager", "1955"))
+        self.assertEqual((found.first, found.back), (1950, 76))
+
+    def test_a_role_dated_by_the_day_fn_read_the_page_is_neither_a_year_nor_recent(self):
+        """A read_date stamp says when FN read the page, not when the role was held."""
+        self.assertEqual(self.age(dated("c1", "Professor of physics", "2026-11-16", "read_date")), evidence.Age())
+
+    def test_an_emeritus_role_dated_2025_is_recent_but_not_current(self):
+        """An emeritus role marks the person and does not count as a current role."""
+        found = self.age(dated("c1", "Professor Emeritus of Linguistics", "2025-10-01"))
+        self.assertEqual((found.emeritus, found.recent, found.current), (True, True, False))
+        found = self.age(dated("c1", "Professor of Linguistics", "2025-10-01"))
+        self.assertEqual((found.emeritus, found.recent, found.current), (False, True, True))
+
+    def test_recent_needs_two_openalex_years_in_ten_and_current_two_in_five(self):
+        """One OpenAlex year since 2016 is not recent; two are, and two since 2021 are current too."""
+        self.assertFalse(self.age(published("c1", 1960, 2018)).recent)
+        found = self.age(published("c1", 1960, 2017, 2018))
+        self.assertEqual((found.recent, found.current), (True, False))
+        self.assertTrue(self.age(published("c1", 1960, 2021, 2024)).current)
+
+    def test_years_before_1900_or_after_this_year_are_dropped(self):
+        """OpenAlex years before 1900 and 2027 are errors: the first record is 2005, and 2027 is no recent year."""
+        found = self.age(published("c1", 1791, 1795, 2005, 2027))
+        self.assertEqual((found.first, found.back), (2005, 21))
+        self.assertFalse(self.age(published("c1", 2005, 2025, 2027)).recent)
+
+
 if __name__ == "__main__":
     unittest.main()

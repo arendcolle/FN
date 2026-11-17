@@ -20,6 +20,12 @@ from fn.contracts import (
 )
 
 RECENT_YEARS = 5
+# A claim date counts as the fact's year only when the source dates it, never the day FN read the page.
+SOURCE_DATED = ("record_field", "page_date", "sitemap", "stated_in_quote")
+ACTIVE_YEARS = 10
+GAP_YEARS = 10
+OPENALEX_RECENT = 2
+EMERITUS = re.compile(r"\bemerit(us|a|i|e)\b")
 EMPLOYER = ("works_at", "affiliated_with")
 OPENALEX_SCHEMES = frozenset({"openalex", "orcid"})
 DATE = re.compile(r"[0-9]{4}(-[0-9]{2}){0,2}")
@@ -93,6 +99,16 @@ class Where:
 
 
 @dataclass(frozen=True)
+class Age:
+    first: int | None = None
+    back: int | None = None
+    recent: bool = False
+    current: bool = False
+    emeritus: bool = False
+    died: str | None = None
+
+
+@dataclass(frozen=True)
 class Evidence:
     topic: Topic = field(default_factory=Topic)
     institution: Institution = field(default_factory=Institution)
@@ -102,6 +118,7 @@ class Evidence:
     sources: int = 0
     only_openalex: bool = False
     job: JobFit = "none"
+    age: Age = field(default_factory=Age)
 
 
 def recent(stamp: str | None, today: date) -> bool:
@@ -231,11 +248,14 @@ def only_openalex(card: dict[str, frozenset[str]]) -> bool:
 
 def job(claims: list[Claim], card: dict[str, frozenset[str]], today: date) -> JobFit:
     """What the card shows of the person's work today: known with a role (one without a relation) and an employer,
-    employer with an employer alone, else none. An affiliation counts as an employer when undated or recent."""
+    employer with an employer alone, else none. An affiliation counts as an employer when undated or recent; a
+    death claim leaves none."""
     def current(claim: Claim) -> bool:
         years = rank.units(claim) - {rank.UNDATED}
         return not years or max(map(int, years)) >= today.year - RECENT_YEARS
 
+    if any(c.kind == "death" for c in claims):
+        return "none"
     has_role = any(usable_role(card, c) and c.relation is None for c in claims)
     has_employer = any(c.relation == "works_at" or (c.relation == "affiliated_with" and current(c)) for c in claims)
     return "known" if has_role and has_employer else "employer" if has_employer else "none"
@@ -313,6 +333,45 @@ def where(found: list[Place], question: Question, by_id: dict[str, Claim] | None
     return Where(fit="inside" if km <= area.radius_km else "outside", km=km, nearest=nearest, countries=countries)
 
 
+def stated_years(claim: Claim, today: date) -> list[int]:
+    """The years a claim states: its listed years, the years from valid_from to valid_to, and its claim_date's year
+    when the source dates it (SOURCE_DATED), kept within 1900 and today's year."""
+    start, end = rank.year(claim.valid_from), rank.year(claim.valid_to)
+    spanned = start and end and start <= end
+    found = set(claim.years) | (set(range(start, end + 1)) if spanned else {y for y in (start, end) if y})
+    if claim.date_method in SOURCE_DATED and (stamp := rank.year(claim.claim_date)):
+        found.add(stamp)
+    return sorted(y for y in found if 1900 <= y <= today.year)
+
+
+def death(claims: list[Claim]) -> Claim | None:
+    """The death claim with the lowest year, then id, or None."""
+    return min((c for c in claims if c.kind == "death"), default=None, key=lambda c: (rank.year(c.value) or 9999, c.id))
+
+
+def age(claims: list[Claim], today: date) -> Age:
+    """The first dated year without births and deaths, a lone leading year GAP_YEARS before the next left out; whether
+    a dated role or OPENALEX_RECENT OpenAlex years fall in the last ACTIVE_YEARS (recent) or RECENT_YEARS without
+    emeritus roles (current); whether a role reads emeritus; and the death claim."""
+    years = sorted({y for c in claims if c.relation != "born_in" and c.kind != "death" for y in stated_years(c, today)})
+    if len(years) > 1 and years[1] - years[0] > GAP_YEARS:
+        years = years[1:]
+    emeriti = {c.id for c in claims if c.kind == "role" and EMERITUS.search(name_key(c.value))}
+    roles = [(c.id, y) for c in claims if (c.kind == "role" and c.relation is None) or c.relation == "works_at"
+             for y in stated_years(c, today)]
+    openalex = {y for c in claims if c.relation == "affiliated_with" for y in c.years if 1900 <= y <= today.year}
+
+    def within(span: int, skip: set[str]) -> bool:
+        since = today.year - span
+        return (any(y >= since for i, y in roles if i not in skip)
+                or sum(y >= since for y in openalex) >= OPENALEX_RECENT)
+
+    dead = death(claims)
+    return Age(first=years[0] if years else None, back=today.year - years[0] if years else None,
+               recent=within(ACTIVE_YEARS, set()), current=within(RECENT_YEARS, emeriti), emeritus=bool(emeriti),
+               died=dead.id if dead else None)
+
+
 def of(card: dict[str, frozenset[str]], claims: list[Claim], facts: dict[str, Org], question: Question, today: date,
        names: geo.Names | None = None) -> Evidence:
     """What the claims of the records on a card show for the question; card maps each record to its identifier schemes.
@@ -320,10 +379,12 @@ def of(card: dict[str, frozenset[str]], claims: list[Claim], facts: dict[str, Or
     Claims of records not on the card are ignored. names locates the country of a stated place.
     """
     own = [c for c in claims if c.person_id in card]
-    found = places(own, facts, today, names)
+    alive = [c for c in own if c.kind != "death"]
+    found = places(alive, facts, today, names)
     return Evidence(
-        topic=topic(own, question.chips.topics, card), institution=institution(own, question),
-        belgian=tie(card, own, facts, found), role=role(own, card, question), place=where(found, question, {c.id: c for c in own}),
-        sources=len({c.source_id for c in own}), only_openalex=only_openalex(card),
-        job=job(own, card, today),
+        topic=topic(alive, question.chips.topics, card), institution=institution(alive, question),
+        belgian=tie(card, alive, facts, found), role=role(alive, card, question),
+        place=where(found, question, {c.id: c for c in alive}),
+        sources=len({c.source_id for c in alive}), only_openalex=only_openalex(card),
+        job=job(own, card, today), age=age(own, today),
     )

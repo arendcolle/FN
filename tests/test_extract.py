@@ -1,7 +1,7 @@
 import logging
 import unittest
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import httpx
 from pydantic import BaseModel
@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from fn import extract, geo, llm, rank
 from fn.contracts import (
     ClaimDraft,
+    DeathsOut,
     Identifier,
     LLMResult,
     Located,
@@ -501,6 +502,127 @@ class ExtractTest(unittest.TestCase):
                 self.assertEqual((row.person_key, row.stage, row.kept), (URL, "chunk", False))
                 self.assertTrue(row.reason.startswith(f"chunk 2 of 2 [29:{len(source.text)}]: {kind}: "), row.reason)
                 self.assertIn(f"extract on {URL}, chunk 2 of 2", logged.output[0])
+
+
+TODAY = date(2026, 11, 17)
+LIST_URL = "https://lists.example.org/famous-scientists"
+
+
+def entry(name: str, died: str | None, role: str = "a physicist") -> str:
+    """One entry of a list page: the name, a birth date, a Died line when died is set, then the name sentence."""
+    return f"{name}\nBirthdate: March 3, 1901\n" + (f"Died: {died}\n" if died else "") + f"{name} was {role}.\n\n"
+
+
+def sentence(text: str, name: str, after: int = 0) -> Span:
+    """The span of the name sentence, the quote extract keeps for the person."""
+    start = text.index(f"{name} was", after)
+    end = text.find("\n", start)
+    return Span(start=start, end=len(text) if end < 0 else end)
+
+
+def died(text: str, *names: str, stored: tuple[str, ...] | None = None) -> dict[str, str]:
+    """extract.deaths over a list page with each name's sentence as its quote; the year found by name."""
+    source = page_source(LIST_URL, "Famous scientists", text, {}, READ, None, plain=True)
+    people = {name: (name, [sentence(source.text, name)]) for name in (stored or names)}
+    return {d.person_id: d.value for d in extract.deaths(source, people, TODAY)}
+
+
+class DeathsTest(unittest.TestCase):
+    def test_a_living_entry_between_two_dead_ones_gets_no_death_and_each_dead_one_its_own_year(self):
+        """A death line counts only inside the person's own entry, which starts after the previous person's quote."""
+        text = entry("Pieter Vanacker", "June 20, 1966") + entry("Lotte Verbist", None) + entry("Marc Dewulf", "May 26, 1922")
+        self.assertEqual(died(text, "Pieter Vanacker", "Lotte Verbist", "Marc Dewulf"),
+                         {"Pieter Vanacker": "1966", "Marc Dewulf": "1922"})
+
+    def test_an_unknown_neighbour_s_death_line_within_600_characters_is_kept_out_by_the_surname_alone(self):
+        """With no other quote on the page the entry is the 600 characters before the quote, and the surname must
+        stand before the death line in it."""
+        text = entry("Pieter Vanacker", "June 20, 1966") + entry("Lotte Verbist", None)
+        self.assertLess(sentence(text, "Lotte Verbist").start - text.index("Died:"), extract.ENTRY_CHARS)
+        self.assertEqual(died(text, stored=("Lotte Verbist",)), {})
+
+    def test_an_unstored_dead_neighbour_keyed_by_its_mention_bounds_the_entry_and_gets_its_own_year(self):
+        """A located person who is not stored still ends the entry of the person after them, even when both share
+        a surname."""
+        text = entry("Pieter Vanacker", "June 20, 1966") + entry("Lotte Vanacker", None)
+        source = page_source(LIST_URL, None, text, {}, READ, None, plain=True)
+        key = extract.identifier(LIST_URL, "Pieter Vanacker").value
+        people = {key: ("Pieter Vanacker", [sentence(text, "Pieter Vanacker")]),
+                  "p-lotte": ("Lotte Vanacker", [sentence(text, "Lotte Vanacker")])}
+        self.assertEqual([(d.person_id, d.value) for d in extract.deaths(source, people, TODAY)], [(key, "1966")])
+
+    def test_a_death_line_inside_another_person_s_quote_is_not_taken(self):
+        """A line another person's quote covers belongs to that quote, not to the entry before it."""
+        text = "Bert Aerts\nDied: 1950\nBert Aerts was a chemist, as was Carla Mertens.\n"
+        source = page_source(LIST_URL, None, text, {}, READ, None, plain=True)
+        carla = Span(start=text.index("Died:"), end=text.index(".\n") + 1)
+        people = {"bert": ("Bert Aerts", [sentence(text, "Bert Aerts")]), "carla": ("Carla Mertens", [carla])}
+        self.assertEqual(extract.deaths(source, people, TODAY), [])
+
+    def test_a_death_line_without_a_year_or_with_a_future_year_and_died_in_prose_give_nothing(self):
+        """Only a Died line whose first year has passed counts; a sentence saying died is no death line."""
+        for text in (entry("Bert Aerts", "unknown"), entry("Bert Aerts", "January 1, 2031"),
+                     "Bert Aerts\nHis brother died in 1966.\nBert Aerts was a chemist.\n"):
+            with self.subTest(text=text):
+                self.assertEqual(died(text, "Bert Aerts"), {})
+
+    def test_an_infobox_row_counts_and_its_line_is_the_quote(self):
+        """A table row '| Died | ... |' is a death line; the claim is dated by its year and quotes the row."""
+        text = "Bert Aerts\n| Born | 4 May 1922 |\n| Died | 27 November 1977 (aged 55) |\nBert Aerts was a painter.\n"
+        source = page_source(LIST_URL, None, text, {}, READ, None, plain=True)
+        (draft,) = extract.deaths(source, {"bert": ("Bert Aerts", [sentence(text, "Bert Aerts")])}, TODAY)
+        self.assertEqual((draft.kind, draft.value, draft.quote, draft.claim_date, draft.date_precision, draft.date_method),
+                         ("death", "1977", "| Died | 27 November 1977 (aged 55) |", "1977", "year", "stated_in_quote"))
+
+    def test_a_lifespan_after_the_surname_counts(self):
+        """'(1894–1966)' after the surname, in the entry before the quote or inside it, gives the second year."""
+        for text in ("Bert Aerts (1894–1966)\nBert Aerts was a physicist.\n",
+                     "Bert Aerts was a physicist. Aerts (1894 — 1966) taught in Ghent.\n"):
+            with self.subTest(text=text):
+                self.assertEqual(died(text, "Bert Aerts"), {"Bert Aerts": "1966"})
+
+    def test_an_org_s_dates_a_birth_year_and_a_tenure_are_no_lifespan(self):
+        """Years after another name, a single year, two years less than 25 apart or without a dash between them, and
+        three years are not a life."""
+        for text in ("Bert Aerts was a member of the Example Society (1830-1930).\n",
+                     "Bert Aerts was born in Ghent. Bert Aerts (born 1959) is a designer.\n",
+                     "Bert Aerts was chair. Bert Aerts (2010–2015) led the board.\n",
+                     "Bert Aerts was a painter. Bert Aerts (born 1894, moved 1950) lived in Ghent.\n",
+                     "Bert Aerts was a painter. Bert Aerts (1894–1966, 1970) lived in Ghent.\n"):
+            with self.subTest(text=text):
+                self.assertEqual(died(text, "Bert Aerts"), {})
+
+    def test_a_death_line_wins_over_a_lifespan(self):
+        """With both in the entry the Died line gives the year."""
+        text = "Bert Aerts (1894–1970)\nDied: June 20, 1966\nBert Aerts was a physicist.\n"
+        self.assertEqual(died(text, "Bert Aerts"), {"Bert Aerts": "1966"})
+
+    def test_an_empty_page_gives_nothing(self):
+        """A page without people gives no claim."""
+        source = page_source(LIST_URL, None, "Nothing here.", {}, READ, None, plain=True)
+        self.assertEqual(extract.deaths(source, {}, TODAY), [])
+
+    def test_200_entries_each_get_their_own_death_or_none(self):
+        """On a long list every second person died, and each takes only their own line."""
+        names = [f"Person{n:03d} Surname{n:03d}" for n in range(200)]
+        text = "".join(entry(name, f"May 1, {1900 + n % 100}" if n % 2 else None) for n, name in enumerate(names))
+        self.assertEqual(died(text, *names), {name: str(1900 + n % 100) for n, name in enumerate(names) if n % 2})
+
+    def test_a_rerun_over_stored_pages_finds_the_same_claims_and_adds_no_row(self):
+        """deaths_stored reads every page's people without their death claims, so a rerun stores nothing new."""
+        settings = make_settings(self)
+        store = make_db(self, settings)
+        source = page_source(LIST_URL, None, entry("Pieter Vanacker", "June 20, 1966") + entry("Lotte Verbist", None),
+                             {}, READ, None, kind="page", plain=True)
+        for name in ("Pieter Vanacker", "Lotte Verbist"):
+            person = store.resolve_person([extract.identifier(LIST_URL, name)], name)
+            span = sentence(source.text, name)
+            store.upsert_claim(ClaimDraft(person_id=person.id, kind="role", value="physicist", quote=source.text[span.start:span.end],
+                                          quote_start=span.start, quote_end=span.end, source=source))
+        first = extract.deaths_stored(store, TODAY)
+        rows = store.conn.execute("SELECT count(*) FROM claims").fetchone()[0]
+        self.assertEqual((first, extract.deaths_stored(store, TODAY)), (DeathsOut(pages=1, deaths=1),) * 2)
+        self.assertEqual(store.conn.execute("SELECT count(*) FROM claims").fetchone()[0], rows)
 
 
 class NamesTest(unittest.TestCase):

@@ -3,11 +3,12 @@ import shutil
 import sqlite3
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest import mock
 
-from fn import db
-from fn.contracts import Candidate, CardFit, Org, Search, Source
+from fn import db, evidence
+from fn.contracts import Candidate, CardFit, Chips, ClaimDraft, Identifier, Org, Question, Search, Source
 from fn.store import Store
 from fn.worker import now
 from tests.helpers import make_db, make_settings
@@ -216,6 +217,26 @@ class SourceKindsTest(unittest.TestCase):
                                        content_hash=source_id))
         self.assertEqual(store.source_kinds(["s1", "s2", "nope"]), {"s1": "record", "s2": "seed_page"})
         self.assertEqual(store.source_kinds([]), {})
+
+
+class RejectedDeathTest(unittest.TestCase):
+    def test_a_rejected_death_claim_is_dropped_so_the_person_has_not_died(self):
+        """claims_of leaves a rejected death claim out, so evidence reads no death."""
+        store = make_db(self)
+        text = "Died: June 20, 1966"
+        source = Source(id="s1", kind="page", url="https://example.org/list", text=text, content_hash="s1")
+        person = store.resolve_person([Identifier(scheme="mention", value="https://example.org/list#ann")], "Ann Example")
+        claim = store.upsert_claim(ClaimDraft(person_id=person.id, kind="death", value="1966", quote=text, quote_start=0,
+                                              quote_end=len(text), source=source, claim_date="1966", date_precision="year",
+                                              date_method="stated_in_quote"))
+
+        def died() -> str | None:
+            card = {person.id: frozenset({"mention"})}
+            return evidence.of(card, store.claims_of([person.id]), {}, Question(chips=Chips()), date(2026, 11, 17)).age.died
+
+        self.assertEqual(died(), claim.id)
+        store.set_claim_rejected(claim.id, now())
+        self.assertIsNone(died())
 
 
 if __name__ == "__main__":

@@ -33,12 +33,16 @@ TIED = ("strong", "medium")
 ROLES = ("met", "unknown", "fails")
 FITS = ("inside", "unknown", "none")
 FITS_MUST = ("inside", "none")
-ASIDES = (None, "outside", "abroad", "unfit")
+ASIDES = (None, "outside", "abroad", "unfit", "died")
 HEADING_CAP = 50
 CAPPED = (3, 4)
 PLACES = {"outside": 1, "abroad": 2}
 SPOTS = {"unknown": 1, "outside": 2, "abroad": 3}
 BLANK = (7, 4, False, 1, False, 2, 0, 0)
+OLD_YEARS = 60
+RETIRED_YEARS = 45
+# The last tier under each heading, where an old first record sorts.
+LAST_TIER = {1: 2, 2: 4, 3: 6, 4: 7}
 
 
 def year(value: str | None) -> int | None:
@@ -228,32 +232,48 @@ def fit_of(found: "evidence.Evidence | None", question: Question | None) -> Card
                    place=place_fit(found, question), role=found.role.fit)
 
 
+def old(age: "evidence.Age") -> bool:
+    """Whether the first dated fact is OLD_YEARS or more back and nothing is recent."""
+    return age.back is not None and age.back >= OLD_YEARS and not age.recent
+
+
+def retired(age: "evidence.Age") -> bool:
+    """Whether the person looks retired: an emeritus role, or a first dated fact RETIRED_YEARS back and no current role."""
+    return age.emeritus or (age.back is not None and age.back >= RETIRED_YEARS and not age.current)
+
+
 def order_key(found: "evidence.Evidence | None", question: Question | None, level: int,
               verdict: FitVerdict | None = None) -> tuple:
     """The new section's order before score: tier, heading, abroad last, role met (then the fit verdict, then the
     topic), own words before related words, tie grade, place, then more topic words; version-2 chips put the place
-    before the tie grade, and under a required place tiers 5 to 7 put it right after the heading. BLANK is for people
-    without evidence. In tiers 1 to 4 a "partly" verdict stands last; below them "partly" stands first and "no" last."""
+    before the tie grade, under a required place tiers 5 to 7 put it right after the heading, an old first record last
+    under its heading and a retired-looking person last in its tier. BLANK is for people without evidence. In tiers 1
+    to 4 a "partly" verdict stands last; below them "partly" stands first and "no" last."""
+    legacy = question is None or question.chips.version < 2
     if found is None:
-        return BLANK
+        return BLANK if legacy else (7, 4, 0, 7, 0, *BLANK[2:])
     place = place_fit(found, question)
     grade = found.belgian.grade
-    legacy = question is None or question.chips.version < 2
     spot = PLACES.get(place, 0) if legacy else SPOTS.get(place, 0)
     doubt = int(verdict == "partly") if level <= 4 else {"partly": 0, "no": 2}.get(verdict, 1)
     role = ROLES.index(found.role.fit) if legacy else 6 * ROLES.index(found.role.fit) + 2 * doubt + (not found.topic.match)
     tie = TIED.index(grade) if grade in TIED else len(TIED)
     lead = spot if not legacy and level >= 5 and parse.place_must(question.chips) else place == "abroad"
-    return (level, heading(level, grade), lead, role, found.topic.related, *((tie, spot) if legacy else (spot, tie)),
-            -len(found.topic.words))
+    tail = (lead, role, found.topic.related, *((tie, spot) if legacy else (spot, tie)), -len(found.topic.words))
+    if legacy:
+        return (level, heading(level, grade), *tail)
+    under, aged = heading(level, grade), old(found.age)
+    return (LAST_TIER[under] if aged else level, under, aged, level, retired(found.age), *tail)
 
 
 def aside(section: Section, found: "evidence.Evidence | None", question: Question | None,
           verdict: FitVerdict | None) -> Aside | None:
-    """Why a person stands outside the open list: outside a required area, abroad under a US place, or a fit check "no".
-    None in the network section, without evidence or on chips stored before version 2."""
+    """Why a person stands outside the open list: a source states a death, outside a required area, abroad under a US
+    place, or a fit check "no". None in the network section, without evidence or on chips stored before version 2."""
     if section == "network" or found is None or question is None or question.chips.version < 2:
         return None
+    if found.age.died:
+        return "died"
     place = place_fit(found, question)
     if place == "outside" and parse.place_must(question.chips):
         return "outside"

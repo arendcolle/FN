@@ -4,7 +4,7 @@ from datetime import date
 
 from fn import network, present
 from fn.contracts import Candidate, CardFit, Chips, Search
-from fn.present import ASIDE_HEADINGS, HEADINGS, UNFIT_LINE
+from fn.present import ASIDE_HEADINGS, HEADINGS, OLD_LINE, UNFIT_LINE
 from fn.worker import now
 from tests.test_results_page import ResultsPageCase
 
@@ -160,6 +160,34 @@ class AsideHeadingsTest(ResultsPageCase):
         """A card set aside by the fit check says so in its second line."""
         (person,) = self.listing([("new", 5, "unfit")])
         self.assertIn(UNFIT_LINE, self.card(self.page(), person))
+
+    def line(self, card: str, kind: str) -> str:
+        found = re.search(rf'<p class="fn-card__{kind} [^"]*">(.*?)</p>', card, re.DOTALL)
+        return re.sub(r"<[^>]*>", "", found.group(1)) if found else ""
+
+    def test_the_died_group_follows_the_other_groups(self):
+        """People who have died stand under their own heading after every other group."""
+        self.listing([("new", 1, None), ("new", 2, "outside"), ("new", 5, "unfit"), ("new", 1, "died")])
+        self.assertEqual([title for title, _ in self.headings(self.page())],
+                         [NEW[0], ASIDE_HEADINGS["outside"], ASIDE_HEADINGS["unfit"], "People who have died"])
+
+    def test_a_died_card_names_the_death_and_its_source(self):
+        """The reason line of a card set aside as died is the death fact, its year once, then the source."""
+        (person,) = self.listing([("new", 1, "died")])
+        self.claim(person, "death", "1966", claim_date="1966", date_precision="year", date_method="stated_in_quote")
+        self.assertEqual(self.line(self.card(self.page(), person), "reason"), "Died 1966 · example.org")
+
+    def test_an_old_first_record_ends_the_second_line_on_version_2_only(self):
+        """A first record from 1958 with nothing recent says so on a version-2 card and not on a version-1 card."""
+        for version, ends in ((2, True), (1, False)):
+            with self.subTest(version=version):
+                self.setUp()
+                (person,) = self.listing([("new", 1, None)], version=version)
+                self.claim(person, "affiliation", "Example University", relation="studied_at", claim_date="1958",
+                           date_method="record_field")
+                fit = self.line(self.card(self.page(), person), "fit")
+                self.assertEqual(fit.endswith(OLD_LINE.format(year=1958)), ends, fit)
+                self.assertEqual(fit.endswith("First record 1958, nothing recent"), ends)
 
 if __name__ == "__main__":
     unittest.main()

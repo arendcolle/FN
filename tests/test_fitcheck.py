@@ -119,6 +119,15 @@ class FitCheckTest(unittest.TestCase):
             self.person(f"Aside {reason.title()} Person", aside=reason)
         self.assertEqual(fitcheck.candidates(self.people), [keep])
 
+    def test_a_died_person_is_not_sent(self):
+        """A kept tier-1 person set aside as died is left out of the model's lines; the open one is checked."""
+        keep = self.person("Open Person")
+        self.person("Late Person", aside="died")
+        llm = BatchLLM()
+        out = self.check(llm)
+        self.assertEqual(len(llm.calls[0][1]["people"].splitlines()), 1)
+        self.assertEqual(set(out.verdicts), {keep.person_id})
+
     def test_135_candidates_give_six_calls_of_20_and_15_are_not_checked(self):
         """The first 120 in rank order go out in batches of 20, each numbered from 1."""
         for i in range(135):
