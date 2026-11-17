@@ -99,7 +99,7 @@ class FitCheckTest(unittest.TestCase):
         self.assertEqual(first, "1. Example University")
         self.assertEqual(len(second.split(". ", 1)[1].split()), fitcheck.LINE_WORDS)
 
-    def test_scout_people_cut_people_the_network_and_tiers_5_to_7_are_not_sent(self):
+    def test_scout_people_cut_people_the_network_and_heading_4_are_not_sent(self):
         """Kept new-section people of tiers 1 to 4 and under heading 3 that the web researcher did not find are sent."""
         keep = [self.person(f"Tier {t} Person", tier=t) for t in (1, 2, 3, 4)]
         self.person("Scout Person", lanes={"scout": 1})
