@@ -32,7 +32,6 @@ TASK = "lookup"
 KIND = "web_person"
 MAX_LOOKUPS = 20
 CONTACT_TOP = 10
-WORKERS = 10
 DAYS = 90
 PAGES = 2
 FACTS = 14
@@ -161,7 +160,8 @@ def run(ctx: StepContext, inp: DeepenIn) -> DeepenOut:
     if not chosen:
         return DeepenOut(note="nobody to look up")
     blocks = [block(p.name, ctx.store.claims_of(records_of(p.candidate))) for p in chosen]
-    answers = fan_out(lambda text: ctx.llm.structured(TASK, {"person": text}, LookupAnswer).value, blocks, WORKERS)
+    answers = fan_out(lambda text: ctx.llm.structured(TASK, {"person": text}, LookupAnswer).value, blocks,
+                      ctx.settings.llm_workers)
     if all(isinstance(a, FixtureMissing) for a in answers):
         return DeepenOut(note="no recorded lookup")
     plans = [Plan(p, a, *(([], []) if isinstance(a, Exception) else chosen_pages(a)))
@@ -233,7 +233,7 @@ def attach(ctx: StepContext, plan: Plan, pages: list[Page]) -> tuple[Lookup, lis
             detail.append(f"{page.url}: {read.failed or 'no text'}")
             continue
         mentions, considered = found
-        named = [(located, mention) for located, mention in mentions if named_as(pick.name, located.name)]
+        named = [located for located, _ in mentions if named_as(pick.name, located.name)]
         fact = same_one(source.text, claims, facts, identifiers) if named else None
         if fact is None:
             if not named and any(c.stage == "chunk" for c in considered):
@@ -245,15 +245,16 @@ def attach(ctx: StepContext, plan: Plan, pages: list[Page]) -> tuple[Lookup, lis
             continue
         confirmed = True
         new = []
-        for located, mention in named:
-            drafts = extract.drafts(pick.candidate.person_id, source, located, ctx)
-            drafts = drafts if located.role else drafts[1:]
-            if pick.contact and page.kind in CONTACT_PAGES:
-                drafts += extract.contacts(pick.candidate.person_id, source, located, mention)
-            for draft in drafts:
-                claim = ctx.store.upsert_claim(draft, ctx.now())
-                if claim.id not in held and claim.id not in new:
-                    new.append(claim.id)
+        drafts = []
+        for located in named:
+            found = extract.drafts(pick.candidate.person_id, source, located, ctx)
+            drafts += found if located.role else found[1:]
+        if page.kind in CONTACT_PAGES:
+            drafts += extract.contacts(pick.candidate.person_id, source, pick.name)
+        for draft in drafts:
+            claim = ctx.store.upsert_claim(draft, ctx.now())
+            if claim.id not in held and claim.id not in new:
+                new.append(claim.id)
         added += new
         detail.append(f"{page.url}: {page.kind} page, {fact}, {len(new)} new claims")
     if not plan.pages and not plan.notes:

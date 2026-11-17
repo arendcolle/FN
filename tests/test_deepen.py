@@ -64,8 +64,8 @@ def page(url: str, kind: str = "employer") -> dict:
     return {"url": url, "kind": kind, "why": "the employer"}
 
 
-def named(name: str, role: str | None = "professor of physics", email: str | None = None) -> dict:
-    return {"name": name, "quote": f"{name} is professor of physics at {EMPLOYER}.", "role": role, "email": email,
+def named(name: str, role: str | None = "professor of physics") -> dict:
+    return {"name": name, "quote": f"{name} is professor of physics at {EMPLOYER}.", "role": role,
             "relations": [{"relation": "works_at", "org": EMPLOYER, "quote": f"professor of physics at {EMPLOYER}"}]}
 
 
@@ -224,26 +224,32 @@ class DeepenTest(unittest.TestCase):
         self.deepen({"Jan Peeters": [page(URL.format("jan"))]}, lambda text, who: [named("Jan Peeters", role=None)])
         self.assertEqual(self.held(person_id, "role"), [])
 
-    def test_an_email_is_stored_only_from_an_employer_page_of_a_first_ten_person_that_prints_it(self):
-        """The email on an employer page of a person in the first ten is stored; on an other page, at rank 11 or
-        when the page does not print it, it is not."""
+    def test_an_email_is_stored_from_a_confirmed_employer_or_own_page_for_any_looked_up_person(self):
+        """The email a confirmed page prints is stored for a person beyond the first ten and from an own page, not
+        from an other page or a page that prints a stranger's address."""
         for n in range(10):
             self.person(f"Ann Person{chr(97 + n)}", complete=True, contact=True)
         late = self.person("Lou Late")
         self.serve(URL.format("late"), page_text("Lou Late", " Mail lou@example.edu"))
-        self.deepen({"Lou Late": [page(URL.format("late"))]}, lambda text, who: [named(who, email="lou@example.edu")])
-        self.assertEqual(self.held(late, "email"), [])
-        self.people = []
-        cases = [("employer", "jan@example.edu", True), ("other", "jan@example.edu", False),
-                 ("employer", "jan.p@example.edu", False)]
-        for kind, email, stored in cases:
-            with self.subTest(kind=kind, email=email):
+        self.deepen({"Lou Late": [page(URL.format("late"))]}, lambda text, who: [named(who)])
+        self.assertEqual([c.value for c in self.held(late, "email")], ["lou@example.edu"])
+        cases = [("employer", " Mail jan@example.edu", ["jan@example.edu"]), ("own", " Mail jan@example.edu", ["jan@example.edu"]),
+                 ("other", " Mail jan@example.edu", []), ("employer", "", [])]
+        for kind, extra, stored in cases:
+            with self.subTest(kind=kind, extra=extra):
                 self.store = make_db(self)
                 self.people, self.searches = [], 0
                 person_id = self.person("Jan Peeters", complete=True)
-                self.serve(URL.format("jan"), page_text("Jan Peeters", " Mail jan@example.edu"))
-                self.deepen({"Jan Peeters": [page(URL.format("jan"), kind)]}, lambda text, who, email=email: [named(who, email=email)])
-                self.assertEqual([c.value for c in self.held(person_id, "email")], ["jan@example.edu"] if stored else [])
+                self.serve(URL.format("jan"), page_text("Jan Peeters", extra))
+                self.deepen({"Jan Peeters": [page(URL.format("jan"), kind)]}, lambda text, who: [named(who)])
+                self.assertEqual([c.value for c in self.held(person_id, "email")], stored)
+
+    def test_the_email_is_stored_once_when_the_reading_returns_the_person_twice(self):
+        person_id = self.person("Jan Peeters", complete=True)
+        self.serve(URL.format("jan"), page_text("Jan Peeters", " Mail jan@example.edu"))
+        out = self.deepen({"Jan Peeters": [page(URL.format("jan"))]}, lambda text, who: [named(who), named(who)])
+        self.assertEqual([c.value for c in self.held(person_id, "email")], ["jan@example.edu"])
+        self.assertEqual(len(out.claim_ids), len(set(out.claim_ids)))
 
     def test_blocked_and_refused_pages_store_no_source_and_are_named(self):
         """A LinkedIn, javascript: or private address is not read; each is named in the detail and stores nothing."""

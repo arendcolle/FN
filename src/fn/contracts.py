@@ -369,10 +369,8 @@ class PagePeople(Model):
     people: list[PageMention]
 
 
-# The extract_person task's answer: the one named person, with the contact details and the death year the page prints.
+# The extract_person task's answer: the one named person, with the death year the page prints.
 class PersonMention(PageMention):
-    email: str | None = None
-    phone: str | None = None
     died: int | None = None
 
 

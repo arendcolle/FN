@@ -33,6 +33,12 @@ TASK = "extract"
 LEADS_TASK = "extract_leads"
 PERSON_TASK = "extract_person"
 EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[A-Za-z]{2,}")
+PHONE = re.compile(r"(?<![\w.])\+?\(?\d[\d ().\-/]{6,18}\d(?!\w)")
+# Two years joined by a dash, or a dated line, is a number that is no phone.
+NOT_PHONE = re.compile(r"(?:1[89]|20)\d\d\s*[-–/]\s*(?:1[89]|20)\d\d|\d{4}-\d\d-\d\d|\d\d?/\d\d?/\d{4}|\d{5}-\d{4}")
+EDGE = "<>()[]{}\"',.;:"
+# An email or phone counts as a person's when it starts this near a place the text writes their name.
+CONTACT_REACH = 300
 CHUNK_CHARS = 6_000
 # A relation quote is looked for this far from the start of its mention quote, so each speaker keeps their own line.
 NEAR_CHARS = 1_500
@@ -316,23 +322,53 @@ def _near(text: str, phrase: str, name: str) -> list[tuple[int, int, int]]:
                   for m in re.finditer(rf"(?<!\w){r'\s+'.join(map(re.escape, words))}(?!\w)", text, re.IGNORECASE))
 
 
-def contacts(person_id: str, source: Source, located: Located, mention: PersonMention) -> list[ClaimDraft]:
-    """An email and a phone claim for the values the mention gives, each only when the page prints it within
-    NEAR_CHARS after the mention quote's start. The value is as printed, the quote its line, the date page_dated's.
+def contacts(person_id: str, source: Source, name: str) -> list[ClaimDraft]:
+    """At most one email and one phone claim for the person, read from the page text by rule.
+
+    An email is the person's when the surname (3 letters or more) stands in its local part, or when it starts within
+    CONTACT_REACH characters of a place the text writes the name; the first that qualifies, surname matches first.
+    A phone starts within CONTACT_REACH of such a place or of the email; the nearest wins.
     """
+    text, parts, words = source.text, name_key(name).split(), clean_name(name).split()
+    surname = parts[-1] if parts else ""
+    if not surname or not words:
+        return []
+    spans = [m.span() for m in EMAIL.finditer(text)]
+    places = [at for _, at, _ in _near(text, words[-1], name) if not any(a <= at < b for a, b in spans)]
+
+    def reach(at: int, anchors: list[int]) -> int | None:
+        gap = min((abs(at - a) for a in anchors), default=None)
+        return gap if gap is not None and gap <= CONTACT_REACH else None
+
+    emails = []
+    for m in EMAIL.finditer(text):
+        value = m.group().lstrip(EDGE).rstrip(EDGE)
+        start = m.start() + m.group().index(value)
+        by_surname = len(surname) >= 3 and surname in name_key(value.split("@")[0]).replace(" ", "")
+        if by_surname or (reach(start, places) is not None and not _other_name(text, start, name)):
+            emails.append((not by_surname, start, start + len(value)))
+    email = min(emails, default=None)
+    phones = []
+    for m in PHONE.finditer(text):
+        digits = len(re.sub(r"\D", "", m.group()))
+        gap = reach(m.start(), places + ([email[1]] if email else []))
+        if 7 <= digits <= 15 and gap is not None and not NOT_PHONE.fullmatch(m.group().strip("()")) \
+                and "fax" not in text[max(0, m.start() - 8):m.start()].casefold():
+            phones.append((gap, m.start(), m.end()))
     found = []
-    for kind, value in (("email", mention.email), ("phone", mention.phone)):
-        value = (value or "").strip()
-        if not value or (kind == "email" and not EMAIL.fullmatch(value)) or (
-                kind == "phone" and not 7 <= len(re.sub(r"\D", "", value)) <= 15):
-            continue
-        at = locate(source.text, value, located.span.start, min(located.span.start + NEAR_CHARS, len(source.text)))
-        if at is None:
-            continue
-        start, end = _line(source.text, *at)
-        found.append(ClaimDraft(person_id=person_id, kind=kind, value=source.text[at[0]:at[1]], quote=source.text[start:end],
-                                quote_start=start, quote_end=end, source=source, **page_dated(source)))
+    for kind, at in (("email", email and email[1:]), ("phone", phones and min(phones)[1:])):
+        if at:
+            start, end = _line(text, *at)
+            found.append(ClaimDraft(person_id=person_id, kind=kind, value=text[at[0]:at[1]], quote=text[start:end],
+                                    quote_start=start, quote_end=end, source=source, **page_dated(source)))
     return found
+
+
+def _other_name(text: str, at: int, name: str) -> bool:
+    """True when the line of `at` writes a capitalised two-word name and not this person's."""
+    first, last = text.rfind("\n", 0, at) + 1, text.find("\n", at)
+    line = text[first:len(text) if last < 0 else last]
+    return bool(re.search(r"[A-Z][a-z]+ [A-Z][a-z]+", line)) and not _near(line, clean_name(name).split()[-1], name)
 
 
 def _line(text: str, start: int, end: int) -> tuple[int, int]:
