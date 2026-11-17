@@ -4,12 +4,14 @@ import time
 import unittest
 from datetime import UTC, datetime
 from html import escape
+from unittest import mock
 
 import httpx
 
 from fn import net, resolve
-from fn.contracts import Chip, Chips, LaneOut, Place
+from fn.contracts import Chip, Chips, LaneOut, Org, Place
 from fn.lanes import openalex
+from fn.store import Store
 from fn.web.debug import cards, lane_matches, trace_rows
 from fn.worker import Worker
 from tests.helpers import (
@@ -449,6 +451,161 @@ class OpenAlexLaneTest(unittest.TestCase):
         self.assertIn("km from Boston, US (inside the radius)", out.hits[0].matched_on)
         self.assertIn("last known KU Leuven, Leuven", out.hits[1].matched_on)
         self.assertIn("(outside the radius)", out.hits[1].matched_on)
+
+
+class AreaWorksTest(unittest.TestCase):
+    """The works query by place and topic, for a required place with no required tie."""
+    AT = datetime(2026, 11, 17, tzinfo=UTC)
+    MIT_ROR = "https://ror.org/042nb2s44"
+
+    def setUp(self):
+        self.settings = make_settings(self).model_copy(update={"http_mode": "live"})
+        self.store = make_db(self, self.settings)
+        save_recorded_orgs(self.store, self.settings)
+        self.source = self.store.conn.execute("SELECT source_id FROM orgs LIMIT 1").fetchone()[0]
+        self.org("ror:042nb2s44", 42.36)
+        self.calls: list[httpx.Request] = []
+        self.area_body: dict | httpx.Response = {"meta": {"count": 0}, "results": []}
+        self.belgian_body: dict = {"meta": {"count": 0}, "results": []}
+        self.records: dict[str, dict] = {}
+
+    def org(self, org_id: str, lat: float) -> None:
+        self.store.upsert_org(Org(id=org_id, name=org_id, country_code="US", city="Cambridge", lat=lat, lon=-71.09,
+                                  source_id=self.source, fetched_at=self.AT), replace=True)
+
+    def chips(self, **fields) -> Chips:
+        base = dict(version=2, topics=[Chip(text="wind", origin="edited")],
+                    place=Place(text="Boston", origin="edited", kind="metro", need="must"))
+        return Chips(**(base | fields))
+
+    def work(self, title: str, *authorships: tuple[dict, list[dict]], work_id: str = "W1") -> dict:
+        return {"id": f"https://openalex.org/{work_id}", "display_name": title, "publication_year": 2025,
+                "authorships": [{"author": {"id": a["id"], "display_name": a["display_name"]}, "institutions": i}
+                                for a, i in authorships]}
+
+    def person(self, author_id: str, last_known: dict = MIT) -> dict:
+        record = author(author_id, f"Made Up {author_id}", last_known, {"Massachusetts Institute of Technology": [2024]})
+        self.records[author_id] = record
+        return record
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        self.calls.append(request)
+        params = request.url.params
+        if request.url.path == "/works" and "authorships.institutions.ror" in params.get("filter", ""):
+            body = self.area_body
+            return body if isinstance(body, httpx.Response) else httpx.Response(200, json=body)
+        if request.url.path == "/works":
+            return httpx.Response(200, json=self.belgian_body)
+        if request.url.path == "/authors" and params.get("filter", "").startswith("ids.openalex:"):
+            ids = params["filter"].split(":", 1)[1].split("|")
+            found = [self.records[i] for i in ids if i in self.records]
+            return httpx.Response(200, json={"meta": {"count": len(found)}, "results": found})
+        return route(request)
+
+    def search(self, chips: Chips) -> LaneOut:
+        http = net.Client(self.settings, httpx.MockTransport(self.handler))
+        worker = Worker(self.store, self.settings, llm=StubLLM(error=AssertionError("parse must not run")), http=http)
+        self.addCleanup(worker.shutdown)
+        self.found = worker.execute(worker.create_search("question", chips, "edited").id)
+        self.assertEqual(self.found.status, "done", self.found.error)
+        (lane,) = [s for s in self.store.list_steps(self.found.id) if s.step == "lane:openalex"]
+        return LaneOut.model_validate_json(self.store.get_payload(lane.id)[1])
+
+    def area_calls(self) -> list[httpx.Request]:
+        return [c for c in self.calls if c.url.path == "/works" and "authorships.institutions.ror" in c.url.params["filter"]]
+
+    def test_the_area_query_is_sent_for_a_required_place_and_not_for_the_other_chips(self):
+        """It names the inside ROR, a year floor and 100 per page; no other chip set sends it, and no org gives a note."""
+        self.search(self.chips())
+        (call,) = self.area_calls()
+        where = call.url.params["filter"]
+        self.assertIn(self.MIT_ROR, where.split(",")[0].split("|"))
+        self.assertTrue(where.startswith("authorships.institutions.ror:https://ror.org/"))
+        self.assertIn("publication_year:>2020", where)
+        self.assertEqual((call.url.params["per_page"], call.url.params["search"]), ("100", "wind"))
+        place = Place(text="Boston", origin="edited", kind="metro")
+        for other in (self.chips(tie=Chip(text="Belgium", origin="edited", need="must")), self.chips(place=place),
+                      self.chips(place=None), self.chips(version=1), self.chips(topics=[]),
+                      self.chips(topics=[], institutions=[Chip(text="MIT", origin="edited")])):
+            self.calls.clear()
+            self.search(other)
+            self.assertEqual(self.area_calls(), [])
+        self.store.conn.execute("UPDATE orgs SET lat = NULL, lon = NULL")
+        self.calls.clear()
+        out = self.search(self.chips())
+        self.assertEqual(self.area_calls(), [])
+        self.assertIn("no stored institution inside Boston, US; no works query by place", [c.reason for c in out.considered])
+
+    def test_an_author_listed_inside_is_a_hit_and_a_co_author_listed_elsewhere_is_not_seen(self):
+        """An empty page and an authorship without institutions add no author."""
+        inside, outside = self.person("A1"), self.person("A2", LEUVEN)
+        self.area_body = {"meta": {"count": 2}, "results": [
+            self.work("Wind", (inside, [{"ror": self.MIT_ROR}]), (outside, [{"ror": "https://ror.org/0far"}]), work_id="W1"),
+            self.work("Wind again", (outside, []), work_id="W2")]}
+        out = self.search(self.chips())
+        self.assertEqual([h.matched_on.split(";")[0] for h in out.hits], ["works on 'wind' in Boston, US"])
+        self.assertEqual(out.total_seen, 1)
+        self.assertEqual([c.person_key for c in out.considered if c.stage == "rank"], ["A1"])
+
+    def candidate(self, author_id: str):
+        rows = self.store.conn.execute("SELECT person_id FROM person_identifiers WHERE scheme = 'openalex' AND value = ?",
+                                       (author_id,)).fetchall()
+        return [c for c in self.store.list_candidates(self.found.id) if c.person_id == rows[0][0]]
+
+    def test_an_inside_author_is_kept_when_the_work_title_has_the_topic_word_and_cut_when_it_has_not(self):
+        """The ranker reads titles only, so the area query gives a candidate only for a work titled with the topic."""
+        titled, bare = self.person("A1"), self.person("A2")
+        listing = [{"ror": self.MIT_ROR}]
+        self.area_body = {"meta": {"count": 2}, "results": [self.work("Offshore wind farms", (titled, listing), work_id="W1"),
+                                                            self.work("Grid storage", (bare, listing), work_id="W2")]}
+        self.search(self.chips())
+        (kept,) = self.candidate("A1")
+        (cut,) = self.candidate("A2")
+        self.assertEqual((kept.cut_reason, kept.tier), (None, 3))
+        self.assertEqual(cut.cut_reason, "no_belgian_evidence")
+
+    def test_105_inside_orgs_give_100_rors_largest_first_without_foreign_ids_or_far_orgs(self):
+        """Wikidata and openalex orgs and an org beyond the radius are left out; two equal topic chips make one call."""
+        for i in range(105):
+            self.org(f"ror:0aaa{i:03d}00", 42.36)
+        for org_id, lat in (("wikidata:Q99", 42.36), ("openalex:I99", 42.36), ("ror:0farzzz00", 40.0)):
+            self.org(org_id, lat)
+        with mock.patch.object(Store, "org_sizes", return_value={"ror:0aaa10400": 7}):
+            self.search(self.chips(topics=[Chip(text="Wind", origin="edited"), Chip(text="wind", origin="edited")]))
+        (call,) = self.area_calls()
+        rors = call.url.params["filter"].split(",")[0].split(":", 1)[1].split("|")
+        self.assertEqual(len(rors), 100)
+        self.assertEqual(rors[0], "https://ror.org/0aaa10400")
+        self.assertEqual(rors[1:], sorted(rors[1:]))
+        self.assertNotIn("https://ror.org/0farzzz00", rors)
+        self.assertFalse([r for r in rors if "Q99" in r or "I99" in r])
+
+    def test_a_failed_area_query_keeps_the_belgian_hits_and_adds_a_note(self):
+        """A 404 and a replay miss both end in the note; the lane goes on."""
+        self.area_body = httpx.Response(404, json={"error": "no"})
+        self.belgian_body = {"meta": {"count": 1}, "results": [self.work("Wind", (self.person("A1", LEUVEN), []))]}
+        out = self.search(self.chips())
+        notes = [c.reason for c in out.considered if "failed" in c.reason]
+        self.assertEqual(len(notes), 1)
+        self.assertTrue(notes[0].startswith("works on 'wind' in Boston, US failed: "))
+        self.assertTrue(out.hits)
+        self.settings = self.settings.model_copy(update={"http_mode": "replay"})
+        out = self.search(self.chips())
+        self.assertTrue([c for c in out.considered if c.reason.startswith("works on 'wind' in Boston, US failed")])
+
+    def test_an_area_author_is_fetched_when_belgian_authors_fill_the_cap(self):
+        """With a cap of 3 the area author takes a slot first, and the fourth Belgian author is not fetched."""
+        belgians = [self.person(f"A{i}", LEUVEN) for i in range(1, 5)]
+        inside = self.person("A9")
+        self.belgian_body = {"meta": {"count": 1}, "results": [
+            self.work("Wind", *[(a, []) for a in belgians], work_id="W1")]}
+        self.area_body = {"meta": {"count": 1}, "results": [self.work("Wind at MIT", (inside, [{"ror": self.MIT_ROR}]), work_id="W2")]}
+        with mock.patch.object(openalex, "MAX_AUTHORS", 3):
+            out = self.search(self.chips())
+        self.assertIn("A9", [c.person_key for c in out.considered if c.stage == "rank"])
+        (late,) = [c for c in out.considered if c.person_key == "A4"]
+        self.assertTrue(late.reason.startswith("not fetched"))
+        self.assertEqual(len(out.hits), 3)
 
 
 class AuthorTopicsTest(unittest.TestCase):
