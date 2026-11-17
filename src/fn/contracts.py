@@ -50,15 +50,15 @@ GoldTie = Literal["flemish", "belgian", "none", "unverified"]
 PickVerdict = Literal["found", "event page", "missed", "no lane in slice"]
 GoldGroup = Literal["dev", "held-out", "other"]
 EventKind = Literal["add", "skip", "merge", "not_same", "reject_claim", "edit_contact", "remove", "import", "export", "undo"]
-CutReason = Literal["no_belgian_evidence", "weak_openalex", "no_claim", "outside_country", "no_tie", "over_cap"]
-Aside = Literal["outside", "abroad", "unfit", "died"]
+CutReason = Literal["no_belgian_evidence", "weak_openalex", "no_claim", "outside_country", "no_tie", "over_cap", "died"]
+Aside = Literal["outside", "abroad", "unfit"]
 TieGrade = Literal["strong", "medium", "weak", "none"]
 RoleFit = Literal["met", "fails", "unknown"]
 JobFit = Literal["known", "employer", "none"]
 FitVerdict = Literal["yes", "partly", "no"]
 PlaceFit = Literal["inside", "outside", "abroad", "unknown", "none"]
 AddedVia = Literal["search", "import", "profile"]
-CardState = Literal["network", "new", "name_match", "added", "skipped", "died"]
+CardState = Literal["network", "new", "name_match", "added", "skipped"]
 LookupKind = Literal["openalex_author", "orcid_employment", "web_person"]
 Verdict = Literal["matched", "ambiguous", "no_match", "error"]
 LookupOutcome = Literal["added", "nothing_new", "not_sure", "failed"]
@@ -547,7 +547,6 @@ class ReasonView(Model):
     text: str
     source: str
     href: str
-    year: str | None = None
 
 
 class CardView(Model):

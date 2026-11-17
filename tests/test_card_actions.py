@@ -200,6 +200,16 @@ class CardActionsTest(unittest.TestCase):
         rows = list(csv.DictReader(io.StringIO(response.text.lstrip("﻿"))))
         self.assertEqual(sorted(r["name"] for r in rows), ["Ada Example", "Bob Example"])
 
+    def test_the_export_leaves_out_a_person_cut_as_died(self):
+        """A person the ranker cut as died is not a row of the CSV."""
+        ada, late = self.person("Ada Example", "ada"), self.person("Late Example", "late")
+        self.search("s1", [([ada], "new")], cut=[late])
+        rows = [Candidate.model_validate({**c.model_dump(), "cut_reason": "died"}) if c.person_id == late else c
+                for c in self.store.list_candidates("s1")]
+        self.store.save_candidates("s1", rows, [])
+        text = self.client.get("/searches/s1/export.csv").text.lstrip("﻿")
+        self.assertEqual([r["name"] for r in csv.DictReader(io.StringIO(text))], ["Ada Example"])
+
     def test_an_unknown_search_or_person_is_404(self):
         """The card routes and the export answer 404 for a search or a person that is not there, a cut person
         included, and change nothing; the search's own person gets an answer."""

@@ -256,7 +256,11 @@ def trace_rows(store: Store, search: Search, term: str) -> list[list[object]]:
         if step.contracts_version != CONTRACTS_VERSION:
             rows.append([step.seq, step.step, "-", "-", f"stored under contracts v{step.contracts_version}, not shown"])
             continue
-        out = model.model_validate_json(output)
+        try:
+            out = model.model_validate_json(output)
+        except ValidationError:
+            rows.append([step.seq, step.step, "-", "-", "stored under an older contract, not shown"])
+            continue
         found: list[list[object]] = []
         missing = "not present"
         if isinstance(out, LaneOut):

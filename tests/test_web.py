@@ -651,7 +651,7 @@ class ContractsV1Test(unittest.TestCase):
             self.store.finish_step(run, json.dumps(output))
         self.store.conn.execute("INSERT INTO candidates VALUES ('old', ?, ?, 'new', 1, ?, ?, '[]', ?)",
                                 (person.id, json.dumps([person.id]), 1 / 61, '{"seeds": 1}', json.dumps(label)))
-        self.assertEqual(self.store.migrate(), [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])
+        self.assertEqual(self.store.migrate(), [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
         app = create_app(self.settings, StubLLM(error=AssertionError("no LLM")), StubHttp())
         self.client = TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=False)
         self.client.__enter__()
@@ -681,6 +681,27 @@ class ContractsV1Test(unittest.TestCase):
             self.assertIn(f"<td>{seq}</td><td>{step}</td><td>-</td><td>-</td>"
                           "<td>stored under contracts v1, not shown</td>", response.text)
         self.assertEqual(self.store.list_request_errors(), [])
+
+
+class DiedAsideTraceTest(unittest.TestCase):
+    def test_the_trace_notes_a_rank_payload_that_holds_the_died_aside_instead_of_failing(self):
+        """A rank step stored with aside died, which the current contract no longer reads, shows one note row."""
+        settings = make_settings(self)
+        store = make_db(self, settings)
+        store.create_search(Search(id="old", question="Who knows wind?", status="done", created_at=now(), code_sha=None,
+                                   dirty=False, llm_mode="replay", settings_json="{}", boot_id="b"))
+        person = {"search_id": "old", "person_id": "p1", "person_ids": ["p1"], "section": "new", "rank": 1, "score": 1.0,
+                  "lane_ranks": {"seeds": 1}, "aside": "died"}
+        run = StepRun(id="st1", search_id="old", seq=1, step="rank", status="ok", started_at=now(), ended_at=now(),
+                      input_model="RankIn", output_model="RankOut")
+        store.start_step(run, "{}")
+        store.finish_step(run, json.dumps({"candidates": [person]}))
+        with TestClient(create_app(settings, StubLLM(error=AssertionError("no LLM")), StubHttp()),
+                        base_url="http://127.0.0.1", raise_server_exceptions=False) as client:
+            response = client.get("/debug/searches/old/trace", params={"name": "Anne Example"})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("<td>1</td><td>rank</td><td>-</td><td>-</td><td>stored under an older contract, not shown</td>",
+                      response.text)
 
 
 class ChipsFromFormTest(unittest.TestCase):

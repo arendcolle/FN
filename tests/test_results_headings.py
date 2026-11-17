@@ -4,7 +4,7 @@ from datetime import date
 
 from fn import network, present
 from fn.contracts import Candidate, CardFit, Chip, Chips, Place, Search, StepRun
-from fn.present import GROUP_TITLES, HEADINGS, OLD_LINE
+from fn.present import HEADINGS, OLD_LINE
 from fn.worker import now
 from tests.test_results_page import YEAR, ResultsPageCase
 
@@ -354,43 +354,28 @@ class SetAsideGroupsTest(ResultsPageCase):
         listed = self.client.get("/api/searches/s1/geo").json()["list"]
         self.assertEqual([listed[p]["shown"] for p in people[1:]], [True] * 20 + [False])
 
-    def line(self, card: str, kind: str) -> str:
-        found = re.search(rf'<p class="fn-card__{kind} [^"]*">(.*?)</p>', card, re.DOTALL)
-        return re.sub(r"<[^>]*>", "", found.group(1)) if found else ""
+    def cut_died(self, people: list[str]) -> None:
+        """Store the search with the given people cut as died."""
+        kept = [Candidate.model_validate({**c.model_dump(), "cut_reason": "died", "aside": None}) if c.person_id in people else c
+                for c in self.store.list_candidates("s1")]
+        self.store.save_candidates("s1", kept, [])
 
-    def test_the_died_group_follows_the_other_groups(self):
-        """People who have died stand in their own group after every other group."""
-        self.listing([("new", 1, None), ("new", 2, "outside"), ("new", 5, "unfit"), ("new", 1, "died")])
-        self.assertEqual(self.titles(self.page()), [("Outside the Boston area", "1"), ("Other roles or topics", "1"),
-                                                    (GROUP_TITLES["died"], "1")])
+    def test_a_person_cut_as_died_gives_no_set_aside_heading_group_or_count(self):
+        """An open person and one cut as died give one person, no Set aside heading and no group."""
+        _, dead = self.listing([("new", 1, None), ("new", 1, None)])
+        self.cut_died([dead])
+        html = self.page()
+        self.assertTrue(self.count_text(html).startswith("1 person"))
+        self.assertNotIn("Set aside", html)
+        self.assertEqual((self.titles(html), self.opened(html)), ([], []))
+        self.assertNotIn("Person 01", html)
 
-    def test_a_died_card_names_the_death_and_its_source(self):
-        """The first fit line of a card set aside as died is the death fact, its year once, then the source."""
-        (person,) = self.listing([("new", 1, "died")])
-        self.claim(person, "death", "1966", claim_date="1966", date_precision="year", date_method="stated_in_quote")
-        self.assertEqual(self.line(self.card(self.page(), person), "fit"), "Died 1966 · example.org")
-
-    def test_a_died_card_has_no_role_reason_or_acts_and_a_rejected_death_gives_a_normal_card(self):
-        """A died card holds the name, 'Died <year> · source' and the tie line; with its death claim rejected it is a
-        normal card with Add and Skip, and a skipped one is the skipped line."""
-        (person,) = self.listing([("new", 1, "died")])
-        self.claim(person, "affiliation", "Example Labs", relation="works_at", claim_date="2020")
-        death = self.claim(person, "death", "1966", claim_date="1966", date_precision="year", date_method="stated_in_quote")
-        card = self.card(self.page(), person)
-        self.assertIn('<p class="fn-card__fit text-small">Died <span class="text-year">1966</span> · '
-                      '<a href="/sources/', re.sub(r'<a (class="fn-card__source" )?', "<a ", card))
-        self.assertEqual(self.line(card, "fit"), "Died 1966 · example.org")
-        self.assertEqual(re.findall(r'<p class="fn-card__fit [^"]*">(.*?)</p>', card)[-1], "No known tie to Flanders")
-        for part in ("fn-card__role", "fn-card__reason", "fn-card__acts", "Example Labs"):
-            self.assertNotIn(part, card)
-        network.reject_claim(self.store, death, now=now())
-        self.assertIn("fn-card__acts", self.card(self.page(), person))
-        self.assertNotIn("Died", self.card(self.page(), person))
-        self.setUp()
-        (person,) = self.listing([("new", 1, "died")])
-        self.claim(person, "death", "1966", claim_date="1966", date_precision="year", date_method="stated_in_quote")
-        network.skip(self.store, [person], now=now(), search_id="s1")
-        self.assertIn("fn-card--skipped", self.card(self.page(), person))
+    def test_the_group_died_in_the_query_opens_no_group(self):
+        """An old link with group=died shows the closed groups, none of them for the dead."""
+        people = self.listing([("new", 2, "abroad"), ("new", 1, None)])
+        self.cut_died([people[1]])
+        html = self.page(group="died", group_shown="40")
+        self.assertEqual((self.titles(html), self.opened(html)), ([("Outside the US", "1")], []))
 
     def test_an_old_first_record_is_its_own_paragraph_with_the_year_marked_and_an_aside_card_has_none(self):
         """The old line is a fit paragraph of its own with the year in text-year; a card set aside shows none."""

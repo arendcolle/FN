@@ -75,7 +75,7 @@ class NetworkMigrationTest(unittest.TestCase):
             conn.execute("INSERT INTO candidates (search_id, person_id, person_ids_json, section, rank, score, "
                          "lane_ranks_json, reason_claim_ids_json, score_parts_json) "
                          "VALUES ('s1', ?, '[]', 'new', 1, 0.1, '{}', '[]', '[]')", (p,))
-        self.assertEqual(store.migrate(), [6, 7, 8, 9, 10, 11, 12, 13, 14])
+        self.assertEqual(store.migrate(), [6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
         found = dict(conn.execute("SELECT person_id, hit_person_ids_json FROM candidates").fetchall())
         self.assertEqual({p: json.loads(v) for p, v in found.items()}, {"p1": ["p1", "p2"], "p3": [], "p4": []})
         self.assertEqual([c.hit_person_ids for c in store.list_candidates("s1")], [["p1", "p2"], [], []])
@@ -101,7 +101,7 @@ class NetworkMigrationTest(unittest.TestCase):
             store.conn.execute("INSERT INTO candidates (search_id, person_id, person_ids_json, section, rank, score, "
                                "lane_ranks_json, reason_claim_ids_json, score_parts_json) "
                                "VALUES ('s1', ?, '[]', ?, ?, 0.1, ?, '[]', ?)", (p, section, i, lanes, parts))
-        self.assertEqual(store.migrate(), [7, 8, 9, 10, 11, 12, 13, 14])
+        self.assertEqual(store.migrate(), [7, 8, 9, 10, 11, 12, 13, 14, 15])
         found = {c.person_id: (c.rank, c.cut_reason) for c in store.list_candidates("s1")}
         self.assertEqual(found, {"cut": (1, "no_belgian_evidence"), "years": (2, None), "two": (3, None),
                                  "net": (4, None)})
@@ -171,9 +171,53 @@ class OrgMatchesTest(unittest.TestCase):
         with mock.patch.object(db, "MIGRATIONS", old):
             store.migrate()
         self.assertEqual(store.conn.execute("SELECT name FROM sqlite_master WHERE name = 'org_matches'").fetchall(), [])
-        self.assertEqual(store.migrate(), [14])
+        self.assertEqual(store.migrate(), [14, 15])
         store.save_org_answer("example institute", "Example Institute", None, now())
         self.assertEqual(store.org_answers(), {"example institute": None})
+
+
+class DiedCutTest(unittest.TestCase):
+    def test_015_turns_died_asides_into_died_cuts_after_the_section_s_other_cuts_and_changes_nothing_else(self):
+        """Died rows become died cuts without an aside, ranked after the cuts of their section; others are unchanged."""
+        store = Store(make_settings(self).db_path)
+        self.addCleanup(store.close)
+        old = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, old)
+        for path in db.MIGRATIONS.glob("[0-9][0-9][0-9]_*.sql"):
+            if int(path.name[:3]) <= 14:
+                shutil.copy(path, old / path.name)
+        with mock.patch.object(db, "MIGRATIONS", old):
+            store.migrate()
+        rows = [("s1", "open1", "new", 1, None, None), ("s1", "open2", "new", 2, None, None),
+                ("s1", "unfit", "new", 3, None, "unfit"), ("s1", "dead1", "new", 4, None, "died"),
+                ("s1", "dead2", "new", 5, None, "died"), ("s1", "cut1", "new", 1, "no_tie", None),
+                ("s1", "cut2", "new", 2, "no_tie", None), ("s1", "net", "network", 1, None, None),
+                ("s2", "dead3", "new", 1, None, "died"), ("s3", "odd", "new", 1, "no_tie", "died")]
+        for search_id in ("s1", "s2", "s3"):
+            store.create_search(Search(id=search_id, question="q", status="done", created_at=now(), code_sha=None,
+                                       dirty=False, llm_mode="replay", settings_json="{}", boot_id="b"))
+        for person in {r[1] for r in rows}:
+            store.conn.execute("INSERT INTO persons (id, display_name, name_key, list_status) VALUES (?, ?, ?, 'candidate')",
+                               (person, person, person))
+        store.conn.executemany(
+            "INSERT INTO candidates (search_id, person_id, person_ids_json, section, rank, score, lane_ranks_json, "
+            "reason_claim_ids_json, score_parts_json, cut_reason, aside) VALUES (?, ?, '[]', ?, ?, 0.1, '{}', '[]', '[]', ?, ?)",
+            rows)
+        before = store.search_progress("s1").people
+
+        def stored() -> list[tuple]:
+            return [tuple(r) for r in store.conn.execute(
+                "SELECT search_id, person_id, section, rank, cut_reason, aside FROM candidates ORDER BY search_id, person_id")]
+
+        unchanged = [r for r in stored() if r[1] not in ("dead1", "dead2", "dead3", "odd")]
+        self.assertEqual(store.migrate(), [15])
+        after = {r[1]: r for r in stored()}
+        self.assertEqual([after[p] for p in ("dead1", "dead2", "dead3", "odd")],
+                         [("s1", "dead1", "new", 3, "died", None), ("s1", "dead2", "new", 4, "died", None),
+                          ("s2", "dead3", "new", 1, "died", None), ("s3", "odd", "new", 1, "no_tie", None)])
+        self.assertEqual([r for r in stored() if r[1] not in ("dead1", "dead2", "dead3", "odd")], unchanged)
+        self.assertEqual((before, store.search_progress("s1").people), (6, 4))
+        self.assertEqual(store.migrate(), [])
 
 
 class ClaimsFtsTest(unittest.TestCase):
