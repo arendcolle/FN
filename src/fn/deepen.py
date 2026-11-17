@@ -67,11 +67,11 @@ def people(ctx: StepContext) -> list[tuple[Candidate, list[str], list[Claim], di
              {p: schemes.get(p, frozenset()) for p in records_of(c)}) for c in kept]
 
 
-def picks(ctx: StepContext, chips: Chips) -> list[Pick]:
-    """The people to look up, by rank: the first MAX_LOOKUPS of the open list who miss a place, a job or a recent
-    fact, and those of its first CONTACT_TOP without an email or phone claim, who get contact.
+def picks(ctx: StepContext, chips: Chips, skip: frozenset[str] = frozenset(), most: int = MAX_LOOKUPS) -> list[Pick]:
+    """The people to look up, by rank: the first `most` of the open list who miss a place, a job or a recent fact,
+    and those of its first CONTACT_TOP without an email or phone claim and without a gap past `most`, who get contact.
 
-    Anyone with a lookup in the last DAYS days that did not fail is left out.
+    Anyone with a record in skip or a lookup in the last DAYS days that did not fail is left out.
     """
     found = people(ctx)
     today = as_of(ctx).date()
@@ -80,15 +80,15 @@ def picks(ctx: StepContext, chips: Chips) -> list[Pick]:
     names = ctx.store.get_persons([c.person_id for c, _, _, _ in found])
     chosen, missed = [], 0
     for at, (c, records, claims, card) in enumerate(found):
-        if since & set(records):
+        if (since | skip) & set(records):
             continue
-        missing = [what for what, lacks in (
+        gap = [what for what, lacks in (
             ("place", chips.place is not None and c.fit is not None and c.fit.place == "unknown"),
             ("job", evidence.job(claims, card, today) != "known"),
             ("recent", not evidence.recent_fact(claims, today))) if lacks]
-        missing = missing if missed < MAX_LOOKUPS else []
+        missing = gap if missed < most else []
         missed += bool(missing)
-        contact = at < CONTACT_TOP and not any(x.kind in ("email", "phone") for x in claims)
+        contact = at < CONTACT_TOP and (missing or not gap) and not any(x.kind in ("email", "phone") for x in claims)
         if missing or contact:
             chosen.append(Pick(c, names[c.person_id].display_name, missing, contact))
     return chosen
@@ -151,19 +151,21 @@ def run(ctx: StepContext, inp: DeepenIn) -> DeepenOut:
     page names them and states a fact FN holds; one lookup row per person, except for a missing recording.
 
     A note and no call for chips stored before version 2, without an HTTP client or model, or with nobody picked.
+    Leaves out the people in inp.skip and picks at most MAX_LOOKUPS - inp.used people with a gap.
     """
     if inp.chips.version < 2:
         return DeepenOut(note="chips stored before this round, so no lookup")
     if ctx.http is None or ctx.llm is None:
         return DeepenOut(note="no HTTP client or model, so no lookup")
-    chosen = picks(ctx, inp.chips)
+    chosen = picks(ctx, inp.chips, frozenset(inp.skip), MAX_LOOKUPS - inp.used)
     if not chosen:
         return DeepenOut(note="nobody to look up")
     blocks = [block(p.name, ctx.store.claims_of(records_of(p.candidate))) for p in chosen]
     answers = fan_out(lambda text: ctx.llm.structured(TASK, {"person": text}, LookupAnswer).value, blocks,
                       ctx.settings.llm_workers)
+    picked, gaps = [p.candidate.person_id for p in chosen], sum(bool(p.missing) for p in chosen)
     if all(isinstance(a, FixtureMissing) for a in answers):
-        return DeepenOut(note="no recorded lookup")
+        return DeepenOut(note="no recorded lookup", picked=picked, gaps=gaps)
     plans = [Plan(p, a, *(([], []) if isinstance(a, Exception) else chosen_pages(a)))
              for p, a in zip(chosen, answers) if not isinstance(a, FixtureMissing)]
     unique: dict[str, str] = {}
@@ -189,7 +191,7 @@ def run(ctx: StepContext, inp: DeepenIn) -> DeepenOut:
                                                found.get((at, page.url))) for page in plan.pages])
         lookups.append(lookup)
         claim_ids += added
-    return DeepenOut(lookups=lookups, claim_ids=list(dict.fromkeys(claim_ids)))
+    return DeepenOut(lookups=lookups, claim_ids=list(dict.fromkeys(claim_ids)), picked=picked, gaps=gaps)
 
 
 def store(ctx: StepContext, plan: Plan, pages: list[Page]) -> tuple[Lookup, list[str]]:

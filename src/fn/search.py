@@ -96,13 +96,30 @@ def link(ctx: StepContext, people: list[str]) -> None:
         pass
 
 
-def finish(ctx: StepContext, outs: list[LaneOut], chips: Chips) -> None:
-    """Run the steps after the lanes in order: link the employers of the hit people, resolve the lane outputs, rank the
-    entries, save the candidates, look up missing facts for the first people, ask the model which stored people fit
-    the question, and rank and save again after each of the last two when it changed something.
+def look_up(ctx: StepContext, inp: DeepenIn) -> DeepenOut:
+    """Run the deepen step; an exception stays on its row and gives an empty output."""
+    try:
+        return run_step(ctx, "deepen", deepen.run, inp)
+    except Exception:  # noqa: BLE001 any error is kept on the step row and the ranking before it stands
+        return DeepenOut()
 
-    The link step runs with version 2 chips and an HTTP client, and again after a lookup that added claims. A lookup
-    or fit step that raises leaves the ranking before it saved.
+
+def first_pass(ctx: StepContext, chips: Chips) -> DeepenOut:
+    """Run the first lookup pass on a lane thread and close the thread's connection."""
+    try:
+        return look_up(ctx, DeepenIn(chips=chips))
+    finally:
+        ctx.store.close()
+
+
+def finish(ctx: StepContext, outs: list[LaneOut], chips: Chips, first: DeepenOut) -> None:
+    """Run the steps after the lanes in order: link the employers of the hit people, resolve the lane outputs, rank the
+    entries, save the candidates, run the second lookup pass for people the first pass left out, ask the model
+    which stored people fit the question, and rank and save again after each of the last two when it changed something.
+
+    The first pass ran after the seeds publish, the second runs after the first save. The link step runs with version 2
+    chips and an HTTP client, and again after a second pass that added claims. A lookup or fit step that raises leaves
+    the ranking before it saved.
     """
     linking = ctx.http is not None and chips.version >= 2
     by_rank = sorted((h for out in outs for h in out.hits), key=lambda h: h.rank)
@@ -111,10 +128,7 @@ def finish(ctx: StepContext, outs: list[LaneOut], chips: Chips) -> None:
         link(ctx, hit)
     resolved = run_step(ctx, "resolve", resolve.run, ResolveIn(outs=outs))
     rank_and_save(ctx, resolved, chips, FitOut())
-    try:
-        deepened = run_step(ctx, "deepen", deepen.run, DeepenIn(chips=chips))
-    except Exception:  # noqa: BLE001 any error is kept on the step row and the first ranking stands
-        deepened = DeepenOut()
+    deepened = look_up(ctx, DeepenIn(chips=chips, skip=first.picked, used=first.gaps))
     if deepened.claim_ids:
         if linking:
             link(ctx, hit)
@@ -181,10 +195,11 @@ def run_lane(ctx: StepContext, lane: Lane, given: LaneIn) -> tuple[LaneOut, bool
 
 def run(ctx: StepContext, search: Search) -> None:
     """Run the Quick steps: parse, cities, the seeds lane alone, then the other lanes side by side, with a publish as
-    each lane ends but the last, then resolve, rank and save.
+    each lane ends but the last, then the steps after the lanes.
 
-    The web_topic lane starts once every lane before it has ended and been published. A lane that raises keeps its
-    error row and counts as an empty output; raises RuntimeError when every lane did.
+    The first lookup pass starts after the seeds publish, beside the other lanes, and the steps after the lanes wait
+    for it. The web_topic lane starts once every lane before it has ended and been published. A lane that raises keeps
+    its error row and counts as an empty output; raises RuntimeError when every lane did.
     """
     inp = ParseIn(question=search.question)
     if search.chips is not None:
@@ -199,8 +214,8 @@ def run(ctx: StepContext, search: Search) -> None:
             pass
     lane_in = LaneIn(search_id=search.id, chips=chips, depth=search.depth, question=search.question)
     outs: list[LaneOut | None] = [None] * len(LANES)
-    failed = 0
-    with ThreadPoolExecutor(max_workers=len(LANES), thread_name_prefix="fn-lane") as pool:
+    failed, started = 0, None
+    with ThreadPoolExecutor(max_workers=len(LANES) + 1, thread_name_prefix="fn-lane") as pool:
         def submit(i: int, given: LaneIn) -> Future[tuple[LaneOut, bool]]:
             return pool.submit(copy_context().run, run_lane, ctx, LANES[i], given)
 
@@ -228,9 +243,12 @@ def run(ctx: StepContext, search: Search) -> None:
                 if len(filled) < len(LANES):
                     given = PublishIn(lanes=[o.lane for o in filled], chips=chips)
                     run_step(ctx, "publish", publish(filled, outs[i]), given)
+                    if LANES[i].name == FIRST:
+                        started = pool.submit(copy_context().run, first_pass, ctx, chips)
     if failed == len(LANES):
         raise RuntimeError("every lane failed")
-    finish(ctx, in_lane_order(outs), chips)
+    first = started.result() if started else DeepenOut()
+    finish(ctx, in_lane_order(outs), chips, first)
 
 
 def main(argv: list[str] | None = None, llm: StructuredLLM | None = None) -> int:
