@@ -27,7 +27,7 @@ from fn.contracts import (
 )
 from fn.steps import StepContext
 from fn.worker import new_id, now
-from tests.helpers import StubHttp, make_db, make_seeded_db, make_settings
+from tests.helpers import StubHttp, load_seed_rows, make_db, make_settings, save_recorded_orgs
 
 FETCHED = datetime(2026, 11, 3, tzinfo=UTC)
 ULB = Org(id="ror:01r9htc13", name="ULB", country_code="BE", source_id="s", fetched_at=FETCHED)
@@ -187,16 +187,17 @@ class BelgianListTest(unittest.TestCase):
         found = rank.belgian_list(entries, claims, FACTS)
         self.assertEqual({key: part.rank for key, part in found.items()}, {"p1": 1, "p2": 2, "p3": 2, "p4": 4})
 
-    def test_sweldens_kvab_membership_puts_his_seed_record_on_the_list(self):
-        """A seed hit on Wim Sweldens' KVAB record gets a belgian_years part from his KVAB member_of claim."""
+    def test_a_kvab_membership_puts_a_seed_record_on_the_list(self):
+        """A seed hit on a KVAB member's record gets a belgian_years part from the KVAB member_of claim."""
         settings = make_settings(self)
-        store = make_seeded_db(self, settings)
+        store = make_db(self, settings)
+        save_recorded_orgs(store, settings)
+        load_seed_rows(self, store, "kvab", "Ada Example", 2011)
         ctx = StepContext(search_id="s", store=store, llm=None, http=None, now=now, new_id=new_id,
                           log=logging.getLogger("fn.step"), settings=settings)
-        person_id = store.person_ids_by_identifier(
-            "seed", ["kvab|wim-sweldens|2011|technische-wetenschappen-buitenlandse-leden"]).popitem()[1]
+        person_id = store.person_ids_by_identifier("seed", ["kvab|ada-example|2011|"]).popitem()[1]
         lane = LaneOut(lane="seeds", query="q", total_seen=1, hits=[
-            LaneHit(person_id=person_id, name_key="wim sweldens", lane="seeds", rank=7, score=1.0, matched_on="KVAB")])
+            LaneHit(person_id=person_id, name_key="ada example", lane="seeds", rank=7, score=1.0, matched_on="KVAB")])
         entries = resolve.run(ctx, ResolveIn(outs=[lane])).entries
         (candidate,) = rank.run(ctx, RankIn(entries=entries, chips=Chips())).candidates
         part = next(p for p in candidate.score_parts if p.feature == "belgian_years")

@@ -6,7 +6,7 @@ from fn import network, resolve
 from fn.contracts import Identifier, LaneHit, LaneOut, ResolveIn
 from fn.steps import StepContext
 from fn.worker import new_id, now
-from tests.helpers import make_db, make_seeded_db, make_settings
+from tests.helpers import load_seed_rows, make_db, make_settings
 
 T0 = datetime(2026, 11, 2, 9, 0, tzinfo=UTC)
 
@@ -28,16 +28,17 @@ class ResolveTest(unittest.TestCase):
         self.assertEqual(out.flags, [])
 
     def test_two_seed_rows_with_one_name_stay_two_persons_in_one_flagged_entry(self):
-        """Both Jakob Cassiman rows stay separate persons; a hit on one gives one entry holding both, flagged."""
+        """Two seed rows with one name stay separate persons; a hit on one gives one entry holding both, flagged."""
         settings = make_settings(self)
-        store = make_seeded_db(self, settings)
+        store = make_db(self, settings)
+        load_seed_rows(self, store, "baef", "Ada Example", 2019, 2018)
         ids = [store.conn.execute("SELECT person_id FROM person_identifiers WHERE value = ?", (key,)).fetchone()[0]
-               for key in ("baef|jakob-cassiman|2019|", "baef|jakob-cassiman|2018|")]
+               for key in ("baef|ada-example|2019|", "baef|ada-example|2018|")]
         self.assertNotEqual(*ids)
         ctx = StepContext(search_id="s", store=store, llm=None, http=None, now=now, new_id=new_id,
                           log=logging.getLogger("fn.step"), settings=settings)
         out = resolve.run(ctx, ResolveIn(outs=[LaneOut(lane="seeds", query="q", total_seen=1,
-                                                       hits=[hit(ids[1], "jakob cassiman", 1)])]))
+                                                       hits=[hit(ids[1], "ada example", 1)])]))
         (entry,) = out.entries
         self.assertEqual((entry.person_ids, entry.lane_ranks), ([ids[1], ids[0]], {"seeds": 1}))
         self.assertEqual(entry.card_person_ids, [ids[1], ids[0]])
