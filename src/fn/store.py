@@ -895,6 +895,15 @@ class Store:
         rows = self.conn.execute("SELECT person_id FROM lookups WHERE kind = ? AND verdict != 'error'", (kind,))
         return {r[0] for r in rows}
 
+    def lookups_since(self, kind: str, person_ids: list[str], since: datetime) -> set[str]:
+        """The records among person_ids with a lookup of the kind at or after since whose verdict is not failed or error."""
+        if not person_ids:
+            return set()
+        rows = self.conn.execute(
+            f"SELECT person_id FROM lookups WHERE kind = ? AND at >= ? AND verdict NOT IN ('failed', 'error') "
+            f"AND person_id IN ({', '.join('?' * len(person_ids))})", (kind, _iso(since), *person_ids))
+        return {r[0] for r in rows}
+
     def save_lookup(self, lookup: Lookup, at: datetime) -> None:
         """Store the lookup, replacing an earlier one of the same record and kind."""
         self.conn.execute(

@@ -625,6 +625,83 @@ class DeathsTest(unittest.TestCase):
         self.assertEqual(store.conn.execute("SELECT count(*) FROM claims").fetchone()[0], rows)
 
 
+class PersonTest(unittest.TestCase):
+    def setUp(self):
+        self.settings = make_settings(self)
+        self.text = "Faculty\nJan Peeters is professor of physics. Mail jan@example.org, phone +1 (617) 555-0100.\nOffice"
+
+    def source(self, text: str) -> Source:
+        return page_source(URL, "Faculty", text, {}, READ, "2026-10-01", kind="page", plain=True, date_method="page_date")
+
+    def test_read_person_sends_the_person_with_every_chunk_and_keeps_each_mention(self):
+        """Each chunk goes to extract_person with the person's name; a checked mention keeps its death year."""
+        text = "\n".join(f"* Menu item {i:03d} " + "x" * 80 for i in range(70)) + "\n" + self.text
+        jan = mention("Jan Peeters", "Jan Peeters is professor of physics.") | {"died": 2020}
+        stub = RecordingLLM(by_marker({"Jan Peeters is": [jan]}))
+        ctx = StepContext(search_id="s", store=None, llm=stub, http=None, now=now, new_id=new_id,
+                          log=logging.getLogger("fn.step"), settings=self.settings)
+        [(found, considered)] = extract.read_person(ctx, [(self.source(text), "Jan Peeters")])
+        self.assertEqual([(task, data["person"]) for task, data in stub.data], [("extract_person", "Jan Peeters")] * 2)
+        self.assertEqual([(located.name, m.died) for located, m in found], [("Jan Peeters", 2020)])
+        self.assertEqual(considered, [])
+
+    def contacts(self, text: str, name: str = "Jan Peeters") -> list[tuple]:
+        return [(d.kind, d.value) for d in extract.contacts("p1", self.source(text), name)]
+
+    def test_contacts_keep_the_printed_email_and_phone_with_their_line_and_the_page_date(self):
+        """The email and phone near the name become claims quoting their line, dated by the page."""
+        found = extract.contacts("p1", self.source(self.text), "Jan Peeters")
+        line = "Jan Peeters is professor of physics. Mail jan@example.org, phone +1 (617) 555-0100."
+        self.assertEqual([(d.kind, d.value, d.quote, d.claim_date) for d in found],
+                         [("email", "jan@example.org", line, "2026-10-01"),
+                          ("phone", "+1 (617) 555-0100", line, "2026-10-01")])
+
+    def test_an_address_with_the_surname_is_taken_however_far_the_name_is(self):
+        far = "Jan Peeters is professor.\n" + "x " * 2000 + "\nMail jan.peeters@example.org."
+        self.assertEqual(self.contacts(far), [("email", "jan.peeters@example.org")])
+
+    def test_an_address_without_the_surname_is_taken_near_the_name_and_not_far_from_it(self):
+        self.assertEqual(self.contacts("Jan Peeters, physics. Mail office@example.org"), [("email", "office@example.org")])
+        self.assertEqual(self.contacts("Jan Peeters, physics.\n" + "x " * 400 + "\nMail office@example.org"), [])
+
+    def test_a_department_address_near_another_persons_name_is_not_taken(self):
+        self.assertEqual(self.contacts("Eva Claes, chair. Mail physics@example.org\nMore pages."), [])
+        both = "Jan Peeters, professor.\nEva Claes, chair. Mail physics@example.org"
+        self.assertEqual(self.contacts(both), [])
+        self.assertEqual(self.contacts(both.replace("chair. Mail physics", "professor. eva.claes")), [])
+
+    def test_the_address_with_the_surname_wins_over_one_that_only_stands_near_the_name(self):
+        text = "Jan Peeters. Office office@example.org and jan.peeters@example.org and peeters.team@example.org"
+        self.assertEqual(self.contacts(text), [("email", "jan.peeters@example.org")])
+        self.assertEqual(self.contacts("Jan Peeters. Office office@example.org then other@example.org"),
+                         [("email", "office@example.org")])
+
+    def test_a_surname_of_two_letters_does_not_match_a_local_part(self):
+        far = "Wei Li is professor.\n" + "x " * 2000 + "\nMail li@example.org."
+        self.assertEqual(self.contacts(far, "Wei Li"), [])
+        self.assertEqual(self.contacts("Wei Li is professor. Mail li@example.org.", "Wei Li"), [("email", "li@example.org")])
+
+    def test_a_name_written_with_a_middle_name_still_places_the_address(self):
+        self.assertEqual(self.contacts("Jan Pieter Peeters, physics. Mail office@example.org"), [("email", "office@example.org")])
+
+    def test_a_page_without_an_address_gives_nothing_and_words_are_no_address(self):
+        self.assertEqual(self.contacts("Jan Peeters is professor of physics."), [])
+        self.assertEqual(self.contacts("Jan Peeters: jan peeters at example dot org"), [])
+
+    def test_an_address_followed_by_a_full_stop_is_kept_without_it(self):
+        self.assertEqual(self.contacts("Jan Peeters: jan@example.org."), [("email", "jan@example.org")])
+
+    def test_a_phone_beside_the_email_counts_when_the_name_is_far(self):
+        far = "Jan Peeters is professor.\n" + "x " * 2000 + "\nMail jan.peeters@example.org, phone 617-555-0100."
+        self.assertEqual(self.contacts(far), [("email", "jan.peeters@example.org"), ("phone", "617-555-0100")])
+
+    def test_a_fax_a_year_range_and_a_short_run_are_no_phone(self):
+        text = "Jan Peeters, 2019-2024, since 2010 / 2012. Fax 617-555-0199. Room 4021. Updated 2026-10-01."
+        self.assertEqual(self.contacts(text), [])
+        self.assertEqual(self.contacts("Jan Peeters (1950-2020) was a physicist."), [])
+        self.assertEqual(self.contacts(text + " Tel 617-555-0100"), [("phone", "617-555-0100")])
+
+
 class NamesTest(unittest.TestCase):
     def test_clean_name_drops_titles_and_credentials(self):
         """Leading titles and trailing credentials go, in any number and case, with or without a final period.

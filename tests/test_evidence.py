@@ -452,5 +452,17 @@ class AgeTest(unittest.TestCase):
         self.assertFalse(self.age(published("c1", 2005, 2025, 2027)).recent)
 
 
+class RecentFactTest(unittest.TestCase):
+    def test_a_recent_date_or_year_counts_and_a_read_date_does_not(self):
+        """A recent claim date, valid_to or listed year is a recent fact; the same date set by the day FN read the page is not."""
+        today = TODAY.date()
+        self.assertTrue(evidence.recent_fact([job("c1", MIT, "2024")], today))
+        self.assertTrue(evidence.recent_fact([claim("c1", valid_to="2025", claim_date="2001")], today))
+        self.assertTrue(evidence.recent_fact([claim("c1", years=[2010, 2023])], today))
+        self.assertFalse(evidence.recent_fact([job("c1", MIT, "2010"), claim("c2", years=[2012])], today))
+        read = job("c1", MIT, "2026-11-01").model_copy(update={"date_method": "read_date"})
+        self.assertFalse(evidence.recent_fact([read], today))
+
+
 if __name__ == "__main__":
     unittest.main()

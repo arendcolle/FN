@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from datetime import date
 from html.parser import HTMLParser
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 from urllib.robotparser import RobotFileParser
 
 from fn.net import CacheMiss, HttpError
@@ -25,6 +25,8 @@ BLOCKS = {"p", "div", "li", "br", "tr", "td", "dd", "dt", "h1", "h2", "h3", "h4"
           "main", "blockquote"}
 MAIN = {"main", "article"}
 DATE_KEYS = ("article:modified_time", "og:updated_time", "datemodified", "article:published_time", "datepublished", "date")
+LINK_TARGETS = ("mailto:", "tel:")
+ROBOTS_ERROR = "robots.txt could not be read"
 ROBOTS: dict[str, RobotFileParser] = {}
 _LOCK = threading.Lock()
 _HOST_LOCKS: dict[str, threading.Lock] = {}
@@ -38,10 +40,22 @@ class Read:
     failed: str | None
     truncated: bool = False
     published: str | None = None
+    # True when a later read may succeed: a fetch error or a robots.txt that could not be read.
+    retry: bool = False
+
+
+def _shown(target: str, text: str, mail: bool) -> bool:
+    """Whether a link's text shows its mail or phone target: casefolded for mail, by digits for a phone."""
+    if mail:
+        return target.casefold() in text.casefold()
+    return re.sub(r"\D", "", target) in re.sub(r"\D", "", text)
 
 
 class _Text(HTMLParser):
-    """Collects the title, the whole body's lines and the lines inside main or article."""
+    """Collects the title, the whole body's lines and the lines inside main or article.
+
+    A mailto: or tel: link whose text does not show its target gets the target after its text.
+    """
 
     def __init__(self):
         super().__init__()
@@ -53,6 +67,8 @@ class _Text(HTMLParser):
         self.inside: list[str] = []
         self.line: list[str] = []
         self.main_line: list[str] = []
+        self.link: tuple[str, bool] | None = None
+        self.link_text: list[str] = []
 
     def _break(self) -> None:
         for parts, lines in ((self.line, self.body), (self.main_line, self.inside)):
@@ -71,6 +87,11 @@ class _Text(HTMLParser):
             self._break()
         if tag in MAIN:
             self.main += 1
+        if tag == "a":
+            href = (dict(attrs).get("href") or "").strip()
+            prefix = next((p for p in LINK_TARGETS if href.lower().startswith(p)), None)
+            target = unquote(href[len(prefix):].split("?")[0]).strip() if prefix else ""
+            self.link, self.link_text = ((target, prefix == "mailto:") if target else None), []
 
     def handle_endtag(self, tag):
         if tag in SKIP:
@@ -84,6 +105,13 @@ class _Text(HTMLParser):
             self._break()
         if tag in MAIN:
             self.main = max(self.main - 1, 0)
+        if tag == "a" and self.link:
+            target, mail = self.link
+            if not _shown(target, "".join(self.link_text), mail):
+                self.line.append(f" {target}")
+                if self.main:
+                    self.main_line.append(f" {target}")
+            self.link = None
 
     def handle_data(self, data):
         if self.skip:
@@ -92,6 +120,8 @@ class _Text(HTMLParser):
             self.title.append(data)
             return
         self.line.append(data)
+        if self.link:
+            self.link_text.append(data)
         if self.main:
             self.main_line.append(data)
 
@@ -174,7 +204,7 @@ def allowed(ctx: StepContext, url: str) -> str | None:
     try:
         parser = _robots(ctx, f"{parts.scheme}://{parts.netloc}")
     except HttpError as exc:
-        return f"robots.txt could not be read: {exc}"
+        return f"{ROBOTS_ERROR}: {exc}"
     return None if parser.can_fetch(AGENT, url) else "robots.txt disallows it"
 
 
@@ -219,11 +249,13 @@ def _guard(ctx: StepContext, url: str) -> None:
 def read(ctx: StepContext, url: str) -> Read:
     """Fetch url after the robots.txt check and return its text, or the reason it could not be read."""
     if reason := allowed(ctx, url):
-        return Read(url, None, None, reason)
+        return Read(url, None, None, reason, retry=reason.startswith(ROBOTS_ERROR))
     try:
         body = ctx.http.get(url, redirects=MAX_REDIRECTS, agent=USER_AGENT, check=lambda hop: _guard(ctx, hop)).content
     except HttpError as exc:
-        return Read(url, None, None, str(exc))
+        # A timeout, a 429 or a server error may pass; a refusal (another 4xx, a refused redirect) will not.
+        again = "redirected to" not in str(exc) if exc.status is None else exc.status == 429 or exc.status >= 500
+        return Read(url, None, None, str(exc), retry=again)
     if body.startswith(b"%PDF-"):
         return Read(url, None, None, "a PDF, not a web page")
     try:
@@ -255,13 +287,13 @@ def read_all(ctx: StepContext, urls: list[str]) -> list[Read]:
             try:
                 found.append(read(ctx, urls[at]))
             except Exception as exc:  # noqa: BLE001 one page's error must not lose the host's other pages
-                found.append(Read(urls[at], None, None, f"{type(exc).__name__}: {exc}"))
+                found.append(Read(urls[at], None, None, f"{type(exc).__name__}: {exc}", retry=True))
         return found
 
     reads: dict[int, Read] = {}
     for places, result in zip(hosts.values(), fan_out(one_host, list(hosts.values()), WORKERS)):
         for n, at in enumerate(places):
-            reads[at] = (Read(urls[at], None, None, f"{type(result).__name__}: {result}")
+            reads[at] = (Read(urls[at], None, None, f"{type(result).__name__}: {result}", retry=True)
                          if isinstance(result, Exception) else result[n])
     return [reads[at] for at in range(len(urls))]
 

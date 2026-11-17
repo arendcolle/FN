@@ -1,7 +1,7 @@
 import hashlib
 import threading
 import unittest
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from unittest import mock
 
 import httpx
@@ -14,6 +14,7 @@ from fn.contracts import (
     Identifier,
     LaneHit,
     LaneOut,
+    Lookup,
     Search,
     Source,
 )
@@ -93,6 +94,19 @@ class EnrichTest(unittest.TestCase):
                 quote_end=start + len(inst["display_name"]), source=source, claim_date="2010",
                 date_precision="year", date_method="record_field"), AT)
         return person.id
+
+    def test_lookups_since_names_the_records_with_a_lookup_that_did_not_fail(self):
+        """A lookup of the kind at or after the time counts unless it failed or erred; another kind or record does not."""
+        ids = [self.store.resolve_person([Identifier(scheme="seed", value=f"fict|P{n}|2010")], f"Ann P{n}").id
+               for n in range(6)]
+        rows = [(ids[0], "web_person", "nothing_new", AT), (ids[1], "web_person", "added", AT - timedelta(days=1)),
+                (ids[2], "web_person", "failed", AT), (ids[3], "web_person", "error", AT),
+                (ids[4], "openalex_author", "matched", AT), (ids[5], "web_person", "not_sure", AT)]
+        with self.store.tx():
+            for person_id, kind, verdict, at in rows:
+                self.store.save_lookup(Lookup(person_id=person_id, kind=kind, verdict=verdict, detail=""), at)
+        self.assertEqual(self.store.lookups_since("web_person", ids[:5], AT), {ids[0]})
+        self.assertEqual(self.store.lookups_since("web_person", [], AT), set())
 
     def orcid_holder(self, orcid: str) -> str:
         return self.store.resolve_person([Identifier(scheme="orcid", value=f"https://orcid.org/{orcid}")],

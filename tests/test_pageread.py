@@ -116,6 +116,23 @@ class PageReadTest(unittest.TestCase):
         asked = {str(r.url) for r in self.sent}
         self.assertFalse(asked & {"https://deny.example/x", "https://locked.example/x", "https://slow.example/x"})
 
+    def test_a_read_may_be_retried_after_a_503_but_not_after_a_disallow(self):
+        """retry is true for a page or a robots.txt that answered 503 and false for a robots.txt that disallows the page."""
+        self.serve("https://busy.example/x", "down", status=503)
+        self.routes["https://sick.example/robots.txt"] = httpx.Response(503)
+        self.serve("https://deny.example/x", page(LONG), robots="User-agent: *\nDisallow: /x")
+        busy, sick, deny = self.reading("https://busy.example/x", "https://sick.example/x", "https://deny.example/x")
+        self.assertEqual([(r.failed is not None, r.retry) for r in (busy, sick, deny)], [(True, True), (True, True), (True, False)])
+        self.assertTrue(sick.failed.startswith(pageread.ROBOTS_ERROR))
+
+    def test_a_refused_page_is_not_retried_and_a_429_is(self):
+        """A 403 or a 404 will answer the same next time, so retry is false; a 429 may pass later, so retry is true."""
+        self.serve("https://walled.example/x", "no", status=403)
+        self.serve("https://gone.example/x", "gone", status=404)
+        self.serve("https://slow.example/x", "wait", status=429)
+        walled, gone, slow = self.reading("https://walled.example/x", "https://gone.example/x", "https://slow.example/x")
+        self.assertEqual([(r.failed is not None, r.retry) for r in (walled, gone, slow)], [(True, False), (True, False), (True, True)])
+
     def test_two_pages_on_one_host_fetch_robots_txt_once(self):
         """The parsed robots.txt is kept per host for the process, so the second page costs no second fetch."""
         self.serve("https://a.example/one", page(LONG))
@@ -223,6 +240,14 @@ class HtmlTextTest(unittest.TestCase):
         """Each block tag starts a line, inline text stays on one line and empty lines go."""
         title, text = html_text("<title> A \n title </title><p>One   two</p><p></p><div>Three <b>four</b></div>")
         self.assertEqual((title, text), ("A title", "One two\nThree four"))
+
+    def test_a_mail_or_phone_link_shows_its_target_after_its_text(self):
+        """A mailto: or tel: target the link text does not show follows the text, decoded and without its query; a
+        shown target is not repeated and a footer link stays out."""
+        _, text = html_text('<main><p>Jan Peeters <a href="MAILTO:jan%40example.org?subject=Hi">Email</a> '
+                            '<a href="tel:+1-617-555-0100">Call</a></p><p><a href="mailto:Eva@Example.org">eva@example.org</a> '
+                            '<a href="tel:6175550199">(617) 555-0199</a></p></main><footer><a href="mailto:x@example.org">Mail</a></footer>')
+        self.assertEqual(text, "Jan Peeters Email jan@example.org Call +1-617-555-0100\neva@example.org (617) 555-0199")
 
     def test_a_page_without_a_title_gives_none(self):
         self.assertEqual(html_text("<p>text</p>"), (None, "text"))
