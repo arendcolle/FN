@@ -78,6 +78,21 @@ def make_seeded_db(test: unittest.TestCase, settings: Settings | None = None) ->
     return make_db(test, settings)
 
 
+def load_seed_rows(test: unittest.TestCase, store: Store, list_name: str, name: str, *years: int) -> None:
+    """Load one made-up row of a seed list per year, all of one name, through seedload.load from a temporary folder."""
+    folder = Path(tempfile.mkdtemp())
+    test.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+    rows = [{"list": list_name, "row_key": f"{list_name}|{name.lower().replace(' ', '-')}|{year}|", "name": name,
+             "name_on_page": name, "year": year, "role": None, "institutions": [], "field": None, "place": None,
+             "jurisdiction": [], "profile_url": None, "source_url": f"https://example.org/{list_name}",
+             "source_title": "Example list", "source_date": "2026-07-16", "date_method": "page text", "page": None,
+             "quote": f"{name} {year}", "raw_path": str(folder / "page.txt"), "fetched_at": "2026-10-29"}
+            for year in years]
+    (folder / "page.txt").write_text(" ".join(r["quote"] for r in rows), encoding="utf-8")
+    (folder / "rows.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    seedload.load(store, seeds=folder)
+
+
 class StubLLM:
     """Answers every structured call with `answer`, or raises `error`, and records the call."""
 
