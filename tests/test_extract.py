@@ -14,6 +14,7 @@ from fn.contracts import (
     LLMResult,
     Located,
     PageRelation,
+    PersonMention,
     Source,
     Span,
     clean_name,
@@ -623,6 +624,43 @@ class DeathsTest(unittest.TestCase):
         rows = store.conn.execute("SELECT count(*) FROM claims").fetchone()[0]
         self.assertEqual((first, extract.deaths_stored(store, TODAY)), (DeathsOut(pages=1, deaths=1),) * 2)
         self.assertEqual(store.conn.execute("SELECT count(*) FROM claims").fetchone()[0], rows)
+
+
+class PersonTest(unittest.TestCase):
+    def setUp(self):
+        self.settings = make_settings(self)
+        self.text = "Faculty\nJan Peeters is professor of physics. Mail jan@example.org, phone +1 (617) 555-0100.\nOffice"
+
+    def source(self, text: str) -> Source:
+        return page_source(URL, "Faculty", text, {}, READ, "2026-10-01", kind="page", plain=True, date_method="page_date")
+
+    def test_read_person_sends_the_person_with_every_chunk_and_keeps_each_mention(self):
+        """Each chunk goes to extract_person with the person's name; a checked mention keeps its contact fields."""
+        text = "\n".join(f"* Menu item {i:03d} " + "x" * 80 for i in range(70)) + "\n" + self.text
+        jan = mention("Jan Peeters", "Jan Peeters is professor of physics.") | {"email": "jan@example.org"}
+        stub = RecordingLLM(by_marker({"Jan Peeters is": [jan]}))
+        ctx = StepContext(search_id="s", store=None, llm=stub, http=None, now=now, new_id=new_id,
+                          log=logging.getLogger("fn.step"), settings=self.settings)
+        [(found, considered)] = extract.read_person(ctx, [(self.source(text), "Jan Peeters")])
+        self.assertEqual([(task, data["person"]) for task, data in stub.data], [("extract_person", "Jan Peeters")] * 2)
+        self.assertEqual([(located.name, m.email) for located, m in found], [("Jan Peeters", "jan@example.org")])
+        self.assertEqual(considered, [])
+
+    def contacts(self, email: str | None, phone: str | None) -> list[tuple]:
+        source = self.source(self.text)
+        start = source.text.index("Jan")
+        located = Located(name="Jan Peeters", span=Span(start=start, end=start + 36))
+        given = PersonMention(name="Jan Peeters", quote="Jan Peeters", email=email, phone=phone)
+        return [(d.kind, d.value, d.quote, d.claim_date) for d in extract.contacts("p1", source, located, given)]
+
+    def test_contacts_keep_a_printed_email_and_phone_and_drop_what_the_page_does_not_print(self):
+        """An email and a phone the page prints become claims quoting their line and dated by the page; an email
+        written out in words, a value the page does not print or a short number gives none."""
+        line = "Jan Peeters is professor of physics. Mail jan@example.org, phone +1 (617) 555-0100."
+        self.assertEqual(self.contacts("jan@example.org", "+1 (617) 555-0100"),
+                         [("email", "jan@example.org", line, "2026-10-01"), ("phone", "+1 (617) 555-0100", line, "2026-10-01")])
+        self.assertEqual(self.contacts("jan at example dot org", "555-01"), [])
+        self.assertEqual(self.contacts("eva@example.org", "+1 (617) 555-0199"), [])
 
 
 class NamesTest(unittest.TestCase):

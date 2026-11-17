@@ -218,7 +218,7 @@ class LLMTest(unittest.TestCase):
 
     def test_each_task_waits_for_its_own_timeout_and_the_message_names_it(self):
         """A task listed in TIMEOUTS waits that many seconds, any other task waits 60 s, and a timeout names the seconds it waited."""
-        self.assertEqual(TIMEOUTS, {"extract": 120, "extract_leads": 120, "scout": 150})
+        self.assertEqual(TIMEOUTS, {"extract": 120, "extract_leads": 120, "scout": 150, "lookup": 150, "extract_person": 120})
         for table, expected in (({}, 60), ({"parse": 7}, 7)):
             proc = FakeProc(json.dumps(GOOD))
             with mock.patch.dict(TIMEOUTS, table), mock.patch("fn.llm.Popen", proc):
@@ -243,6 +243,13 @@ class LLMTest(unittest.TestCase):
         own = (PROMPTS / "extract_leads.md").read_text()
         self.assertEqual(system_prompt("extract_leads"), base + "\n" + own)
         self.assertNotIn(base.splitlines()[0], own)
+
+    def test_the_person_task_adds_its_own_file_after_the_extract_prompt(self):
+        """extract_person is the extract prompt, a blank line, then its own file; the lookup task searches the web."""
+        base, own = system_prompt("extract"), (PROMPTS / "extract_person.md").read_text()
+        self.assertEqual(system_prompt("extract_person"), base + "\n" + own)
+        self.assertNotIn(base.splitlines()[0], own)
+        self.assertEqual(TOOLS["lookup"], "WebSearch")
 
     def test_at_most_llm_procs_model_processes_run_at_once(self):
         """With llm_procs 2, four calls fanned out on four threads in one step run two processes at a time and all answer.
@@ -302,7 +309,7 @@ class LLMTest(unittest.TestCase):
         parse = ClaudeCli(self.dev).argv("system", "{}")
         self.assertIn("--tools=", parse)
         self.assertNotIn("--allowedTools", parse)
-        self.assertEqual(TOOLS, {"scout": "WebSearch"})
+        self.assertEqual(TOOLS, {"scout": "WebSearch", "lookup": "WebSearch"})
         proc = FakeProc(json.dumps(GOOD))
         with mock.patch("fn.llm.Popen", proc):
             self.search_with(self.worker_for(ClaudeCli(self.dev)), "--dangerously-skip-permissions")

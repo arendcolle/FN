@@ -59,8 +59,9 @@ FitVerdict = Literal["yes", "partly", "no"]
 PlaceFit = Literal["inside", "outside", "abroad", "unknown", "none"]
 AddedVia = Literal["search", "import", "profile"]
 CardState = Literal["network", "new", "name_match", "added", "skipped"]
-LookupKind = Literal["openalex_author", "orcid_employment"]
+LookupKind = Literal["openalex_author", "orcid_employment", "web_person"]
 Verdict = Literal["matched", "ambiguous", "no_match", "error"]
+LookupOutcome = Literal["added", "nothing_new", "not_sure", "failed"]
 # Ids the alias file holds and fn-orgs fetches; org rows from the OpenAlex lane may also use openalex: ids.
 REGISTRY_ID = re.compile(r"ror:0[a-z0-9]{6}[0-9]{2}|wikidata:Q[0-9]+")
 ORG_ID = re.compile(rf"{REGISTRY_ID.pattern}|openalex:I[0-9]+")
@@ -366,6 +367,17 @@ class PageMention(Model):
 
 class PagePeople(Model):
     people: list[PageMention]
+
+
+# The extract_person task's answer: the one named person, with the contact details and the death year the page prints.
+class PersonMention(PageMention):
+    email: str | None = None
+    phone: str | None = None
+    died: int | None = None
+
+
+class PersonPeople(Model):
+    people: list[PersonMention]
 
 
 # A mention whose quotes were found in the page text: the cleaned name, its offsets and each kept relation's.
@@ -948,12 +960,35 @@ class EnrichIn(Model):
 class Lookup(Model):
     person_id: str
     kind: LookupKind
-    verdict: Verdict
+    verdict: Verdict | LookupOutcome
     detail: str
 
 
 class EnrichOut(Model):
     lookups: list[Lookup]
+
+
+# The deepen step: one web lookup per chosen person, its answer the pages to read.
+class LookupPage(Model):
+    url: str
+    kind: Literal["employer", "own", "other"]
+    why: str
+
+
+class LookupAnswer(Model):
+    pages: list[LookupPage] = []
+    died: int | None = None
+    searches: list[str] = []
+
+
+class DeepenIn(Model):
+    chips: Chips
+
+
+class DeepenOut(Model):
+    lookups: list[Lookup] = []
+    claim_ids: list[str] = []
+    note: str = ""
 
 
 # The one step of the fn-index job: the stored copy of US authors with a Belgian affiliation.

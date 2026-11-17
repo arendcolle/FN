@@ -15,6 +15,8 @@ from fn.contracts import (
     Located,
     PageMention,
     PagePeople,
+    PersonMention,
+    PersonPeople,
     Relation,
     Source,
     SourceKind,
@@ -29,6 +31,8 @@ from fn.store import Store
 
 TASK = "extract"
 LEADS_TASK = "extract_leads"
+PERSON_TASK = "extract_person"
+EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[A-Za-z]{2,}")
 CHUNK_CHARS = 6_000
 # A relation quote is looked for this far from the start of its mention quote, so each speaker keeps their own line.
 NEAR_CHARS = 1_500
@@ -201,6 +205,43 @@ def read_all(ctx: StepContext, sources: list[Source],
     return pages
 
 
+def read_person(ctx: StepContext, pages: list[tuple[Source, str]],
+                ) -> list[tuple[list[tuple[Located, PersonMention]], list[Considered]]]:
+    """The named person on each page, in page order, from one extract_person call per chunk, ctx.settings.llm_workers at once.
+
+    Each mention is checked as read_all checks one. A chunk whose call fails gives a row with the error, and a warning
+    unless the recording is missing; any other exception is raised once every call is logged.
+    """
+    spans = [chunks(source.text) for source, _ in pages]
+    parts = [(source, start, end, name) for (source, name), cuts in zip(pages, spans) for start, end in cuts]
+
+    def ask(part: tuple[Source, int, int, str]) -> list[PersonMention]:
+        source, start, end, name = part
+        return ctx.llm.structured(PERSON_TASK, {"page": source.text[start:end], "person": name}, PersonPeople).value.people
+
+    answers = iter(fan_out(ask, parts, ctx.settings.llm_workers))
+    found_pages = []
+    for (source, _), cuts in zip(pages, spans):
+        found: list[tuple[Located, PersonMention]] = []
+        considered: list[Considered] = []
+        for i, (start, end) in enumerate(cuts, 1):
+            people, where = next(answers), f"chunk {i} of {len(cuts)} [{start}:{end}]"
+            if isinstance(people, (TagError, LLMCallError, ValidationError, FixtureMissing)):
+                if not isinstance(people, FixtureMissing):
+                    ctx.log.warning("extract_person on %s, %s: %s: %s", source.url, where, type(people).__name__, people)
+                considered.append(Considered(person_key=source.url, name="", stage="chunk", kept=False,
+                                             reason=f"{where}: {type(people).__name__}: {people}"))
+                continue
+            if isinstance(people, Exception):
+                raise people
+            for mention in people:
+                located, dropped = check(source, start, end, mention)
+                found += [(located, mention)] if located else []
+                considered += dropped
+        found_pages.append((found, considered))
+    return found_pages
+
+
 def mentions(ctx: StepContext, source: Source) -> tuple[list[Located], list[Considered]]:
     """Every person the page names, from one extract call per chunk of at most CHUNK_CHARS characters.
 
@@ -273,6 +314,25 @@ def _near(text: str, phrase: str, name: str) -> list[tuple[int, int, int]]:
         return []
     return sorted((min(abs(m.start() - at) for at in around), m.start(), m.end())
                   for m in re.finditer(rf"(?<!\w){r'\s+'.join(map(re.escape, words))}(?!\w)", text, re.IGNORECASE))
+
+
+def contacts(person_id: str, source: Source, located: Located, mention: PersonMention) -> list[ClaimDraft]:
+    """An email and a phone claim for the values the mention gives, each only when the page prints it within
+    NEAR_CHARS after the mention quote's start. The value is as printed, the quote its line, the date page_dated's.
+    """
+    found = []
+    for kind, value in (("email", mention.email), ("phone", mention.phone)):
+        value = (value or "").strip()
+        if not value or (kind == "email" and not EMAIL.fullmatch(value)) or (
+                kind == "phone" and not 7 <= len(re.sub(r"\D", "", value)) <= 15):
+            continue
+        at = locate(source.text, value, located.span.start, min(located.span.start + NEAR_CHARS, len(source.text)))
+        if at is None:
+            continue
+        start, end = _line(source.text, *at)
+        found.append(ClaimDraft(person_id=person_id, kind=kind, value=source.text[at[0]:at[1]], quote=source.text[start:end],
+                                quote_start=start, quote_end=end, source=source, **page_dated(source)))
+    return found
 
 
 def _line(text: str, start: int, end: int) -> tuple[int, int]:

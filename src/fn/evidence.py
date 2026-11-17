@@ -128,6 +128,13 @@ def recent(stamp: str | None, today: date) -> bool:
     return stamp >= f"{today.year - RECENT_YEARS:04d}-{today:%m-%d}"[:len(stamp)]
 
 
+def recent_fact(claims: list[Claim], today: date) -> bool:
+    """Whether a claim's valid_to, else claim_date, or one of its years is recent; a claim dated by the day FN read
+    its page does not count."""
+    return any(c.date_method != "read_date" and (recent(c.valid_to or c.claim_date, today)
+                                                 or any(recent(f"{y:04d}", today) for y in c.years)) for c in claims)
+
+
 def places(claims: list[Claim], facts: dict[str, Org], today: date, names: geo.Names | None = None) -> list[Place]:
     """The stated places of a person's claims, then the cities of their recent employers, in claim order.
 
