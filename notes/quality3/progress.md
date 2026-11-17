@@ -47,6 +47,9 @@ One line per finished step, newest last. Times are local.
 - Lighter lookups (PR 89, by the lead): 12 people per search and one model call per page. Live: 145 s and 128 s, first cards after 20 and 24 s.
 - Slice u2b merged (PR 88) after a hand merge with e3 in the lookup module.
 - All 18 pull requests of the round (72 to 89) are on main; the suite has 1,096 tests and is green.
+- Rollout to the owner's database, after a backup: `fn-index` stored 9,434 US researchers with a Belgian affiliation, 8,891 of them new; `fn-orgs --match` asked ROR about 1,897 employer names and linked 936 claims to 625 organizations; `fn-orgs --deaths` found 15 deaths on 1,015 stored pages. The database holds 37,606 people.
+- Live on that database: the Washington question took 127 s (56 people under the first heading, 35 set aside), the New York question 154 s (1 person with the topic and a tie, 8 with the topic and no known tie). The two searches looked up 38 people: 18 lookups added facts, 8 people got an email address and 7 a phone number.
+- The first New York run took 214 s on a reading with one chip. Asked again 108 times live, the parse task gave no such reading. Slice p1 asks a thin reading again; the suite has 1,103 tests.
 
 ## Review ledger
 
@@ -64,3 +67,4 @@ Each build ran an Opus review loop; every slice ended with no blocker or should 
 | u2a | The no-match line showed for a question that asks for no tie | fixed before merge, with a test |
 | a1 | A relative's lifespan in the person's own sentence counts as the person's | left as a known limit |
 | e3 | A first pass that raises before it stores a row lets the second pass spend the full limit again | left as a known limit |
+| p1 | The first rule, a share of unread words, asked a short question with one wish twice | changed to a count of unread words before merge |

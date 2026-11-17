@@ -44,6 +44,8 @@ Seconds per search, live:
 
 The first cards show after 20 to 24 s in every version.
 
+On the owner's database after the rollout, live: the Washington question took 127 s with the first cards after 16 s, the New York question 154 s with the first cards after 17 s. A first run of the New York question took 214 s on a thin reading (decision P1).
+
 What the numbers do not show. The judges are models and score only what a card shows; a person can be right and score low because the card dates a fact by the day FN read the page. Five questions still have nobody invitable in the first ten: journalists in New York who grew up in Belgium, life-science investors in Boston with a Flemish degree, food traders in Chicago, economists in Chicago with a KU Leuven degree, Flemish architects in Los Angeles. Those people are not in the stored lists and the open web names few of them; a profile source such as LinkedIn would.
 
 ## The shape of a search after this round
@@ -59,6 +61,7 @@ What the numbers do not show. The judges are models and score only what a card s
 | Responsibility | Owner |
 | --- | --- |
 | Whether a chip is required or a wish | `parse.py` with `prompts/parse.md` |
+| Whether a reading is thin and is asked again | `parse.py` |
 | What a required wish does to a person's tier and to the cut | `rank.py` |
 | What a person's records show: place, job, tie, first and newest dated fact, a death | `evidence.py` |
 | The order in which steps run, what runs side by side, and the time budget | `search.py` |
@@ -127,6 +130,7 @@ The panel's principle is that a person known to fail a required wish is not in t
 - **The headline count is the open list:** the people under "In your network" plus the people under the three match headings. People set aside are not counted.
 - **A search stored with version-1 chips is unchanged on the page too:** its list, its count and its map.
 - **The fit check skips people already set aside,** so its 120 places go to the open list.
+- **P1. A thin reading is asked again.** About 1 live parse answer in 110 holds one chip for a question with several wishes, and the whole search then runs on it: the first live run of the New York question on the owner's database read only "federal politics" and listed political scientists in Belgium. The parse step asks once more when a reading holds at most one chip and leaves three or more of the question's content words outside it, and keeps the reading with more chips. A share of unread words was tried as the rule and dropped: good readings of long spoken questions leave most words unread, and a short question with one wish would be asked twice. The rule asks again for none of 190 good readings measured.
 
 ## Briefs for the first slices
 
