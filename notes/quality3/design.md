@@ -63,11 +63,14 @@ What the numbers do not show. The judges are models and score only what a card s
 | Whether a chip is required or a wish | `parse.py` with `prompts/parse.md` |
 | Whether a reading is thin and is asked again | `parse.py` |
 | What a required wish does to a person's tier and to the cut | `rank.py` |
+| Cutting a person a source says has died | `rank.py` |
 | What a person's records show: place, job, tie, first and newest dated fact, a death | `evidence.py` |
 | The order in which steps run, what runs side by side, and the time budget | `search.py` |
 | One step's row, its calls, and step numbers | `steps.py`, `store.py` |
 | Which people get a lookup and what is looked up | `deepen.py` (new) |
+| Which email and phone on a page are the person's, and whether a run of digits is a phone number | `extract.py` |
 | Reading a page | `pageread.py` |
+| Turning a PDF's bytes into its title, text and dates | `pdftext.py`, run by `pageread.py` in a child process |
 | Turning page text into claims | `extract.py` with its prompts |
 | Linking an employer name to an organization with a place | `orgs.py`, run by `fn-orgs` |
 | What a card, a list and a person page show | `present.py`, the design system |
@@ -110,7 +113,7 @@ A panel of three judges (the organizer, a search engineer, a data steward) voted
 - **N5. With a wished place, the place sorts before the tie grade inside a tier:** inside, then unknown, then outside.
 - **N6. The three match headings stay open. "Other people found" is one closed group at the end, is left out of the headline count and keeps at most 50 people.** The rest are cut after ordering, with the cut reason `over_cap`.
 - **N7. The results page shows how FN read the question:** one line under the question lists what FN took as required and what as a wish. The user changes it by asking again in other words.
-- **A1. A person a source says has died leaves the open list** and stands in a closed group "People who have died". A death counts only from a "Died:" line or a lifespan inside the person's own entry on a page, or from a Wikidata date of death with a second matching fact (rule E3). The card shows the source quote.
+- **A1. A person a source says has died leaves the open list** and stands in a closed group "People who have died" (changed after the round: such a person is now cut, see G2). A death counts only from a "Died:" line or a lifespan inside the person's own entry on a page, or from a Wikidata date of death with a second matching fact (rule E3). The card shows the source quote.
 - **A2. A first dated fact 60 years or more back with nothing recent keeps the person in their tier, after everyone else in it.** Recent means a role a source dates itself (never the date FN read the page) or two or more OpenAlex years in the last ten years. The first year leaves out a birth year and a lone leading year followed by a gap of more than ten years. The card says what is known, such as "First record 1958, nothing recent".
 - **A3. An emeritus or retired-looking person sorts after active people in the same tier.** Retired-looking means an emeritus role, or a first dated fact 45 years or more back without a dated current role in the last five years.
 - **E1. After the first ranking FN looks up missing facts for the first 20 people of the match tiers who miss a fact that can change their rank:** the place when a place was asked, a current role and employer, or any dated fact from the last five years. Contact details are looked up for the first 10 only. A lookup is stored and not repeated for 90 days. The person page gets a "Look up more" button for anyone else.
@@ -248,13 +251,24 @@ Done when: a test with sleeping stubs shows the first pass overlaps the lanes; t
 
 Not in this slice: any change to who qualifies or to what a lookup stores.
 
+## Changes the owner asked for after the round
+
+- **G1. FN reads the text of a PDF.** `pageread.read` refused every PDF, and 6 of the 59 people the lookup step had looked up met one, mostly a CV. The owner approved a PDF library. Four readers (pypdf, pypdfium2, pdfminer.six and the `pdftotext` binary) gave the same words and the same email addresses on the 7 PDFs in the HTTP cache, so the choice went to pypdf: pure Python, BSD-3-Clause, no further package and no system library. A child process with a 20 s limit parses the file, because it comes from the open web and a worker thread cannot be stopped from outside. A PDF gives its first 60 pages or 40,000 characters, its title and its modification date as the page date. A scan without text, an encrypted file and a file over the 5 MB fetch limit fail with a reason.
+- **G2. A person a source says has died is cut from a search.** The owner asked for the group "People who have died" to go and the other groups to stay. The ranker cuts such a person with the reason `died`, so they are in no list, count, group, export or walk and are not fit-checked or looked up. Migration 015 turns stored died rows into cut rows. The died card, its line and its card state are gone, and the design system shows four groups (version 13.1). The person's own page still states the death with its source. The count behind the gate of the topic web lane no longer includes dead people.
+- **G4. A run of digits is a phone number only when it looks like one.** The first CV read as a PDF gave a Scopus author id as the person's phone. Of the 19 phone numbers the contact rule had stored, 8 were no phone number: page ranges, parts of a DOI and of a handle address, an author id and a bare run of 8 digits. A run now needs a mark: a leading `+`, the North American shape, or a phone label right before it on its line. The rule returns the 11 right numbers and none of the 8 wrong ones, which a one-off run marked not correct on the owner's database. A number without a mark, such as a bare Belgian number without a label, is no longer stored. The email rule was checked the same way and holds: 13 of 18 stored addresses contain the surname, 4 the first name or initials.
+- **G3. Two tests build their own seed rows.** One test in `tests/test_rank.py` and one in `tests/test_resolve.py` looked up a real person's row in the local seed lists. Both now load made-up rows through `seedload.load`.
+
 ## What is left
 
 - Five benchmark questions find nobody invitable in the first ten (named under the measurements).
 - Several university sites refuse FN's page reader behind a bot check. FN respects that, so a person whose only pages are on such a site keeps a thin card.
-- FN does not read PDF files, and many CVs are PDFs. Reading them needs a PDF library, which is a new dependency for the owner to approve.
 - A death is taken when a relative with the same surname and a lifespan stands in the person's own sentence, and on a page where FN located only one of two neighbours the surname is the only guard.
 - A looked-up page that writes a name in another order than FN holds it ends as "not sure".
+- A looked-up page is dropped when the model quotes a line without the person's name, although the page writes the name elsewhere. This lost 8 of 58 recorded page readings, and 1 of 3 PDFs in the live check of G1.
+- On the person page the death line sits behind "Show more" under Work for 7 of the 9 people the Washington search cut as died. With the group gone, that page is the only place staff see the death.
+- Seven more test files and two scripts name people from the local seed lists.
+- Phone numbers the rule now loses: one after another number on the same line (a zip code, a room), one after a label the list does not know ("Phone number:", "Mob."), and a bare-digit `tel:` link whose text is a word.
+- A person's place can come from the last institution on an OpenAlex record while a looked-up page states a current job elsewhere. One professor at a German university stands in the Washington search on a 2025 affiliation with an institution there.
 - The lookup runs beside the lanes but still ends after them; a search takes 130 to 150 s. The next step would be to end the search when the lanes end and let the lookups update the list afterwards.
 - The web lane takes 65 to 90 s per search and needs the Parallel key. In the judged runs of round two it alone gave 2 of 23 invitable people. Whether to switch it off by default is the owner's call; the deployment plan assumes it is off.
 - Counts outside the results page (the searches list, the export, the gold report) still count people set aside.

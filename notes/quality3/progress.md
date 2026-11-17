@@ -50,6 +50,14 @@ One line per finished step, newest last. Times are local.
 - Rollout to the owner's database, after a backup: `fn-index` stored 9,434 US researchers with a Belgian affiliation, 8,891 of them new; `fn-orgs --match` asked ROR about 1,897 employer names and linked 936 claims to 625 organizations; `fn-orgs --deaths` found 15 deaths on 1,015 stored pages. The database holds 37,606 people.
 - Live on that database: the Washington question took 127 s (56 people under the first heading, 35 set aside), the New York question 154 s (1 person with the topic and a tie, 8 with the topic and no known tie). The two searches looked up 38 people: 18 lookups added facts, 8 people got an email address and 7 a phone number.
 - The first New York run took 214 s on a reading with one chip. Asked again 108 times live, the parse task gave no such reading. Slice p1 asks a thin reading again; the suite has 1,103 tests.
+- After the round the owner asked for three changes; a fourth and a test fix followed from them. All are on main (PRs 92 to 96), and the suite has 1,127 tests.
+- G3 (PR 92): two tests load made-up seed rows. A scan of the tracked files found people from the seed lists in 7 more test files and 2 scripts; they are left for the owner to decide.
+- G1 (PR 93): PDF reading with pypdf in a child process. The 6 PDFs the lookups had refused read with 1,955 to 35,478 characters, each with a date, in 0.4 s together. Through the lookup's page reading on a copy, 5 of the 6 pass the identity check with 7 to 14 facts each. Live on the owner's database, 6 people looked up again: 2 PDFs gave 28 claims dated by the files' own dates, and a third PDF ended as "does not name the person".
+- That last outcome has a cause of its own: the model quotes a line without the name and the check drops the reading. Replayed over the 58 recorded page readings of the lookups, 41 name the person, 8 fail this way, 4 write the name in another form, 5 give nothing usable.
+- G2 (PR 94): a dead person is cut. On the owner's database migration 015 turned 11 stored rows in 3 searches into cut rows; the Washington search shows 107 people and 26 set aside in three groups. The design system is at version 13.1.
+- G4 (PR 96): the phone rule. Before it, 8 of 19 stored phone numbers were wrong; they are marked not correct.
+- PR 95: one test of the lookup line mixed a fixed time, 17 November 09:00 UTC, with the real clock and failed on main from that minute on. It now uses a fixed merge time.
+- The local server runs main. It was stopped and started twice for these changes.
 
 ## Review ledger
 
@@ -68,3 +76,10 @@ Each build ran an Opus review loop; every slice ended with no blocker or should 
 | a1 | A relative's lifespan in the person's own sentence counts as the person's | left as a known limit |
 | e3 | A first pass that raises before it stores a row lets the second pass spend the full limit again | left as a known limit |
 | p1 | The first rule, a share of unread words, asked a short question with one wish twice | changed to a count of unread words before merge |
+| g1 | The hand check expected 7 reads where the database holds 6 (the lead's count) | fixed in the plan |
+| g1 | A lone surrogate from a broken font map cannot be stored | fixed before the build: `pdftext.clean` |
+| g1 | The first live CV gave an author id as the phone number | fixed in g4 |
+| g2 | Two more tests list migration numbers; the count behind the topic web lane's gate leaves out dead people | both written into the plan before the build |
+| g2 | The death line sits behind "Show more" on 7 of 9 person pages | left as a follow-up |
+| g4 | A lone "T" or "M" as a label would take a number after an author's initial | removed from the label list before the build |
+| g4 | A North American number after a zip code on one line is lost; several label forms are not known | left as follow-ups |
