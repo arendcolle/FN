@@ -29,6 +29,9 @@ technologie belgisch belgische belgie vlaams vlaamse vlaanderen recherche cherch
 universite personnes personne belge belges belgique flamand flamande flamands flandre
 """.split()}
 MAX_RELATED = 6
+# A reading with at most THIN chips that leaves UNREAD_WORDS content words of the question unread is asked again.
+THIN = 1
+UNREAD_WORDS = 3
 # Words that name a kind of person without saying which, so they are no help as a related word.
 RELATED_SKIP = GENERIC_WORDS | {name_key(w) for w in """
 specialist specialists professional professionals individual individuals staff member members specialiste specialistes
@@ -174,15 +177,23 @@ def check_spans(question: str, chips: Chips) -> Chips:
     return chips if result == chips else result
 
 
-def run(ctx: StepContext, inp: ParseIn) -> ParseOut:
-    """Ask the LLM for chips and return them once their spans check out.
+def chip_count(chips: Chips) -> int:
+    """The number of chips: topics, institutions, roles, the tie and the place."""
+    return len(_all_chips(chips))
 
-    Any ref from the model is dropped; an institution chip gets its ror: ref from data/org_aliases.csv only.
-    Raises SpanError for a model answer that claims an edited chip.
-    """
-    if ctx.llm is None:
-        raise RuntimeError("the parse step needs an LLM")
-    chips = ctx.llm.structured("parse", {"question": inp.question}, Chips).value
+
+def unread(question: str, chips: Chips) -> list[str]:
+    """The question's content words that no chip's span covers, in order."""
+    read = set()
+    for chip in _all_chips(chips):
+        span = chip.span
+        read.update(content_words(question[span.start:span.end] if span else chip.text))
+    return [w for w in content_words(question) if w not in read]
+
+
+def _reading(ctx: StepContext, question: str) -> Chips:
+    """One ask of the LLM, cleaned, with spans that check out. Raises SpanError for a chip claiming an edit."""
+    chips = ctx.llm.structured("parse", {"question": question}, Chips).value
     if any(chip.origin == "edited" for chip in _all_chips(chips)):
         raise SpanError("the model returned a chip with origin 'edited'")
     chips = chips.model_copy(update={
@@ -194,4 +205,24 @@ def run(ctx: StepContext, inp: ParseIn) -> ParseOut:
         "tie": chips.tie.model_copy(update={"ref": None, "related": [], "research": None}) if chips.tie else None,
         "version": 2,
     })
-    return ParseOut(chips=check_spans(inp.question, chips))
+    return check_spans(question, chips)
+
+
+def run(ctx: StepContext, inp: ParseIn) -> ParseOut:
+    """Ask the LLM for chips and return them once their spans check out.
+
+    Any ref from the model is dropped; an institution chip gets its ror: ref from data/org_aliases.csv only.
+    Asks once more when the first reading is thin and keeps the reading with more chips.
+    Raises SpanError for a model answer that claims an edited chip.
+    """
+    if ctx.llm is None:
+        raise RuntimeError("the parse step needs an LLM")
+    first = _reading(ctx, inp.question)
+    if chip_count(first) > THIN or len(unread(inp.question, first)) < UNREAD_WORDS:
+        return ParseOut(chips=first)
+    try:
+        second = _reading(ctx, inp.question)
+    except Exception as exc:  # noqa: BLE001 a failed second ask keeps the first reading
+        log.warning("second parse ask failed, first reading kept: %s", exc)
+        return ParseOut(chips=first)
+    return ParseOut(chips=second if chip_count(second) > chip_count(first) else first)

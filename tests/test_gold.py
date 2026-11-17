@@ -389,12 +389,12 @@ class RunCaseTest(unittest.TestCase):
             "Michel Goemans": "openalex #3", "Pierre Lermusiaux": "openalex #1", "Julien de Wit": "openalex #2",
             "Milena Janjevic": "openalex #4", "Anne Deconinck": ""})
         self.assertAlmostEqual(result.http_cost_usd, 0.0002)
-        self.assertAlmostEqual(result.llm_cost_usd, 0.012)
+        self.assertAlmostEqual(result.llm_cost_usd, 0.014)
         text = gold.report([result], datetime(2026, 10, 30, tzinfo=UTC), "abc123", True, "replay", "live")
         self.assertIn("| Pick | Result | Section | Rank | Lanes |", text)
         self.assertRegex(text, r"\| Milena Janjevic \| found \| new \| \d+ \| openalex #4 \|")
         self.assertIn(f"search `{result.search_id}` done, vendor calls $0.0002; "
-                      "LLM $0.0120 as the CLI reports it (subscription);", text)
+                      "LLM $0.0140 as the CLI reports it (subscription);", text)
 
     def test_an_unreachable_pick_no_lane_found_keeps_the_trace_step_and_reason_and_reach_evidence_follows(self):
         """Anne Deconinck is in no recorded file: her row names every lane that missed her, then reach.json's evidence."""
@@ -485,10 +485,10 @@ class StubbedRunTest(unittest.TestCase):
         self.assertEqual(sorted({p.verdict for p in result.picks}), ["missed", "no lane in slice"])
 
     def test_the_search_cost_is_split_into_vendor_and_llm_call_costs(self):
-        """Only the stub parse call is paid in this search, $0.002, and it counts as LLM cost, not vendor spend."""
+        """Only the two stub parse calls are paid in this search, $0.004, and it counts as LLM cost, not vendor spend."""
         settings = make_settings(self)
         worker = Worker(make_db(self, settings), settings, llm=StubLLM(GS10_CHIPS), http=StubHttp())
         self.addCleanup(worker.shutdown)
         result = gold.run_case(worker, gold.load_cases(["GS-10"])[0])
-        self.assertAlmostEqual(result.llm_cost_usd, 0.002)
+        self.assertAlmostEqual(result.llm_cost_usd, 0.004)
         self.assertEqual(result.http_cost_usd, 0.0)
