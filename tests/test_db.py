@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from fn import db
-from fn.contracts import Candidate, CardFit, Search, Source
+from fn.contracts import Candidate, CardFit, Org, Search, Source
 from fn.store import Store
 from fn.worker import now
 from tests.helpers import make_db, make_settings
@@ -194,6 +194,17 @@ class ClaimsFtsTest(unittest.TestCase):
         for term in ('"universite"', '"run"'):
             rows = conn.execute("SELECT rowid FROM claims_fts WHERE claims_fts MATCH ?", (term,)).fetchall()
             self.assertEqual(len(rows), 1, term)
+
+
+class OrgsNearTest(unittest.TestCase):
+    def test_an_org_in_the_box_is_returned_and_one_without_coordinates_or_beyond_it_is_not(self):
+        """orgs_near gives the ids of the orgs with coordinates in the box, ordered by id."""
+        store = make_db(self)
+        store.upsert_source(Source(id="s1", kind="record", url="https://example.org/x", text="t", content_hash="s1"))
+        for org_id, lat, lon in (("ror:0bbbbbb00", 42.4, -71.1), ("ror:0aaaaaa00", 42.3, -71.0),
+                                 ("ror:0cccccc00", None, None), ("ror:0dddddd00", 48.8, 2.3)):
+            store.upsert_org(Org(id=org_id, name=org_id, lat=lat, lon=lon, source_id="s1", fetched_at=now()), replace=True)
+        self.assertEqual(store.orgs_near(42.36, -71.06, 30.0), ["ror:0aaaaaa00", "ror:0bbbbbb00"])
 
 
 class SourceKindsTest(unittest.TestCase):

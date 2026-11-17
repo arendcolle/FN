@@ -503,6 +503,13 @@ class Store:
         )
         return [r[0] for r in rows]
 
+    def orgs_near(self, lat: float, lon: float, km: float) -> list[str]:
+        """The ids of the orgs with coordinates in a box reaching km from the point each way, ordered by id."""
+        dlat, dlon = km / 111.0, km / (111.0 * max(math.cos(math.radians(lat)), 0.01))
+        rows = self.conn.execute("SELECT id FROM orgs WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ? ORDER BY id",
+                                 (lat - dlat, lat + dlat, lon - dlon, lon + dlon))
+        return [r[0] for r in rows]
+
     def _hidden_everywhere(self) -> set[tuple[str, str, str]]:
         """hidden_keys over the whole persons of every record with a rejected claim."""
         rows = self.conn.execute(

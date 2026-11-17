@@ -1,8 +1,9 @@
 """OpenAlex lane: authors of Belgian works per topic chip and of each institution chip, every fetched author a hit."""
 from dataclasses import dataclass, field
+from collections.abc import Callable
 from datetime import datetime
 
-from fn import geo, orgs
+from fn import geo, orgs, parse
 from fn.contracts import (
     Chips,
     Claim,
@@ -20,7 +21,8 @@ from fn.contracts import (
     normalize,
     record_source,
 )
-from fn.steps import StepContext, fan_out
+from fn.net import HttpError
+from fn.steps import StepContext, as_of, fan_out
 from fn.store import Store
 
 name: LaneName = "openalex"
@@ -35,6 +37,8 @@ BATCH = 100
 MAX_AUTHORS = 2000
 WORKS_PER_AUTHOR = 3
 TOPICS = 5
+AREA_YEARS = 6
+AREA_INSTITUTIONS = 100
 FETCH_WORKERS = 3
 NO_QUERY = "no topic or institution chip"
 
@@ -67,6 +71,23 @@ def org_of(inst: dict) -> str:
     return f"ror:{short(inst['ror'])}" if inst.get("ror") else f"openalex:{short(inst['id'])}"
 
 
+def see(seen: dict[str, Seen], author: dict, how: str) -> Seen:
+    found = seen.setdefault(short(author["id"]), Seen(author.get("display_name") or "", len(seen)))
+    if how not in found.found_by:
+        found.found_by.append(how)
+    return found
+
+
+def see_work(seen: dict[str, Seen], work: dict, how: str, keep: Callable[[dict], bool] = lambda _: True) -> None:
+    """See each author of the work's authorships that keep accepts, count the work for it and keep up to 3 works."""
+    authors = {short(a["author"]["id"]): a["author"] for a in work["authorships"] if a["author"].get("id") and keep(a)}
+    for author in authors.values():
+        found = see(seen, author, how)
+        found.works += 1
+        if len(found.works_seen) < WORKS_PER_AUTHOR and work["id"] not in {w["id"] for w in found.works_seen}:
+            found.works_seen.append({k: work.get(k) for k in ("id", "display_name", "publication_year")})
+
+
 def seen_authors(ctx: StepContext, chips: Chips, considered: list[Considered]) -> tuple[dict[str, Seen], list[str]]:
     """Every author on up to 4 pages of each institution's authors and on page 1 of each topic's Belgian works.
 
@@ -74,12 +95,6 @@ def seen_authors(ctx: StepContext, chips: Chips, considered: list[Considered]) -
     """
     seen: dict[str, Seen] = {}
     queries: list[str] = []
-
-    def see(author: dict, how: str) -> Seen:
-        found = seen.setdefault(short(author["id"]), Seen(author.get("display_name") or "", len(seen)))
-        if how not in found.found_by:
-            found.found_by.append(how)
-        return found
 
     # Institution lists go first: they are the narrower query, so MAX_AUTHORS cuts topic authors before them.
     for chip in chips.institutions:
@@ -93,7 +108,7 @@ def seen_authors(ctx: StepContext, chips: Chips, considered: list[Considered]) -
             body = ctx.http.get(f"{API}/authors", {"filter": where, "per_page": str(AUTHORS_PER_PAGE),
                                                    "page": str(page), "select": "id,display_name"}).json()
             for author in body["results"]:
-                see(author, f"institution {chip.text!r}")
+                see(seen, author, f"institution {chip.text!r}")
             count = body["meta"]["count"]
             if page * AUTHORS_PER_PAGE >= count or not body["results"]:
                 break
@@ -104,13 +119,53 @@ def seen_authors(ctx: StepContext, chips: Chips, considered: list[Considered]) -
         body = ctx.http.get(f"{API}/works", {"search": chip.text, "filter": "institutions.country_code:BE",
                                              "per_page": str(WORKS_PER_PAGE), "select": WORK_SELECT}).json()
         for work in body["results"]:
-            authors = {short(a["author"]["id"]): a["author"] for a in work["authorships"] if a["author"].get("id")}
-            for author in authors.values():
-                found = see(author, f"works on {chip.text!r}")
-                found.works += 1
-                if len(found.works_seen) < WORKS_PER_AUTHOR and work["id"] not in {w["id"] for w in found.works_seen}:
-                    found.works_seen.append({k: work.get(k) for k in ("id", "display_name", "publication_year")})
+            see_work(seen, work, f"works on {chip.text!r}")
     return seen, queries
+
+
+def inside_rors(ctx: StepContext, area: GeoArea) -> list[str]:
+    """The ROR urls of up to 100 stored ROR orgs inside the area, the ones with most person records first."""
+    stored = ctx.store.get_orgs(ctx.store.orgs_near(area.lat, area.lon, area.radius_km))
+    inside = [o.id for o in stored.values() if o.id.startswith("ror:")
+              and geo.distance_km(area.lat, area.lon, o.lat, o.lon) <= area.radius_km]
+    sizes = ctx.store.org_sizes(inside)
+    inside.sort(key=lambda i: (-sizes.get(i, 0), i))
+    return [f"https://ror.org/{i[4:]}" for i in inside[:AREA_INSTITUTIONS]]
+
+
+def area_works(ctx: StepContext, chips: Chips, area: GeoArea | None, seen: dict[str, Seen],
+               considered: list[Considered]) -> tuple[list[str], list[str]]:
+    """One works query per topic chip: recent works with an author at an institution inside the area.
+
+    Keeps only the authors listed there. Returns the query lines and the short ids of the authors kept, in order.
+    """
+    if area is None:
+        considered.append(note("required place has no area; no works query by place"))
+        return [], []
+    rors = inside_rors(ctx, area)
+    if not rors:
+        considered.append(note(f"no stored institution inside {area.city}; no works query by place"))
+        return [], []
+    inside = set(rors)
+    where = f"authorships.institutions.ror:{'|'.join(rors)},publication_year:>{as_of(ctx).year - AREA_YEARS}"
+    queries, kept = [], []
+
+    def listed(authorship: dict) -> bool:
+        return any(i.get("ror") in inside for i in authorship.get("institutions") or [])
+
+    for text in {t.text.casefold(): t.text for t in chips.topics}.values():
+        how = f"works on {text!r} in {area.city}"
+        queries.append(f"works search={text!r} filter=authorships.institutions.ror:<{len(rors)} inside {area.city}>")
+        try:
+            body = ctx.http.get(f"{API}/works", {"search": text, "filter": where, "per_page": str(WORKS_PER_PAGE),
+                                                 "select": WORK_SELECT}).json()
+        except HttpError as exc:
+            considered.append(note(f"{how} failed: {exc}"))
+            continue
+        for work in body["results"]:
+            see_work(seen, work, how, listed)
+            kept += [short(a["author"]["id"]) for a in work["authorships"] if a["author"].get("id") and listed(a)]
+    return queries, list(dict.fromkeys(kept))
 
 
 def fetch(ctx: StepContext, path: str, key: str, ids: list[str], select: str) -> dict[str, dict]:
@@ -310,8 +365,13 @@ def run(ctx: StepContext, inp: LaneIn) -> LaneOut:
     considered: list[Considered] = []
     seen, queries = seen_authors(ctx, inp.chips, considered)
     area = place_area(ctx, inp.chips, considered)
+    area_ids: list[str] = []
+    if parse.place_must(inp.chips) and parse.wants_research(inp.chips) and not parse.tie_must(inp.chips) and inp.chips.topics:
+        lines, area_ids = area_works(ctx, inp.chips, area, seen, considered)
+        queries += lines
     ids = list(seen)
-    records = fetch(ctx, "authors", "ids.openalex", ids[:MAX_AUTHORS], AUTHOR_SELECT)
+    fetched = list(dict.fromkeys([*area_ids, *ids]))[:MAX_AUTHORS]
+    records = fetch(ctx, "authors", "ids.openalex", fetched, AUTHOR_SELECT)
     kept = [a for a in ids if a in records]
     last_known = {a: (records[a].get("last_known_institutions") or [None])[0] for a in kept}
     inst_ids = list(dict.fromkeys(short(i["id"]) for i in last_known.values() if i))
@@ -330,11 +390,12 @@ def run(ctx: StepContext, inp: LaneIn) -> LaneOut:
             reasons += [ctx.store.upsert_claim(d, now).id for d in topic_drafts(seen[author].works_seen, person.id, now)]
             hits.append(LaneHit(person_id=person.id, name_key=person.name_key, lane=name, rank=rank,
                                 score=found_on(seen[author]), matched_on="; ".join([*seen[author].found_by, where[author][1]]), claim_ids=reasons))
+    fetched_set = set(fetched)
     rank_of = {a: r for r, a in enumerate(ordered, 1)}
     for author, found in seen.items():
         record = records.get(author)
         if author not in rank_of:
-            reason = (f"not fetched: beyond the first {MAX_AUTHORS} authors seen" if found.order >= MAX_AUTHORS
+            reason = (f"not fetched: beyond the first {MAX_AUTHORS} authors seen" if author not in fetched_set
                       else "no author record returned")
             considered.append(Considered(person_key=author, name=found.name, stage="record", kept=False, reason=reason))
             continue
