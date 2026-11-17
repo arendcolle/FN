@@ -3,7 +3,7 @@ import unittest
 from datetime import date
 
 from fn import network, present
-from fn.contracts import Candidate, CardFit, Chip, Chips, Place, Search
+from fn.contracts import Candidate, CardFit, Chip, Chips, Place, Search, StepRun
 from fn.present import GROUP_TITLES, HEADINGS, OLD_LINE
 from fn.worker import now
 from tests.test_results_page import YEAR, ResultsPageCase
@@ -365,10 +365,61 @@ class SetAsideGroupsTest(ResultsPageCase):
                                                     (GROUP_TITLES["died"], "1")])
 
     def test_a_died_card_names_the_death_and_its_source(self):
-        """The reason line of a card set aside as died is the death fact, its year once, then the source."""
+        """The first fit line of a card set aside as died is the death fact, its year once, then the source."""
         (person,) = self.listing([("new", 1, "died")])
         self.claim(person, "death", "1966", claim_date="1966", date_precision="year", date_method="stated_in_quote")
-        self.assertEqual(self.line(self.card(self.page(), person), "reason"), "Died 1966 · example.org")
+        self.assertEqual(self.line(self.card(self.page(), person), "fit"), "Died 1966 · example.org")
+
+    def test_a_died_card_has_no_role_reason_or_acts_and_a_rejected_death_gives_a_normal_card(self):
+        """A died card holds the name, 'Died <year> · source' and the tie line; with its death claim rejected it is a
+        normal card with Add and Skip, and a skipped one is the skipped line."""
+        (person,) = self.listing([("new", 1, "died")])
+        self.claim(person, "affiliation", "Example Labs", relation="works_at", claim_date="2020")
+        death = self.claim(person, "death", "1966", claim_date="1966", date_precision="year", date_method="stated_in_quote")
+        card = self.card(self.page(), person)
+        self.assertIn('<p class="fn-card__fit text-small">Died <span class="text-year">1966</span> · '
+                      '<a href="/sources/', re.sub(r'<a (class="fn-card__source" )?', "<a ", card))
+        self.assertEqual(self.line(card, "fit"), "Died 1966 · example.org")
+        self.assertEqual(re.findall(r'<p class="fn-card__fit [^"]*">(.*?)</p>', card)[-1], "No known tie to Flanders")
+        for part in ("fn-card__role", "fn-card__reason", "fn-card__acts", "Example Labs"):
+            self.assertNotIn(part, card)
+        network.reject_claim(self.store, death, now=now())
+        self.assertIn("fn-card__acts", self.card(self.page(), person))
+        self.assertNotIn("Died", self.card(self.page(), person))
+        self.setUp()
+        (person,) = self.listing([("new", 1, "died")])
+        self.claim(person, "death", "1966", claim_date="1966", date_precision="year", date_method="stated_in_quote")
+        network.skip(self.store, [person], now=now(), search_id="s1")
+        self.assertIn("fn-card--skipped", self.card(self.page(), person))
+
+    def test_an_old_first_record_is_its_own_paragraph_with_the_year_marked_and_an_aside_card_has_none(self):
+        """The old line is a fit paragraph of its own with the year in text-year; a card set aside shows none."""
+        for aside, shown in ((None, True), ("unfit", False)):
+            with self.subTest(aside=aside):
+                self.setUp()
+                (person,) = self.listing([("new", 1, aside)])
+                self.claim(person, "affiliation", "Example University", relation="studied_at", claim_date="1958",
+                           date_method="record_field")
+                self.assertEqual('<p class="fn-card__fit text-small">First record <span class="text-year">1958</span>, '
+                                 'nothing recent</p>' in self.card(self.page(), person), shown)
+
+    def test_the_status_line_says_looking_up_only_for_version_2_chips_with_a_running_deepen_step(self):
+        """While the deepen step runs on version-2 chips the status line, data-progress and status JSON say so; version 1,
+        a finished step and another step do not."""
+        cases = [(2, "deepen", "running", True), (2, "deepen", "ok", False), (2, "fit", "running", False),
+                 (1, "deepen", "running", False)]
+        for version, step, status, looking in cases:
+            with self.subTest(version=version, step=step, status=status):
+                self.setUp()
+                self.listing([("new", 1, None)], chips=Chips(version=version, place=BOSTON), status="running")
+                self.store.start_step(StepRun(id="r1", search_id="s1", seq=0, step=step, status=status, started_at=now(),
+                                              input_model="DeepenIn"), "{}")
+                html = self.page()
+                progress = re.search(r'data-progress="([^"]*)"', html).group(1)
+                self.assertEqual(("Looking up missing facts…" in html, progress.endswith(" looking")), (looking, looking))
+                self.assertEqual("Searching…" in html, not looking)
+                self.assertEqual(self.page("/searches/s1/cards").count("Looking up missing facts…"), int(looking))
+                self.assertEqual(self.client.get("/searches/s1/status").json().get("looking"), True if looking else None)
 
     def test_an_old_first_record_ends_the_second_line_on_version_2_only(self):
         """A first record from 1958 with nothing recent says so on a version-2 card and not on a version-1 card."""
@@ -378,9 +429,10 @@ class SetAsideGroupsTest(ResultsPageCase):
                 (person,) = self.listing([("new", 1, None)], chips=Chips(version=version, place=BOSTON))
                 self.claim(person, "affiliation", "Example University", relation="studied_at", claim_date="1958",
                            date_method="record_field")
-                fit = self.line(self.card(self.page(), person), "fit")
-                self.assertEqual(fit.endswith(OLD_LINE.format(year=1958)), ends, fit)
-                self.assertEqual(fit.endswith("First record 1958, nothing recent"), ends)
+                fits = re.findall(r'<p class="fn-card__fit text-small">(.*?)</p>', self.card(self.page(), person))
+                old = re.sub(r"<[^>]*>", "", fits[-1])
+                self.assertEqual(old == OLD_LINE.format(year=1958), ends, fits)
+                self.assertEqual(old == "First record 1958, nothing recent", ends)
 
 
 if __name__ == "__main__":

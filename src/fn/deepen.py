@@ -15,10 +15,12 @@ from fn.contracts import (
     Located,
     Lookup,
     LookupAnswer,
+    LookupIn,
     LookupOutcome,
     LookupPage,
     Org,
     PersonMention,
+    Search,
     Source,
     clean_name,
     name_key,
@@ -26,8 +28,10 @@ from fn.contracts import (
 )
 from fn.lanes.scout import same_person, titled
 from fn.llm import FixtureMissing
-from fn.steps import StepContext, as_of, fan_out
+from fn.steps import StepContext, as_of, fan_out, run_step
 
+STEP = "deepen"
+JOB = "fn-lookup"
 TASK = "lookup"
 KIND = "web_person"
 MAX_LOOKUPS = 20
@@ -38,13 +42,20 @@ FACTS = 14
 SECOND = ("works_at", "worked_at", "affiliated_with", "studied_at", "fellow_of")
 CONTACT_PAGES = ("employer", "own")
 UNLISTED = ("location", "email", "phone")
+NO_CLIENT = "no HTTP client or model, so no lookup"
 
 
 class Pick(NamedTuple):
-    candidate: Candidate
+    person_id: str
+    records: list[str]
     name: str
     missing: list[str]
     contact: bool
+
+
+def job_question(person_id: str) -> str:
+    """The question of the job that looks up one person; run_job reads the id back from it."""
+    return f"{JOB} {person_id}"
 
 
 def records_of(candidate: Candidate) -> list[str]:
@@ -90,7 +101,7 @@ def picks(ctx: StepContext, chips: Chips, skip: frozenset[str] = frozenset(), mo
         missed += bool(missing)
         contact = at < CONTACT_TOP and (missing or not gap) and not any(x.kind in ("email", "phone") for x in claims)
         if missing or contact:
-            chosen.append(Pick(c, names[c.person_id].display_name, missing, contact))
+            chosen.append(Pick(c.person_id, records, names[c.person_id].display_name, missing, contact))
     return chosen
 
 
@@ -156,14 +167,19 @@ def run(ctx: StepContext, inp: DeepenIn) -> DeepenOut:
     if inp.chips.version < 2:
         return DeepenOut(note="chips stored before this round, so no lookup")
     if ctx.http is None or ctx.llm is None:
-        return DeepenOut(note="no HTTP client or model, so no lookup")
+        return DeepenOut(note=NO_CLIENT)
     chosen = picks(ctx, inp.chips, frozenset(inp.skip), MAX_LOOKUPS - inp.used)
     if not chosen:
         return DeepenOut(note="nobody to look up")
-    blocks = [block(p.name, ctx.store.claims_of(records_of(p.candidate))) for p in chosen]
+    return look_up(ctx, chosen)
+
+
+def look_up(ctx: StepContext, chosen: list[Pick]) -> DeepenOut:
+    """Look up the chosen people and store what the confirmed pages give them; the output of run and one."""
+    blocks = [block(p.name, ctx.store.claims_of(p.records)) for p in chosen]
     answers = fan_out(lambda text: ctx.llm.structured(TASK, {"person": text}, LookupAnswer).value, blocks,
                       ctx.settings.llm_workers)
-    picked, gaps = [p.candidate.person_id for p in chosen], sum(bool(p.missing) for p in chosen)
+    picked, gaps = [p.person_id for p in chosen], sum(bool(p.missing) for p in chosen)
     if all(isinstance(a, FixtureMissing) for a in answers):
         return DeepenOut(note="no recorded lookup", picked=picked, gaps=gaps)
     plans = [Plan(p, a, *(([], []) if isinstance(a, Exception) else chosen_pages(a)))
@@ -197,7 +213,7 @@ def run(ctx: StepContext, inp: DeepenIn) -> DeepenOut:
 def store(ctx: StepContext, plan: Plan, pages: list[Page]) -> tuple[Lookup, list[str]]:
     """Store what the confirmed pages give the person and the lookup row in one transaction; the row and the new
     claim ids. A failed call, or an error while storing, gives a failed row and no claim."""
-    person_id = plan.pick.candidate.person_id
+    person_id = plan.pick.person_id
     try:
         if isinstance(plan.answer, Exception):
             raise plan.answer
@@ -221,7 +237,7 @@ def attach(ctx: StepContext, plan: Plan, pages: list[Page]) -> tuple[Lookup, lis
     """The lookup row and the ids of the claims the confirmed pages added; the first outcome that applies wins:
     added, nothing new from a confirmed page, not sure, failed, nothing new."""
     pick = plan.pick
-    records = records_of(pick.candidate)
+    records = pick.records
     claims = ctx.store.claims_of(records)
     held = {c.id for c in claims}
     facts = ctx.store.get_orgs(list(dict.fromkeys(c.org_id for c in claims if c.org_id)))
@@ -249,10 +265,10 @@ def attach(ctx: StepContext, plan: Plan, pages: list[Page]) -> tuple[Lookup, lis
         new = []
         drafts = []
         for located in named:
-            found = extract.drafts(pick.candidate.person_id, source, located, ctx)
+            found = extract.drafts(pick.person_id, source, located, ctx)
             drafts += found if located.role else found[1:]
         if page.kind in CONTACT_PAGES:
-            drafts += extract.contacts(pick.candidate.person_id, source, pick.name)
+            drafts += extract.contacts(pick.person_id, source, pick.name)
         for draft in drafts:
             claim = ctx.store.upsert_claim(draft, ctx.now())
             if claim.id not in held and claim.id not in new:
@@ -263,5 +279,23 @@ def attach(ctx: StepContext, plan: Plan, pages: list[Page]) -> tuple[Lookup, lis
         detail.append("no page found")
     outcome: LookupOutcome = ("added" if added else "nothing_new" if confirmed else "not_sure" if unsure
                               else "failed" if failed else "nothing_new")
-    lookup = Lookup(person_id=pick.candidate.person_id, kind=KIND, verdict=outcome, detail="; ".join(detail))
+    lookup = Lookup(person_id=pick.person_id, kind=KIND, verdict=outcome, detail="; ".join(detail))
     return lookup, added
+
+
+def one(ctx: StepContext, inp: LookupIn) -> DeepenOut:
+    """Look up one person on the staff's request: all their records, a lookup for contact details, no 90-day check.
+
+    A note and no call without an HTTP client or model, or for an unknown id.
+    """
+    if ctx.http is None or ctx.llm is None:
+        return DeepenOut(note=NO_CLIENT)
+    records = ctx.store.records_of(inp.person_id)
+    if not records:
+        return DeepenOut(note="no such person")
+    return look_up(ctx, [Pick(records[0].id, [r.id for r in records], records[0].display_name, [], True)])
+
+
+def run_job(ctx: StepContext, job: Search) -> None:
+    """The workflow of a lookup job: the lookup of the person its question names, as one deepen step."""
+    run_step(ctx, STEP, one, LookupIn(person_id=job.question.removeprefix(f"{JOB} ")))

@@ -14,6 +14,7 @@ from fn.contracts import (
     ImportRow,
     LastView,
     ListPlace,
+    LookupView,
     NetworkFilter,
     OrgView,
     PersonView,
@@ -27,6 +28,7 @@ from fn.contracts import (
 from fn.present import (
     FIELDS,
     FOLD_SHOWN,
+    OLD_LINE,
     RESULTS_STEP,
     UNKNOWN_DATE,
     cut,
@@ -37,6 +39,7 @@ from fn.store import fold
 from fn.web.html import Safe, h, page
 
 NETWORK_STEP = 200
+NOUN = {"email": "email address", "phone": "phone number"}
 
 
 def error_page(title: str, text: str) -> str:
@@ -114,9 +117,11 @@ def notice(search: Search, read: int) -> Safe:
                  h.p(what, " A broader topic or a wider area may find more.", class_="text-body"), class_="fn-notice")
 
 
-def status_line(people: int) -> Safe:
-    """The StatusLine while a search runs: 'Searching…', then how many people it found so far."""
+def status_line(people: int, looking: bool = False) -> Safe:
+    """The StatusLine while a search runs: 'Searching…', then how many people it found so far; while it looks up
+    missing facts, those words."""
     words = f"Searching… {plural(people, 'person', 'people')} so far" if people else "Searching…"
+    words = "Looking up missing facts…" if looking else words
     return h.p(h.span(words), h.span(class_="fn-status__bar"), class_="fn-status text-strong")
 
 
@@ -148,25 +153,28 @@ def with_back(href: str, back: str | None) -> str:
 
 def person_card(view: PersonView, search_id: str | None = None, acts: object = None, card_id: str | None = None,
                 reason: ReasonView | None = None, fit: str | None = None, shown: int = RESULTS_STEP,
-                back: str | None = None, aside: ReasonView | None = None) -> Safe:
+                back: str | None = None, aside: ReasonView | None = None, old: int | None = None) -> Safe:
     """The person's card: the name linking to their page, role and place, the line that set the person aside, the
-    reason line, the tie and place line and the combined line.
+    reason line, the tie and place line, the old-record line and the combined line.
 
     search_id is the search the card shows on and shown its shown count, which the Person page links back to; acts
-    follow the combined line; back is the page the source links return to.
+    follow the combined line; back is the page the source links return to; old is the year of an old first record.
     """
     key = card_id.removeprefix("card-") if card_id else None
     href = person_href(view.person_id, search_id, shown, key, "card")
+    before, _, after = OLD_LINE.partition("{year}")
     combined = h.p(h.a(f"Combined from {view.records} records", href=f"{href}#sources"),
                    class_="fn-card__combined text-small") if view.records > 1 else None
     return h.article(
         h.h3(h.a(view.name, href=href), class_="fn-card__name text-name"),
         h.p(role_line(view), class_="fn-card__role text-body") if role_line(view) else None,
-        h.p(aside.text, " · ", h.a(aside.source, href=with_back(aside.href, back), class_="fn-card__source"),
+        h.p(aside.text, [" ", h.span(aside.year, class_="text-year")] if aside.year else None,
+            " · ", h.a(aside.source, href=with_back(aside.href, back), class_="fn-card__source"),
             class_="fn-card__fit text-small") if aside else None,
         h.p(reason.text, " · ", h.a(reason.source, href=with_back(reason.href, back), class_="fn-card__source"),
             class_="fn-card__reason text-body") if reason else None,
         h.p(fit, class_="fn-card__fit text-small") if fit else None,
+        h.p(before, h.span(str(old), class_="text-year"), after, class_="fn-card__fit text-small") if old else None,
         combined,
         acts,
         class_="fn-card", id=card_id, data_person=view.person_id,
@@ -241,7 +249,8 @@ def result_card(card: CardView, search_id: str, here: str, shown: int = RESULTS_
         acts = [match_line(card.match, anchored) if card.match else None,
                 undo_form(card.undo_event, done, "fn-card__acts", anchored) if card.undo_event
                 else h.div(done, class_="fn-card__acts")]
-    return person_card(view, search_id, acts, card_id, card.reason, card.fit, shown, anchored, card.aside_line)
+    return person_card(view, search_id, acts, card_id, card.reason, card.fit, shown, anchored, card.aside_line,
+                       card.old_year)
 
 
 def network_href(flt: NetworkFilter, limit: int = NETWORK_STEP, view: str = "list", path: str = "/people") -> str:
@@ -486,29 +495,55 @@ def contact_edit(view: ProfileView, contact: ContactView, here: str, error: str 
 
 
 def contact_block(view: ProfileView, here: str, edit: str | None, error: str | None = None,
-                  typed: str | None = None) -> Safe:
-    """Email and phone, each with its value and where it came from, or 'Not provided', with Edit; edit opens one."""
-    rows = []
+                  typed: str | None = None) -> Safe | None:
+    """Email and phone, each with its value and where it came from, or 'Not provided', with Edit; edit opens one.
+
+    A person outside the network shows only the kinds FN holds, with no Edit; None when it holds none. A value FN found
+    on a page shows the source name that opens its proof.
+    """
+    member, rows = view.person.status == "in_list", []
     for contact in view.contact:
         label, claim, last = FIELDS[contact.kind], contact.claim, view.last
-        if edit == contact.kind:
+        if not (member or claim):
+            continue
+        if member and edit == contact.kind:
             rows.append(h.div(h.dt(label, class_="text-label"), contact_edit(view, contact, here, error, typed),
                               class_="fn-contact__row"))
             continue
         if claim:
             scheme = "mailto" if contact.kind == "email" else "tel"
+            link = h.a(contact.value, href=f"{scheme}:{contact.value}")
             cite = [h.a(claim.label, href=with_back(claim.href, here)), f", {claim.date}"]
             saved = last and last.kind == "edit_contact" and last.claim_id == claim.claim_id
-            shown = [h.p(h.a(contact.value, href=f"{scheme}:{contact.value}"), class_="fn-contact__value text-body"),
-                     undo_form(last, [cite, " · Saved"], "fn-cite text-small", here, "fn-link text-small") if saved
-                     else h.p(cite, class_="fn-cite text-small")]
+            if contact.found:
+                shown = h.div(link, " ", proof(claim.model_copy(update={"quote": None}),
+                                               f"Source for the {NOUN[contact.kind]}: {claim.source}", f"{here}#contact"),
+                              class_="fn-contact__value text-body")
+            else:
+                shown = [h.p(link, class_="fn-contact__value text-body"),
+                         undo_form(last, [cite, " · Saved"], "fn-cite text-small", here, "fn-link text-small") if saved
+                         else h.p(cite, class_="fn-cite text-small")]
         else:
             shown = h.p("Not provided", class_="fn-contact__none text-body")
         edit_href = f"{here}{'&' if '?' in here else '?'}edit={contact.kind}"
-        rows.append(h.div(h.dt(label, class_="text-label"), h.dd(shown), h.dd(h.a("Edit", class_="text-meta", href=edit_href)),
+        rows.append(h.div(h.dt(label, class_="text-label"), h.dd(shown),
+                          h.dd(h.a("Edit", class_="text-meta", href=edit_href)) if member else None,
                           class_="fn-contact__row"))
     return h.section(h.h2("Contact", class_="fn-section text-title"), h.dl(rows, class_="fn-contact"),
-                     class_="fn-profile__section", id="contact")
+                     class_="fn-profile__section", id="contact") if rows else None
+
+
+def lookup_line(view: LookupView, person_id: str, here: str) -> Safe:
+    """The lookup container under the summary, in the state's markup; its button posts the lookup and returns here."""
+    attrs = {"id": "lookup", "role": "status", "tabindex": "-1"}
+    press = lambda label: post_form(f"/people/{person_id}/lookup", label, "fn-btn fn-btn--quiet text-control",
+                                    f"{here}#lookup")
+    if view.state == "running":
+        return h.div(h.span("Looking up more…"), h.span(class_="fn-status__bar"), class_="fn-status text-strong", **attrs)
+    if view.state == "stopped":
+        return h.div(h.p(view.words, class_="text-strong"), press("Try again"), class_="fn-status-note", **attrs)
+    return h.div(h.span(view.words) if view.words else None, press("Look up again" if view.words else "Look up more"),
+                 class_="fn-more text-meta", **attrs)
 
 
 def summary_list(rows: list[SummaryRow]) -> Safe | None:
@@ -532,6 +567,16 @@ def cite_line(view: ClaimView, back: str) -> Safe:
     return h.p(h.a(view.label, href=with_back(view.href, back)), when, original, class_="fn-cite text-small")
 
 
+def proof(view: ClaimView, label: str, back: str) -> Safe:
+    """The source name that opens the fact's proof: its quote, years and cite line; label is the accessible name."""
+    return h.details(
+        h.summary(view.source, class_="fn-proof__name text-small", aria_label=label),
+        h.div(h.blockquote(view.quote.text, class_="fn-quote text-quote") if view.quote else None,
+              h.p(f"Years: {view.all_years}", class_="fn-cite text-small") if view.all_years else None,
+              cite_line(view, back), class_="fn-proof__body"),
+        class_="fn-proof")
+
+
 def claim_line(view: ClaimView, last: LastView | None, here: str) -> Safe:
     """A fact as the Claim part: New, the fact and its years, the source name that opens its proof, and Not correct.
 
@@ -544,13 +589,8 @@ def claim_line(view: ClaimView, last: LastView | None, here: str) -> Safe:
                                f"{here}#{anchor}"), class_="fn-claim fn-claim--removed", id=anchor)
     new = h.span("New", class_="fn-new text-label") if view.is_new else None
     back = f"{here}#{anchor}"
-    proof = h.details(
-        h.summary(view.source, class_="fn-proof__name text-small", aria_label=f"Source for {view.what}: {view.source}"),
-        h.div(h.blockquote(view.quote.text, class_="fn-quote text-quote") if view.quote else None,
-              h.p(f"Years: {view.all_years}", class_="fn-cite text-small") if view.all_years else None,
-              cite_line(view, back), class_="fn-proof__body"),
-        class_="fn-proof")
-    head = h.div(h.div(h.span(new, view.what, years, class_="fn-claim__what text-body"), " ", proof,
+    head = h.div(h.div(h.span(new, view.what, years, class_="fn-claim__what text-body"), " ",
+                       proof(view, f"Source for {view.what}: {view.source}", back),
                        class_="fn-claim__line"),
                  post_form(f"/claims/{view.claim_id}/reject", "Not correct", "fn-link text-meta", back,
                            **({"also": view.joined_claim_id} if view.joined_claim_id else {})),

@@ -99,7 +99,7 @@ def link(ctx: StepContext, people: list[str]) -> None:
 def look_up(ctx: StepContext, inp: DeepenIn) -> DeepenOut:
     """Run the deepen step; an exception stays on its row and gives an empty output."""
     try:
-        return run_step(ctx, "deepen", deepen.run, inp)
+        return run_step(ctx, deepen.STEP, deepen.run, inp)
     except Exception:  # noqa: BLE001 any error is kept on the step row and the ranking before it stands
         return DeepenOut()
 

@@ -58,7 +58,7 @@ JobFit = Literal["known", "employer", "none"]
 FitVerdict = Literal["yes", "partly", "no"]
 PlaceFit = Literal["inside", "outside", "abroad", "unknown", "none"]
 AddedVia = Literal["search", "import", "profile"]
-CardState = Literal["network", "new", "name_match", "added", "skipped"]
+CardState = Literal["network", "new", "name_match", "added", "skipped", "died"]
 LookupKind = Literal["openalex_author", "orcid_employment", "web_person"]
 Verdict = Literal["matched", "ambiguous", "no_match", "error"]
 LookupOutcome = Literal["added", "nothing_new", "not_sure", "failed"]
@@ -547,6 +547,7 @@ class ReasonView(Model):
     text: str
     source: str
     href: str
+    year: str | None = None
 
 
 class CardView(Model):
@@ -563,6 +564,8 @@ class CardView(Model):
     fit: str | None = None
     # The fact that set the person aside as outside or abroad: their place and its source.
     aside_line: ReasonView | None = None
+    # The year of an old first record, for the line after the second line.
+    old_year: int | None = None
 
 
 # One heading of the new section: how many people stand under it and the key of the first shown card under it.
@@ -620,6 +623,7 @@ class ContactView(Model):
     kind: Literal["email", "phone"]
     value: str | None = None
     claim: ClaimView | None = None
+    found: bool = False
 
 
 class FoldView(Model):
@@ -657,6 +661,11 @@ class WhyView(Model):
     place: str | None = None
 
 
+class LookupView(Model):
+    state: Literal["before", "running", "after", "stopped"]
+    words: str | None = None
+
+
 class ProfileView(Model):
     person: PersonView
     contact: list[ContactView]
@@ -668,6 +677,7 @@ class ProfileView(Model):
     summary: list[SummaryRow] = []
     records: int = 1
     why: WhyView | None = None
+    lookup: LookupView | None = None
 
 
 class BackLink(Model):
@@ -983,6 +993,10 @@ class DeepenIn(Model):
     chips: Chips
     skip: list[str] = []
     used: int = 0
+
+
+class LookupIn(Model):
+    person_id: str
 
 
 class DeepenOut(Model):

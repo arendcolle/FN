@@ -60,9 +60,10 @@ class Worker:
         self.store.create_search(found)
         return found
 
-    def submit(self, search_id: str) -> Future[Search]:
-        """Queue the search on the worker thread; an exception that escapes execute is logged redacted."""
-        future = self.pool.submit(self.execute, search_id)
+    def submit(self, search_id: str, workflow: Callable[[StepContext, Search], None] | None = None) -> Future[Search]:
+        """Queue the search on the worker thread, with workflow when given; an exception that escapes execute is
+        logged redacted."""
+        future = self.pool.submit(self.execute, search_id, workflow)
         future.add_done_callback(lambda done: self._log_escape(search_id, done))
         return future
 

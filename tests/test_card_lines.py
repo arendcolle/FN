@@ -324,7 +324,7 @@ class MapAndWhyTest(CardLinesCase):
                          ["No known tie to Flanders"])
         self.assertNotIn("examplehealth.org", why)
         self.assertLess(html.index('class="fn-profile__head"'), html.index('<section class="fn-why">'))
-        self.assertLess(html.index('<section class="fn-why">'), html.index('<dl class="fn-summary-list">'))
+        self.assertLess(html.index('<section class="fn-why">'), html.index('id="lookup"'))
         self.assertNotIn("fn-why", self.page(plain))
         self.assertNotIn("fn-why", self.page(plain, search="s1"))
 
