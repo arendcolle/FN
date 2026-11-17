@@ -1,5 +1,7 @@
 """The people a stored page names: one extract call per chunk, each quote found in the page text, and their claims."""
 import re
+from bisect import bisect_right
+from datetime import date
 from urllib.parse import urlsplit
 
 from pydantic import ValidationError
@@ -8,12 +10,14 @@ from fn import geo, orgs
 from fn.contracts import (
     ClaimDraft,
     Considered,
+    DeathsOut,
     Identifier,
     Located,
     PageMention,
     PagePeople,
     Relation,
     Source,
+    SourceKind,
     Span,
     clean_name,
     name_key,
@@ -36,6 +40,14 @@ LEGAL_FORMS = frozenset({"llp", "llc", "inc", "ltd", "plc", "pllc", "pc", "corp"
 PLACES: frozenset[Relation] = frozenset({"born_in", "lives_in", "origin"})
 PARAGRAPH = re.compile(r"[^\n]+(?:\n[^\n]+)*")
 LINE = re.compile(r"[^\n]+")
+DIED_LINE = re.compile(r"^\|?[ \t]*Died[ \t]*[:|][^\n]*", re.MULTILINE)
+YEAR = re.compile(r"(?<![0-9])(1[0-9]{3}|20[0-9]{2})(?![0-9])")
+# A death line or lifespan counts this far before the person's first quote, and never past a neighbour's quote.
+ENTRY_CHARS = 600
+LIFE_YEARS = (25, 110)
+LIFESPAN = r"\s*\(([^()\n]{4,60})\)"
+DASH = re.compile(r"[-–—]")
+DEATH_PAGES: tuple[SourceKind, ...] = ("page", "seed_page", "vendor_page")
 
 
 def locate(text: str, quote: str, start: int = 0, end: int | None = None) -> tuple[int, int] | None:
@@ -324,3 +336,81 @@ def locate_stored(store: Store, names: geo.Names) -> int:
             if found := geo.locate(place, names):
                 filled += store.fill_claim_place(claim_id, found.lat, found.lon)
     return filled
+
+
+def died_line(text: str, lo: int, q: int, named: re.Pattern, others: list[tuple[int, int]],
+              today: date) -> tuple[str, tuple[int, int]] | None:
+    """The year and span of the last Died line starting in [lo, q) after the surname, overlapped by no other
+    person's quote, whose first year is at most today's; None when there is none."""
+    found = None
+    for start in (m.start() for m in DIED_LINE.finditer(text, lo, q)):
+        line = DIED_LINE.match(text, start)
+        year = YEAR.search(line.group())
+        if (year and int(year.group()) <= today.year and named.search(text[lo:start])
+                and not any(a < q and b > start for a, b in others)):
+            found = year.group(), line.span()
+    return found
+
+
+def lifespan(text: str, regions: list[tuple[int, int]], named: re.Pattern,
+             today: date) -> tuple[str, tuple[int, int]] | None:
+    """The death year and span of the first surname followed by '(1894–1966)' that starts in one of regions.
+
+    The parenthesis holds two years with a dash between them, LIFE_YEARS apart, the second at most today's.
+    """
+    life = re.compile(named.pattern + LIFESPAN, re.IGNORECASE)
+    for a, b in regions:
+        # A surname that starts before b may end past it; the pattern is longer than any word it matches.
+        for m in named.finditer(text, a, b + len(named.pattern)):
+            if m.start() >= b or not (found := life.match(text, m.start())):
+                continue
+            inner = found.group(1)
+            years = list(YEAR.finditer(inner))
+            if len(years) != 2 or not DASH.search(inner, years[0].end(), years[1].start()):
+                continue
+            born, died = (int(y.group()) for y in years)
+            if LIFE_YEARS[0] <= died - born <= LIFE_YEARS[1] and died <= today.year:
+                return str(died), found.span()
+    return None
+
+
+def deaths(source: Source, people: dict[str, tuple[str, list[Span]]], today: date) -> list[ClaimDraft]:
+    """One death claim per person whose own entry on the page states a death, by a Died line, else a lifespan.
+
+    people maps a person id, or a mention identifier, to the name and quote spans. The entry starts at the latest of
+    ENTRY_CHARS before the person's first quote and the end of every other quote before it; the surname must stand in it.
+    """
+    text = source.text
+    spans = sorted((s.end, s.start, key) for key, (_, own) in people.items() for s in own)
+    ends = [end for end, _, _ in spans]
+    found = []
+    for key, (name, own) in people.items():
+        surnames = re.findall(r"[^\W_]+", clean_name(name))
+        if not own or not surnames:
+            continue
+        q = min(s.start for s in own)
+        before = bisect_right(ends, q)
+        lo = max(0, q - ENTRY_CHARS, ends[before - 1] if before else 0)
+        named = re.compile(rf"(?<!\w){re.escape(surnames[-1])}(?!\w)", re.IGNORECASE)
+        others = [(start, end) for end, start, k in spans[before:] if k != key and start < q]
+        hit = died_line(text, lo, q, named, others, today) or lifespan(
+            text, [(lo, q), *((s.start, s.end) for s in own)], named, today)
+        if hit:
+            year, (start, end) = hit
+            first, last = _line(text, start, end)
+            found.append(ClaimDraft(person_id=key, kind="death", value=year, quote=text[first:last], quote_start=first,
+                                    quote_end=last, source=source, claim_date=year, date_precision="year",
+                                    date_method="stated_in_quote"))
+    return found
+
+
+def deaths_stored(store: Store, today: date) -> DeathsOut:
+    """Store the death claims of every page, seed page and vendor page with claims, one transaction per page."""
+    pages, found = store.page_people(DEATH_PAGES), 0
+    for source_id, people in pages.items():
+        drafts = deaths(store.get_sources([source_id])[source_id], people, today)
+        with store.tx():
+            for draft in drafts:
+                store.upsert_claim(draft)
+        found += len(drafts)
+    return DeathsOut(pages=len(pages), deaths=found)

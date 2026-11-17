@@ -4,7 +4,7 @@ import sys
 
 from fn import extract, geo, orgs
 from fn.config import Settings, from_env
-from fn.contracts import HttpClient, OrgMatchIn, OrgMatchOut, OrgsIn, PlacesIn, PlacesOut, Search
+from fn.contracts import DeathsIn, DeathsOut, HttpClient, OrgMatchIn, OrgMatchOut, OrgsIn, PlacesIn, PlacesOut, Search
 from fn.net import Client
 from fn.steps import StepContext, run_step
 from fn.store import Store
@@ -12,6 +12,7 @@ from fn.worker import Worker
 
 PLACES_JOB = "fn-orgs --places"
 MATCH_JOB = "fn-orgs --match"
+DEATHS_JOB = "fn-orgs --deaths"
 
 
 def job_steps(ctx: StepContext, _: Search) -> None:
@@ -60,6 +61,21 @@ def match_names(store: Store, settings: Settings, http: HttpClient) -> Search:
         worker.shutdown()
 
 
+def deaths(ctx: StepContext, _: DeathsIn) -> DeathsOut:
+    """Store a death claim for each person whose own entry on a stored page states a death."""
+    return extract.deaths_stored(ctx.store, ctx.now().date())
+
+
+def fill_deaths(store: Store, settings: Settings, _: HttpClient) -> Search:
+    """Run fn-orgs --deaths as a job: one searches row of kind job with one deaths step; returns the ended job."""
+    worker = Worker(store, settings, llm=None, http=None)
+    try:
+        return worker.execute(worker.create_search(DEATHS_JOB, kind="job").id,
+                              lambda ctx, _: run_step(ctx, "deaths", deaths, DeathsIn()))
+    finally:
+        worker.shutdown()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="fn-orgs")
     flags = parser.add_mutually_exclusive_group()
@@ -67,8 +83,10 @@ def main() -> int:
                        help="fill org cities from stored OpenAlex records and locate stored place claims")
     flags.add_argument("--match", action="store_true",
                        help="ask ROR for the organization of each employer name and link it to the claims")
+    flags.add_argument("--deaths", action="store_true",
+                       help="store a death claim for each person whose own entry on a stored page states a death")
     args = parser.parse_args()
-    run = fill_places if args.places else match_names if args.match else refresh
+    run = fill_places if args.places else match_names if args.match else fill_deaths if args.deaths else refresh
     settings = from_env()
     store = Store(settings.db_path)
     store.migrate()
@@ -82,6 +100,9 @@ def main() -> int:
         out = OrgMatchOut.model_validate_json(store.get_payload(step.id)[1])
         print(f"fn-orgs --match job {job.id} done: {out.asked} names asked, {out.chosen} chosen, {out.linked} claims "
               f"linked, {out.failed} failed in {settings.db_path}")
+    elif job.status == "done" and job.question == DEATHS_JOB:
+        out = DeathsOut.model_validate_json(store.get_payload(step.id)[1])
+        print(f"fn-orgs --deaths job {job.id} done: {out.deaths} death claims on {out.pages} pages")
     elif job.status == "done":
         print(f"fn-orgs job {job.id} done: {len(orgs.ids())} orgs saved into {settings.db_path}")
     else:

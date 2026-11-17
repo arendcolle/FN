@@ -1,7 +1,8 @@
+import dataclasses
 import logging
 import unittest
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from unittest import mock
 
 from fn import evidence, geo, rank, resolve
@@ -824,6 +825,87 @@ class AsideTest(unittest.TestCase):
         self.assertEqual([c.person_id for c in out[-3:]], ["a0", "a1", "a2"])
         self.assertEqual({c.aside for c in out[-3:]}, {"outside"})
         self.assertEqual({c.aside for c in out[:-3]}, {None})
+
+
+def aged(ev: evidence.Evidence, *claims: Claim, **age) -> evidence.Evidence:
+    """The evidence with the age its claims give as of 17 November 2026, else the age fields given."""
+    return dataclasses.replace(ev, age=evidence.age(list(claims), date(2026, 11, 17)) if claims else evidence.Age(**age))
+
+
+def fact(claim_id: str, kind: str, relation: str | None = None, stamp: str | None = None, method: str = "record_field",
+         years: tuple[int, ...] = ()) -> Claim:
+    return Claim(id=claim_id, person_id="p1", kind=kind, relation=relation, value="Professor", quote="q", quote_start=0,
+                 quote_end=1, source_id="src", claim_date=stamp, date_method=method if stamp else None, years=list(years))
+
+
+OLD = dict(first=1958, back=68)
+
+
+class AgeOrderTest(unittest.TestCase):
+    HERE, NOWHERE, AWAY = AsideTest.HERE, AsideTest.NOWHERE, AsideTest.AWAY
+    fused = AsideTest.fused
+
+    def order(self, ask: Question, **people) -> list[str]:
+        return [c.person_id for c in self.fused(ask, **people)]
+
+    def test_a_dead_tier_1_person_stands_under_died_after_unfit_and_on_version_1_keeps_tier_1(self):
+        """A death sets the best-scored person aside after the unfit group; version-1 chips leave them open."""
+        people = dict(dead=aged(found(**self.HERE), died="d1"), nope=found(**self.HERE), open=found(**self.HERE))
+        out = self.fused(v2(), {"nope": "no", "dead": "yes", "open": "yes"}, **people)
+        self.assertEqual([(c.person_id, c.aside) for c in out], [("open", None), ("nope", "unfit"), ("dead", "died")])
+        self.assertEqual(out[-1].tier, 1)
+        dead = self.fused(ASK, **people)[0]
+        self.assertEqual((dead.person_id, dead.tier, dead.aside), ("dead", 1, None))
+
+    def test_died_beats_outside_and_a_dead_network_person_stays_open(self):
+        """A dead person outside a required area stands under died; the network section is never set aside."""
+        (c,) = self.fused(placed("must"), away=aged(found(**self.AWAY), died="d1"))
+        self.assertEqual(c.aside, "died")
+        (c,) = self.fused(placed("must"), statuses={"dead": "in_list"}, dead=aged(found(**self.HERE), died="d1"))
+        self.assertEqual((c.section, c.aside), ("network", None))
+
+    def test_under_a_required_place_an_old_tier_1_person_follows_tier_2_and_precedes_heading_2(self):
+        """An old first record with nothing recent goes last under its heading, not below it."""
+        people = dict(old=aged(found(**self.HERE), **OLD), unknown=found(**self.NOWHERE),
+                      heading2=found(kinds=(), fit="inside", km=5.0, countries=("US",), only_openalex=False, job="known"))
+        out = self.fused(placed("must"), **people)
+        self.assertEqual([(c.person_id, c.tier) for c in out], [("unknown", 2), ("old", 1), ("heading2", 3)])
+
+    def test_an_old_tier_5_person_follows_tier_6_with_a_tie_precedes_heading_4_and_counts_in_heading_3_s_cap(self):
+        """Tier 6 with a tie closes heading 3, so an old tier-5 person stands after it and is the 51st there."""
+        old5 = aged(found(match=False, only_openalex=False), **OLD)
+        tied6, none6 = found(match=False, words=(), only_openalex=False), found(match=False, kinds=(), only_openalex=False)
+        self.assertEqual(self.order(v2(), old5=old5, tied6=tied6, none6=none6), ["tied6", "old5", "none6"])
+        out = self.fused(v2(), old5=old5, **{f"t{k:02d}": tied6 for k in range(50)})
+        self.assertEqual([(c.person_id, c.cut_reason) for c in out if c.cut_reason], [("old5", "over_cap")])
+
+    def test_a_professor_with_a_1958_degree_and_a_2025_role_stays_and_without_the_role_moves(self):
+        """A role the source dates in 2025 makes an old first record recent and current."""
+        degree = fact("c1", "affiliation", "studied_at", "1958")
+        role = fact("c2", "role", stamp="2025-10-01")
+        other = found(**self.HERE)
+        self.assertEqual(self.order(v2(), prof=aged(found(**self.HERE), degree, role), other=other), ["prof", "other"])
+        self.assertEqual(self.order(v2(), prof=aged(found(**self.HERE), degree), other=other), ["other", "prof"])
+
+    def test_an_emeritus_person_follows_a_lower_scored_active_one(self):
+        """Inside a tier a retired-looking person stands after the active people."""
+        self.assertEqual(self.order(v2(), emeritus=aged(found(**self.HERE), emeritus=True), active=found(**self.HERE)),
+                         ["active", "emeritus"])
+
+    def test_46_years_back_with_two_openalex_years_since_2021_stays_and_with_a_read_date_role_alone_moves(self):
+        """Two recent OpenAlex years make a 1980 first record current; a role dated when FN read the page does not."""
+        busy = aged(found(**self.HERE), fact("c1", "affiliation", "affiliated_with", years=(1980, 2022, 2024)))
+        read = aged(found(**self.HERE), fact("c1", "affiliation", "affiliated_with", years=(1980,)),
+                    fact("c2", "role", stamp="2026-11-16", method="read_date"))
+        other = found(**self.HERE)
+        self.assertEqual(self.order(v2(), busy=busy, other=other), ["busy", "other"])
+        self.assertEqual(self.order(v2(), read=read, other=other), ["other", "read"])
+
+    def test_version_1_chips_keep_their_order(self):
+        """Old, retired-looking and dead people keep their score order on version-1 chips."""
+        people = dict(old=aged(found(**self.HERE), **OLD), emeritus=aged(found(**self.HERE), emeritus=True),
+                      dead=aged(found(**self.HERE), died="d1"), plain=found(**self.HERE))
+        self.assertEqual(self.order(placed("must", version=1), **people), ["old", "emeritus", "dead", "plain"])
 
 
 if __name__ == "__main__":

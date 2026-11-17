@@ -37,6 +37,7 @@ from fn.contracts import (
     SearchStatus,
     Source,
     SourceKind,
+    Span,
     StepCall,
     StepRun,
     name_key,
@@ -50,7 +51,7 @@ CLAIM_COLUMNS = [*(c for c in Claim.model_fields if c != "years"), "years_json"]
 ORG_COLUMNS = list(Org.model_fields)
 EVENT_COLUMNS = [*(c for c in Event.model_fields if c != "detail"), "detail_json"]
 # Contact claims never make a person a search hit.
-UNMATCHED_KINDS = ("email", "phone")
+UNMATCHED_KINDS = ("email", "phone", "death")
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -450,6 +451,22 @@ class Store:
         """Give a claim without coordinates these; returns whether a row changed."""
         cursor = self.conn.execute("UPDATE claims SET lat = ?, lon = ? WHERE id = ? AND lat IS NULL", (lat, lon, claim_id))
         return cursor.rowcount > 0
+
+    def page_people(self, kinds: tuple[SourceKind, ...]) -> dict[str, dict[str, tuple[str, list[Span]]]]:
+        """By source id of the kinds, each record with a claim there: its display name and quote spans in text order.
+
+        Death claims are left out, so a rerun finds the same line.
+        """
+        rows = self.conn.execute(
+            "SELECT c.source_id, c.person_id, p.display_name, c.quote_start, c.quote_end FROM claims c "
+            "JOIN sources s ON s.id = c.source_id JOIN persons p ON p.id = c.person_id "
+            "WHERE s.kind IN (SELECT value FROM json_each(?)) AND c.kind != 'death' "
+            "ORDER BY c.source_id, c.person_id, c.quote_start, c.quote_end", (json.dumps(kinds),))
+        found: dict[str, dict[str, tuple[str, list[Span]]]] = {}
+        for r in rows:
+            person = found.setdefault(r[0], {}).setdefault(r[1], (r[2], []))
+            person[1].append(Span(start=r[3], end=r[4]))
+        return found
 
     def get_orgs(self, org_ids: list[str]) -> dict[str, Org]:
         rows = self.conn.execute(

@@ -219,5 +219,19 @@ class PersonViewsTest(unittest.TestCase):
                          ("Worked at UGent", "2013–2015", "OpenAlex record", None))
 
 
+class DeathFactTest(unittest.TestCase):
+    setUp, person, claim = PersonViewsTest.setUp, PersonViewsTest.person, PersonViewsTest.claim
+
+    def test_a_death_reads_died_and_its_year_once_under_work_on_the_card_reason_and_the_person_page(self):
+        """A death claim is a Work fact in plain words, with no years beside the year it names."""
+        person = self.person("late")
+        found = self.claim(person, "death", "1966", claim_date="1966", date_precision="year", date_method="stated_in_quote")
+        view = present.claim_view(found, self.store.get_sources([found.source_id])[found.source_id], None)
+        self.assertEqual((view.what, view.years, view.all_years), ("Died 1966", "", ""))
+        self.assertEqual(present.reason_of(view, view.href).text, "Died 1966")
+        page = present.profile(self.store, person, TODAY)
+        self.assertEqual([(g.title, [(f.what, f.years) for f in g.facts]) for g in page.facts], [("Work", [("Died 1966", "")])])
+
+
 if __name__ == "__main__":
     unittest.main()

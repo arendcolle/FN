@@ -12,6 +12,7 @@ from fn.contracts import (
     LaneName,
     LaneOut,
     Source,
+    Span,
     page_source,
 )
 from fn.net import MissingKey
@@ -63,21 +64,26 @@ def people(ctx: StepContext, pages: list[tuple[int, Source]], considered: list[C
     With leads (one name list per page), each page is read for those people only.
 
     A person named twice on a page is one hit with the claims of both mentions. Each kept mention, and each
-    mention, relation or chunk dropped, is added to considered.
+    mention, relation or chunk dropped, is added to considered. A stored person whose own entry states a death gets
+    a death claim, which joins no hit or row.
     """
     hits: dict[str, LaneHit] = {}
     read = extract.read_all(ctx, [source for _, source in pages], leads)
     for (rank, source), (found, dropped) in zip(pages, read):
         considered += dropped
         page = f"page {rank}, {source.title}, {source.url}" if source.title else f"page {rank}, {source.url}"
+        spans: dict[str, tuple[str, list[Span]]] = {}
         with ctx.store.tx():
             for located in found:
                 ident = extract.identifier(source.url, located.name)
+                own = [located.span, *(s for _, s in located.relations), *(s for _, s in located.topics)]
                 if focus and not focus(source, located.name):
+                    spans.setdefault(ident.value, (located.name, []))[1].extend(own)
                     considered.append(Considered(person_key=ident.value, name=located.name, stage="mention", kept=False,
                                                  reason=f"{page}: {located.name} is not a lead"))
                     continue
                 person = ctx.store.resolve_person([ident], located.name)
+                spans.setdefault(person.id, (located.name, []))[1].extend(own)
                 claims = [ctx.store.upsert_claim(d, ctx.now()) for d in extract.drafts(person.id, source, located, ctx)]
                 hit = hits.get(person.id) or LaneHit(person_id=person.id, name_key=person.name_key, lane=lane,
                                                      rank=len(hits) + 1, score=1 / rank, matched_on=page)
@@ -85,6 +91,9 @@ def people(ctx: StepContext, pages: list[tuple[int, Source]], considered: list[C
                 hits[person.id] = hit.model_copy(update={"claim_ids": ids})
                 considered.append(Considered(person_key=ident.value, name=located.name, stage="mention", kept=True,
                                              reason=f"{page}: {'; '.join(listed(c) for c in claims)}"))
+            for draft in extract.deaths(source, spans, ctx.now().date()):
+                if draft.person_id in hits:
+                    ctx.store.upsert_claim(draft, ctx.now())
     return list(hits.values())
 
 

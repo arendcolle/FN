@@ -18,6 +18,7 @@ from fn.contracts import (
     Chip,
     Chips,
     ClaimDraft,
+    DeathsOut,
     Identifier,
     LaneHit,
     LaneOut,
@@ -315,6 +316,30 @@ class OrgPlacesTest(unittest.TestCase):
         self.assertEqual((job.status, step.step, step.status), ("done", "places", "ok"))
         self.assertEqual(PlacesOut.model_validate_json(self.store.get_payload(step.id)[1]), PlacesOut(orgs=1, claims=1))
         self.assertAlmostEqual(self.store.get_claim(claim.id).lat, 42.38, places=1)
+
+    def test_the_deaths_job_stores_one_death_on_a_two_person_page_and_a_rerun_adds_no_row(self):
+        """fn-orgs --deaths is a job with a deaths step; only the person whose own entry states a death gets a claim,
+        and a second run reports the same counts without a new row."""
+        settings = make_settings(self)
+        self.store = make_db(self, settings)
+        text = ("Anna Vermeulen\nDied: June 20, 1966\nAnna Vermeulen was a physicist.\n\n"
+                "Joris Lambrecht\nJoris Lambrecht was a chemist.")
+        page = page_source("https://example.org/list", "List", text, {}, NOW, None, kind="page", plain=True)
+        for name, role in (("Anna Vermeulen", "physicist"), ("Joris Lambrecht", "chemist")):
+            person = self.store.resolve_person([Identifier(scheme="mention", value=name)], name)
+            start = page.text.index(f"{name} was")
+            self.store.upsert_claim(ClaimDraft(person_id=person.id, kind="role", value=role, quote=page.text[start:start + 30],
+                                               quote_start=start, quote_end=start + 30, source=page))
+        outs = []
+        for _ in range(2):
+            job = orgjob.fill_deaths(self.store, settings, StubHttp())
+            (step,) = self.store.list_steps(job.id)
+            self.assertEqual((job.status, step.step, step.status), ("done", "deaths", "ok"))
+            outs.append(DeathsOut.model_validate_json(self.store.get_payload(step.id)[1]))
+        self.assertEqual(outs, [DeathsOut(pages=1, deaths=1)] * 2)
+        rows = self.store.conn.execute("SELECT p.display_name, c.value, c.quote FROM claims c JOIN persons p "
+                                       "ON p.id = c.person_id WHERE c.kind = 'death'").fetchall()
+        self.assertEqual([tuple(r) for r in rows], [("Anna Vermeulen", "1966", "Died: June 20, 1966")])
 
 
 class OrgPlacesMigrationTest(MigrationTest):

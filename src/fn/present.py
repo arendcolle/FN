@@ -65,8 +65,10 @@ DONE = {"add": "Added to your network", "skip": "Skipped", "edit_contact": "Save
         "not_same": "Marked as a different person"}
 RESULTS_STEP = 20
 HEADINGS = {1: "Topic and a tie to Flanders or Belgium", 2: "Topic, no known tie", 3: "Tie, topic not confirmed", 4: "Other people found"}
-ASIDE_HEADINGS = {"outside": "Outside the area asked for", "abroad": "Outside the US", "unfit": "Work does not match the question"}
+ASIDE_HEADINGS = {"outside": "Outside the area asked for", "abroad": "Outside the US", "unfit": "Work does not match the question",
+                  "died": "People who have died"}
 UNFIT_LINE = "The fit check says this work does not match the question"
+OLD_LINE = "First record {year}, nothing recent"
 WORK = "OpenAlex work "
 UNKNOWN_DATE = "date unknown"
 QUOTE_WORDS = 25
@@ -178,8 +180,10 @@ def prose(source: Source) -> bool:
 
 def own_years(claim: Claim, source: Source) -> frozenset[int]:
     """The years that belong to the fact: the ranker's units, without the year of a claim_date that is the day the
-    source's record was read or changed.
+    source's record was read or changed. A death's year is in its words, so it has none.
     """
+    if claim.kind == "death":
+        return frozenset()
     stamped = claim.date_method in RECORD_DATES or claim.claim_date == source.source_date
     found = rank.units(claim.model_copy(update={"claim_date": None}) if stamped else claim)
     return frozenset(int(u) for u in found if u != rank.UNDATED)
@@ -201,12 +205,14 @@ def gap_words(years: frozenset[int]) -> str:
 
 
 def what_of(claim: Claim, org: Org | None) -> str:
-    """The fact in plain words, such as 'Studied at KU Leuven', 'Topic: 6G', 'Born in Leuven' or 'Origin: Belgian'.
+    """The fact in plain words, such as 'Studied at KU Leuven', 'Topic: 6G', 'Born in Leuven' or 'Died 1966'.
 
     A role starts with a capital letter; a list role at an organization reads as its relation.
     """
     if claim.kind == "availability":
         return claim.value
+    if claim.kind == "death":
+        return f"Died {claim.value}"
     if claim.kind == "role":
         if claim.relation in LIST_ROLES and org:
             return f"{RELATIONS[claim.relation]} {org.name}"
@@ -692,17 +698,32 @@ def place_reason(store: Store, candidate: Candidate, today: date) -> ReasonView 
     return reason_of(view, view.href)
 
 
+def death_reason(store: Store, candidate: Candidate, today: date) -> ReasonView | None:
+    """The card's death fact, the one the ranker read, as a reason line; None when the card has no death claim."""
+    claims = store.claims_of(identity.on_card(store, candidate))
+    if (claim := ev.death(claims)) is None:
+        return None
+    view = claim_view(claim, store.get_sources([claim.source_id])[claim.source_id], None)
+    return reason_of(view, view.href)
+
+
 def card_view(store: Store, search: Search, candidate: Candidate, view: PersonView, skipped: bool,
               today: date) -> CardView:
     """The candidate's card: its state from the people's status now, the same-name network person and the Undo.
 
-    An outside or abroad card's reason line is its place fact; an unfit card's second line is UNFIT_LINE.
+    An outside or abroad card's reason line is its place fact, a died card's its death fact; an unfit card's second
+    line is UNFIT_LINE, and an old first record ends the second line with OLD_LINE.
     """
     reason = reason_of(view.evidence, view.evidence.href) if view.evidence else None
     if candidate.aside in ("outside", "abroad"):
         reason = place_reason(store, candidate, today)
-    base = {"key": candidate.person_id, "section": candidate.section, "person": view, "reason": reason,
-            "fit": UNFIT_LINE if candidate.aside == "unfit" else fit_words(candidate, view)}
+    if candidate.aside == "died":
+        reason = death_reason(store, candidate, today)
+    fit = UNFIT_LINE if candidate.aside == "unfit" else fit_words(candidate, view)
+    if search.chips and search.chips.version >= 2 and candidate.section == "new" and not candidate.aside:
+        age = ev.age(store.claims_of(identity.on_card(store, candidate)), today)
+        fit = " · ".join(p for p in (fit, OLD_LINE.format(year=age.first) if rank.old(age) else None) if p) or None
+    base = {"key": candidate.person_id, "section": candidate.section, "person": view, "reason": reason, "fit": fit}
     event = latest(store, view.person_id)
     if skipped:
         undo = LastView(event_id=event.id, kind="skip", words=DONE["skip"]) if event and event.kind == "skip" else None
