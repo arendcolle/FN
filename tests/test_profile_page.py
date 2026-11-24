@@ -2,6 +2,7 @@ import re
 import unittest
 from datetime import UTC, date, datetime, timedelta
 from html import unescape
+from unittest import mock
 
 from fastapi.testclient import TestClient
 
@@ -220,7 +221,7 @@ class ProfilePageTest(unittest.TestCase):
         self.assertNotIn(">Contact<", html)
 
     def test_a_card_of_two_records_shows_both_and_not_this_person_separates_the_second(self):
-        """With search and card the page combines the records; without search the second is a possible match."""
+        """With search and card the page combines the records; without search a page outside the network lists no possible match."""
         ada, twin = self.twins("Ada Fictief", "ada")
         mine = self.claim(ada, "topic", "Tidal energy")
         theirs = self.claim(twin, "topic", "Wind energy")
@@ -233,11 +234,59 @@ class ProfilePageTest(unittest.TestCase):
         alone = self.page(ada)
         self.assertNotIn("Wind energy", alone)
         self.assertNotIn("Combined from", alone)
-        self.assertIn("Same person", self.section(alone, "Possible matches"))
+        self.assertIsNone(self.section(alone, "Possible matches"))
         self.post(f"/people/{ada}/not-same", other=twin, next=f"/people/{ada}?search=s1&card={ada}")
         after = self.page(ada, search="s1", card=ada)
         self.assertNotIn("Combined from", after)
         self.assertNotIn("Wind energy", after)
+
+    def test_possible_matches_are_compare_tables_with_both_buttons(self):
+        """One match reads 'the possible match', ten read 'n of 10'; the left Name is text and the right one links.
+
+        After Different person nine tables and the done line are left.
+        """
+        ada = self.person("Ada Fictief", "ada", member=True)
+        twin = self.person("Ada Fictief", "twin")
+        self.claim(twin, "affiliation", "Gent University", relation="works_at", org_id=GENT_UNI.id)
+        one = self.section(self.page(ada), "Possible matches")
+        self.assertEqual(re.findall(r"<caption>(.*?)</caption>", one), ["This person and the possible match"])
+        self.assertIn(f'<tr><th scope="row">Name</th><td>Ada Fictief</td><td><a href="/people/{twin}?back=%2Fpeople%2F{ada}%23matches">'
+                      "Ada Fictief</a></td></tr>", one)
+        self.assertEqual(re.findall(r">(Same person|Different person)</button>", one), ["Same person", "Different person"])
+        others = [twin, *[self.person("Ada Fictief", f"twin-{n}") for n in range(9)]]
+        ten = self.section(self.page(ada), "Possible matches")
+        self.assertEqual(sorted(re.findall(r"<caption>This person and possible match (\d+) of 10</caption>", ten), key=int),
+                         [str(n) for n in range(1, 11)])
+        self.post(f"/people/{ada}/not-same", other=others[0], next=f"/people/{ada}#matches")
+        after = self.section(self.page(ada), "Possible matches")
+        self.assertEqual((after.count('<table class="fn-compare">'), "Marked as a different person" in after), (9, True))
+
+    def test_a_page_outside_the_network_runs_no_possible_match_query(self):
+        """A person outside the network has no Possible matches section and the query is never run; the same person
+        added from a card has the section."""
+        ada, twin = self.person("Ada Fictief", "ada"), self.person("Ada Fictief", "twin")
+        self.search([[ada]])
+        with mock.patch.object(network, "possible_matches", side_effect=AssertionError("no query")):
+            html = self.page(ada, search="s1", card=ada)
+        self.assertIsNone(self.section(html, "Possible matches"))
+        self.post(f"/searches/s1/people/{ada}/add", next="/searches/s1")
+        added = self.section(self.page(ada, search="s1", card=ada), "Possible matches")
+        self.assertIn(f"/people/{twin}", added)
+
+    def test_a_result_with_a_network_namesake_shows_line_table_and_three_buttons(self):
+        """A result with a network namesake has the same-name line, a Compare table with 'This person' and 'In your
+        network', then Same person, Add as new and Skip."""
+        ada, twin = self.person("Ada Fictief", "ada", member=True), self.person("Ada Fictief", "twin")
+        self.claim(ada, "role", "Engineer")
+        self.search([[twin]])
+        html = self.page(twin, search="s1", card=twin)
+        head = html.split('<main class="fn-page">', 1)[1]
+        self.assertIn("<caption>This person and Ada Fictief in your network</caption>", head)
+        self.assertIn('<th scope="col" class="text-label">This person</th><th scope="col" class="text-label">In your network</th>', head)
+        self.assertLess(head.index("Same name as"), head.index('<table class="fn-compare">'))
+        self.assertLess(head.index("</table>"), head.index(">Same person<"))
+        self.assertEqual(re.findall(r">(Same person|Add as new|Skip)</button>", head), ["Same person", "Add as new", "Skip"])
+        self.assertIn(f'<td><a href="/people/{ada}?back=', head)
 
     def test_a_merged_record_and_an_unknown_card_key_do_not_break_the_page(self):
         """A card whose second record was merged since has one record; a card key of no candidate keeps profile routes."""

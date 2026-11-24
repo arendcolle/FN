@@ -7,6 +7,9 @@ from fn.contracts import (
     BackLink,
     CardView,
     ClaimView,
+    CompareRow,
+    CompareValue,
+    CompareView,
     ContactView,
     FactGroup,
     FoldView,
@@ -215,6 +218,12 @@ def match_line(match: PersonView, back: str | None = None) -> Safe:
                class_="fn-card__match text-body")
 
 
+def match_facts(match: PersonView) -> Safe | None:
+    """What FN knows of a same-name network person: role, employer, place and the day added; None when it knows none."""
+    line = facts_line(role_line(match), f"added {match.added}" if match.added else None)
+    return h.p("In your network: ", line, class_="fn-card__match text-body") if line else None
+
+
 def result_card(card: CardView, search_id: str, here: str, shown: int = RESULTS_STEP) -> Safe:
     """The card in its state: Add and Skip, the same-name buttons, the added line with its note, or the skipped line.
 
@@ -235,7 +244,7 @@ def result_card(card: CardView, search_id: str, here: str, shown: int = RESULTS_
         acts = h.div(post_form(f"{action}/add", "Add", "fn-btn fn-btn--add text-control", here), skip,
                      class_="fn-card__acts")
     elif card.state == "name_match":
-        acts = [match_line(card.match, anchored),
+        acts = [match_line(card.match, anchored), match_facts(card.match),
                 h.div(post_form(f"{action}/same", "Same person", quiet, here, match=card.match.person_id),
                       post_form(f"{action}/new", "Add as new", quiet, here, match=card.match.person_id), skip,
                       class_="fn-card__acts")]
@@ -246,7 +255,7 @@ def result_card(card: CardView, search_id: str, here: str, shown: int = RESULTS_
         elif card.note:
             note = h.span(card.note, class_="text-body")
         done = [h.span("Added to your network", class_="fn-done text-strong"), note]
-        acts = [match_line(card.match, anchored) if card.match else None,
+        acts = [match_line(card.match, anchored) if card.match else None, match_facts(card.match) if card.match else None,
                 undo_form(card.undo_event, done, "fn-card__acts", anchored) if card.undo_event
                 else h.div(done, class_="fn-card__acts")]
     return person_card(view, search_id, acts, card_id, card.reason, card.fit, shown, anchored, card.aside_line,
@@ -447,7 +456,9 @@ def profile_state(view: ProfileView, here: str, route: str | None = None) -> Saf
         else:
             same = post_form(f"{theirs}/merge", "Same person", quiet, f"{theirs}?{query}" if query else theirs, other=pid)
             new = post_form(f"/people/{pid}/add", "Add as new", quiet, here, not_same=match.person_id)
-        return [line, h.div(same, new, skip, class_="fn-profile__acts")]
+        table = h.div(h.div(h.div(compare_table(view.name_compare, here), class_="fn-line__main"), class_="fn-line"),
+                      class_="fn-lines") if view.name_compare else None
+        return [line, table, h.div(same, new, skip, class_="fn-profile__acts")]
     return h.div(post_form(f"{route or f'/people/{pid}'}/add", "Add", "fn-btn fn-btn--add text-control", here), skip,
                  class_="fn-profile__acts")
 
@@ -683,26 +694,22 @@ def found_as_block(view: ProfileView, here: str) -> Safe | None:
                      class_="fn-profile__section", id="sources") if rows else None
 
 
-def possible_line(match: PersonView, person_id: str, here: str) -> Safe:
-    """A same-name person with enough to decide, and Same person and Different person."""
-    quiet, shown, here = "fn-btn fn-btn--quiet text-control", match.evidence, f"{here}#matches"
+def possible_line(compare: CompareView, match: PersonView, person_id: str, here: str) -> Safe:
+    """A same-name person as a Compare table with Same person and Different person."""
+    quiet, here = "fn-btn fn-btn--quiet text-control", f"{here}#matches"
     return h.div(
-        h.div(h.p(h.a(match.name, href=with_back(f"/people/{match.person_id}", here)), class_="text-popup"),
-              h.p(role_line(match), class_="text-body"),
-              h.p(orgs_line(match.orgs, match.more_orgs), class_="fn-line__meta text-body") if match.orgs else None,
-              h.p(h.a(shown.label, href=with_back(shown.href, here)), f", {shown.date}", class_="fn-cite text-small") if shown else None,
-              class_="fn-line__main"),
+        h.div(compare_table(compare, here), class_="fn-line__main"),
         h.div(post_form(f"/people/{person_id}/merge", "Same person", quiet, here, other=match.person_id),
               post_form(f"/people/{person_id}/not-same", "Different person", quiet, here, other=match.person_id),
               class_="fn-line__acts"),
-        class_="fn-line",
+        class_="fn-line fn-line--compare",
     )
 
 
 def possible_block(view: ProfileView, here: str) -> Safe | None:
     """Possible matches under their note, and the done line of the latest merge or different-person decision."""
     last = view.last
-    rows = [possible_line(m, view.person.person_id, here) for m in view.possible]
+    rows = [possible_line(c, m, view.person.person_id, here) for c, m in zip(view.compares, view.possible)]
     if last and (last.kind == "merge" or (last.kind == "not_same" and not last.separated)):
         rows.append(done_line(last, f"{here}#matches"))
     if not rows:
@@ -808,26 +815,48 @@ def facts_line(*parts: str | None) -> str:
     return " · ".join(p for p in parts if p)
 
 
-def name_match(row: ImportRow, view: PersonView) -> Safe:
-    """One name match: the unticked box 'Row 7. Same as <name>?' and the file's facts beside the network person's."""
-    cells = row.cells
-    file_job = ", ".join(cells[c] for c in ("role", "organization") if c in cells)
-    place = ", ".join(cells[c] for c in ("city", "state", "country") if c in cells)
-    job = ", ".join(x for x in (view.role, view.employer) if x)
+def compare_cell(values: list[CompareValue], more: int, back: str | None, none: str | None = None) -> Safe:
+    """One side of a Compare row: its value, a list for several, or the words of an empty side."""
+    if not values:
+        return h.td(none, class_="fn-compare__none")
+    items = [h.a(v.text, href=with_back(v.href, back)) if v.href else v.text for v in values]
+    if len(items) == 1 and not more:
+        return h.td(items)
+    return h.td(h.ul([h.li(item) for item in items], [h.li(f"and {more:,} more")] if more else None,
+                     class_="fn-compare__list"))
+
+
+def compare_row(row: CompareRow, view: CompareView, back: str | None) -> Safe:
+    mark = [" ", h.span("Differs", class_="fn-compare__differs text-label")] if row.differs else None
+    return h.tr(h.th(row.field, mark, scope="row"),
+                compare_cell(row.left, row.left_more, None, view.left_none),
+                compare_cell(row.right, row.right_more, back if row.field == "Name" else None, "Not known"))
+
+
+def compare_table(view: CompareView, back: str | None = None) -> Safe:
+    """The Compare part: the two records side by side; back is the page the other person's name link returns to."""
+    return h.table(
+        h.caption(view.caption),
+        h.thead(h.tr(h.td(), [h.th(t, scope="col", class_="text-label") for t in view.titles])),
+        h.tbody([compare_row(r, view, back) for r in view.rows]),
+        class_="fn-compare",
+    )
+
+
+def name_match(row: ImportRow, view: PersonView, compare: CompareView) -> Safe:
+    """One name match: the unticked box 'Row 7. Same as <name>?' and the file's row beside the network person's."""
     return h.div(h.div(
         h.p(h.input(type="checkbox", id=f"m{row.n}", name="merge", value=str(row.n)),
             h.label(f"Row {row.n}. Same as ", h.a(view.name, href=f"/people/{view.person_id}"), "?", class_="text-body",
                     for_=f"m{row.n}"), class_="fn-check"),
-        h.p("In the file: ", facts_line(file_job, place, cells.get("email")),
-            class_="fn-check__detail fn-line__meta text-small"),
-        h.p("In your network: ", facts_line(job, view.place, f"added {view.added}" if view.added else None),
-            class_="fn-check__detail fn-line__meta text-small"),
+        compare_table(compare),
         class_="fn-line__main"), class_="fn-line")
 
 
-def name_matches(rows: list[ImportRow], views: dict[str, PersonView]) -> list[Safe]:
+def name_matches(rows: list[ImportRow], views: dict[str, PersonView], compares: dict[int, CompareView]) -> list[Safe]:
     """The name matches under their heading, with the header box that ticks them all."""
-    shown = [name_match(r, views[r.person_id]) for r in rows if r.outcome == "name_match" and r.person_id in views]
+    shown = [name_match(r, views[r.person_id], compares[r.n]) for r in rows
+             if r.outcome == "name_match" and r.person_id in views]
     if not shown:
         return []
     return [

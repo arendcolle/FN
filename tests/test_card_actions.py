@@ -7,7 +7,8 @@ from html import unescape
 from fastapi.testclient import TestClient
 
 from fn import network
-from fn.contracts import Candidate, Identifier, Search
+from fn.contracts import Candidate, ClaimDraft, Identifier, Search, Source
+from fn.present import day_words
 from fn.web.app import create_app
 from fn.worker import now
 from tests.helpers import StubHttp, StubLLM, make_db, make_settings
@@ -79,6 +80,30 @@ class CardActionsTest(unittest.TestCase):
         self.assertEqual(self.buttons(twin_card), ["Same person", "Add as new", "Skip"])
         self.assertIn(f'Same name as <a href="/people/{ada}?back=%2Fsearches%2Fs1%23card-{twin}">Ada Example</a> in your network',
                       twin_card)
+
+    def test_a_same_name_card_shows_the_network_persons_facts_after_each_choice(self):
+        """Under the same-name line the card gives the network person's employer, place and day added, before
+        and after Same person and Add as new; a person without facts gives the day added only."""
+        ada, bob = self.person("Ada Example", "ada", member=True), self.person("Bob Example", "bob", member=True)
+        twin, other, bare = (self.person("Ada Example", "ada-2"), self.person("Bob Example", "bob-2"),
+                             self.person("Cy Example", "cy"))
+        network.add(self.store, [self.person("Cy Example", "cy-2")], via="import", now=now())
+        for person_id, kind, value, fields in ((ada, "affiliation", "Example Labs", {"relation": "works_at"}),
+                                               (ada, "location", "Leuven", {"relation": "lives_in"}), (bob, "role", "Chair", {})):
+            text = f"{kind}: {value}"
+            source = Source(id=f"s-{person_id}-{kind}", kind="page", url=f"https://example.org/{person_id}/{kind}", text=text,
+                            content_hash=f"h-{person_id}-{kind}")
+            self.store.upsert_claim(ClaimDraft(person_id=person_id, kind=kind, value=value, quote=text, quote_start=0,
+                                               quote_end=len(text), source=source, **fields), now())
+        day = day_words(now())
+        self.search("s1", [([twin], "new"), ([other], "new"), ([bare], "new")])
+        html = self.page("s1")
+        line = f'<p class="fn-card__match text-body">In your network: Example Labs · Leuven · added {day}</p>'
+        self.assertIn(line, self.card(html, twin))
+        self.assertIn(f'In your network: Chair · added {day}</p>', self.card(html, other))
+        self.assertIn(f"In your network: added {day}</p>", self.card(html, bare))
+        self.assertIn(line, self.act("s1", twin, "same", match=ada))
+        self.assertIn(f'In your network: Chair · added {day}</p>', self.act("s1", other, "new", match=bob))
 
     def test_add_puts_the_person_in_the_network_once_with_where_it_was_decided(self):
         """Add sets the person in the network and writes one event with the search, rank and section; the card

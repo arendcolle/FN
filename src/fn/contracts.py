@@ -549,6 +549,30 @@ class ReasonView(Model):
     href: str
 
 
+# One value in a Compare cell, linked when it has an href.
+class CompareValue(Model):
+    text: str
+    href: str | None = None
+
+
+# One Compare row: the values of each side up to three, how many more each side holds and whether the row differs.
+class CompareRow(Model):
+    field: str
+    left: list[CompareValue] = []
+    right: list[CompareValue] = []
+    left_more: int = 0
+    right_more: int = 0
+    differs: bool = False
+
+
+# Two records side by side: the hidden caption, the two column headings and the words of an empty left side.
+class CompareView(Model):
+    caption: str
+    titles: tuple[str, str]
+    left_none: str
+    rows: list[CompareRow]
+
+
 class CardView(Model):
     key: str
     section: Section
@@ -684,6 +708,8 @@ class ProfileView(Model):
     found_as: list[RecordView]
     possible: list[PersonView]
     name_match: PersonView | None = None
+    compares: list[CompareView] = []
+    name_compare: CompareView | None = None
     last: LastView | None = None
     summary: list[SummaryRow] = []
     records: int = 1
@@ -1124,6 +1150,8 @@ class ImportRow(Model):
     person_id: str | None = None
     message: str = ""
     cells: dict[str, str] = {}
+    lat: float | None = None
+    lon: float | None = None
 
 
 class ImportPreview(Model):

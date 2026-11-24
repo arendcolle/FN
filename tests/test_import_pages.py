@@ -2,6 +2,7 @@ import asyncio
 import re
 import unittest
 from datetime import timedelta
+from unittest import mock
 
 from fastapi.testclient import TestClient
 
@@ -21,6 +22,11 @@ CONTACTS = ("name,email,organization,role,city,state,country,linkedin_url,notes\
             "Cy Samename,cy@example.org,Other Labs,Lecturer,Cambridge,MA,USA,,\n"
             ",nobody@example.org,,,,,,,\n"
             "Di Fresh,,,,,,,,\n")
+# Three rows with one network name: the same job and place, another employer and place with an email, and the name alone.
+NAMESAKES = ("name,email,organization,role,city,state,country\n"
+             "Cy Samename,,Other Labs,Lecturer,Cambridge,MA,USA\n"
+             "Cy Samename,cy@example.org,Elsewhere Inc,Lecturer,Chicago,IL,USA\n"
+             "Cy Samename,,,,,,\n")
 
 
 def multipart(filename: str, raw: bytes) -> tuple[bytes, dict[str, str]]:
@@ -45,6 +51,17 @@ class ImportPagesTest(unittest.TestCase):
                                               name).id
         network.add(self.store, [person_id], via="search", now=START)
         return person_id
+
+    def claim(self, person_id: str, kind: str, value: str, **fields) -> None:
+        """A claim of the person from its own made-up source."""
+        text = f"{kind}: {value}"
+        source = Source(id=f"src-{person_id}-{kind}", kind="page", url=f"https://example.org/{person_id}/{kind}",
+                        title="Lab", text=text, content_hash=f"h-{person_id}-{kind}")
+        self.store.upsert_claim(ClaimDraft(person_id=person_id, kind=kind, value=value, quote=text, quote_start=0,
+                                           quote_end=len(text), source=source, **fields), START)
+
+    def tables(self, html: str) -> list[str]:
+        return re.findall(r'<table class="fn-compare">.*?</table>', html, re.DOTALL)
 
     def post_file(self, filename: str, text: str | bytes):
         body, headers = multipart(filename, text if isinstance(text, bytes) else text.encode())
@@ -92,7 +109,8 @@ class UploadTest(ImportPagesTest):
         self.assertIn('<input type="checkbox" id="m4" name="merge" value="4">'
                       f'<label class="text-body" for="m4">Row 4. Same as <a href="/people/{cy}">Cy Samename</a>?</label>',
                       html)
-        self.assertIn("In the file: Lecturer, Other Labs · Cambridge, MA, USA · cy@example.org", html)
+        self.assertIn("<caption>Row 4 of contacts.csv and Cy Samename in your network</caption>", html)
+        self.assertIn('<tr><th scope="row">Employer</th><td>Other Labs</td><td class="fn-compare__none">Not known</td></tr>', html)
         self.assertIn('<input type="checkbox" id="all" name="same_all" value="1">', html)
         self.assertIn('<button class="fn-btn fn-btn--dark text-control">Import 4 people</button>', html)
         self.assertEqual(re.findall(r'<tr><td class="text-meta">(\d+)</td><td class="([^"]+)">([^<]+)</td>', html), [
@@ -140,6 +158,52 @@ class UploadTest(ImportPagesTest):
         asyncio.run(self.app(scope, receive, send))
         self.assertEqual(next(m["status"] for m in sent if m["type"] == "http.response.start"), 400)
         self.assertLessEqual(sum(map(len, pulled)), UPLOAD_CAP + 65536)
+
+    def test_each_name_match_shows_both_records_and_differs_where_they_disagree(self):
+        """Of two rows, only the second differs, on Employer and Place; an email on one side reads Not known, a
+        name-only row reads Not in the file and two network namesakes show the first."""
+        both = [self.member("Cy Samename"), self.member("Cy Samename", ("seed", "second"))]
+        (first,) = [ids[0] for ids in self.store.network_by_group_key().values()]
+        (other,) = [p for p in both if p != first]
+        self.claim(first, "role", "Lecturer")
+        self.claim(first, "affiliation", "Other Labs", relation="works_at")
+        self.claim(first, "location", "Cambridge, MA, USA", relation="lives_in", lat=42.37, lon=-71.11)
+        html = self.client.get(f"/imports/{self.upload(NAMESAKES)}").text
+        rows = self.tables(html)
+        self.assertEqual(len(rows), 3)
+        marked = [re.findall(r'<th scope="row">(\w+) <span class="fn-compare__differs text-label">Differs</span>', t) for t in rows]
+        self.assertEqual(marked, [[], ["Employer", "Place"], []])
+        self.assertIn('<tr><th scope="row">Email</th><td><a href="mailto:cy@example.org">cy@example.org</a></td>'
+                      '<td class="fn-compare__none">Not known</td></tr>', rows[1])
+        self.assertIn('<tr><th scope="row">Job</th><td class="fn-compare__none">Not in the file</td><td>Lecturer</td></tr>', rows[2])
+        self.assertEqual({re.search(r'<td><a href="/people/([^"]+)">', t).group(1) for t in rows}, {first})
+        self.assertNotIn(other, html)
+
+    def test_long_values_and_bad_links_render_whole_and_as_text(self):
+        """A 200 character employer shows whole; a javascript: LinkedIn cell and an ORCID of n/a are plain text."""
+        self.member("Cy Samename")
+        long = "Institute of " + "Very Long Names " * 12
+        html = self.client.get("/imports/" + self.upload(
+            "name,organization,linkedin_url,orcid\n" f"Cy Samename,{long.strip()},javascript:alert(1),n/a\n")).text
+        (table,) = self.tables(html)
+        self.assertIn(f"<td>{long.strip()}</td>", table)
+        self.assertGreaterEqual(len(long.strip()), 190)
+        self.assertIn('<tr><th scope="row">LinkedIn</th><td>javascript:alert(1)</td>', table)
+        self.assertIn('<tr><th scope="row">ORCID</th><td>n/a</td>', table)
+        self.assertNotIn("href=\"javascript", table)
+
+    def test_three_hundred_name_matches_read_the_claims_once(self):
+        """The page reads claims in two calls, one for the views and one for the compares, however many rows match."""
+        rows = [f"Person{chr(65 + n // 26)}{chr(65 + n % 26)} Samename" for n in range(300)]
+        for name in rows:
+            self.member(name)
+        import_id = self.upload("name,organization\n" + "\n".join(f"{n},Labs" for n in rows))
+        calls = []
+        real = self.store.claims_of
+        with mock.patch.object(type(self.store), "claims_of", autospec=True,
+                               side_effect=lambda store, *a, **k: calls.append(1) or real(*a, **k)):
+            html = self.client.get(f"/imports/{import_id}").text
+        self.assertEqual((len(calls), len(self.tables(html))), (2, 300))
 
 
 class ConfirmTest(ImportPagesTest):

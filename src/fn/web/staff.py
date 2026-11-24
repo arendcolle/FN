@@ -33,6 +33,7 @@ from fn.present import (
     fit_tie,
     geo,
     group_key,
+    import_compares,
     label_of,
     looking,
     network_view,
@@ -820,13 +821,13 @@ def import_summary(store: Store, preview: ImportPreview) -> Safe:
                 h.a("Show them", href=network_href(NetworkFilter(import_id=preview.import_id)))]
         return h.div(title, h.p(done, class_="fn-page__lead text-body"), import_counts(preview), class_="fn-summary")
     matched = [r for r in preview.rows if r.outcome == "name_match" and r.person_id]
-    views = dict(zip([r.person_id for r in matched],
-                     person_views(store, [[r.person_id] for r in matched], now().astimezone().date())))
+    today = now().astimezone().date()
+    views = dict(zip([r.person_id for r in matched], person_views(store, [[r.person_id] for r in matched], today)))
     discard = h.button("Discard", class_="fn-btn fn-btn--quiet text-control", formaction=f"/imports/{preview.import_id}/discard")
     word = plural(count, "person", "people")
     return h.form(
         title, h.p(f"Nothing is imported until you press Import {word}.", class_="fn-page__lead text-body"),
-        import_counts(preview), import_notes(preview), name_matches(preview.rows, views),
+        import_counts(preview), import_notes(preview), name_matches(preview.rows, views, import_compares(store, preview, today)),
         h.div(h.button(f"Import {word}", class_="fn-btn fn-btn--dark text-control") if count else None, discard,
               class_="fn-summary__acts"),
         h.p("You can remove anyone later from their profile.", class_="fn-note text-small") if count else None,

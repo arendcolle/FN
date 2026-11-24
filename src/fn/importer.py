@@ -248,10 +248,11 @@ def rows_of(store: Store, record: ImportRecord, names: geo.Names | None) -> tupl
             file_names.setdefault(gkey, n)
         for i in found:
             file_idents.setdefault((i.scheme, i.value), n)
-        if "city" in cells and locate(cells, names) is None:
+        area = locate(cells, names)
+        if "city" in cells and area is None:
             notes.append(f"FN cannot find {place_of(cells)} on the map, so this person will not be on the map.")
         rows.append(ImportRow(n=n, name=name, outcome=outcome, person_id=person_id, message=" ".join(notes),
-                              cells=cells))
+                              cells=cells, lat=area.lat if area else None, lon=area.lon if area else None))
     return rows, parsed.ignored
 
 
