@@ -29,10 +29,10 @@ Relation = Literal[
 ]
 DateMethod = Literal[
     "page_date", "sitemap", "wayback_first_seen", "document_heading",
-    "record_field", "read_date", "sheet_date", "staff_edit", "stated_in_quote",
+    "record_field", "read_date", "sheet_date", "stated_in_quote",
 ]
 DatePrecision = Literal["year", "month", "day"]
-SourceKind = Literal["page", "record", "seed_page", "import", "vendor_record", "vendor_page", "staff"]
+SourceKind = Literal["page", "record", "seed_page", "import", "vendor_record", "vendor_page"]
 StepStatus = Literal["running", "ok", "error", "skipped", "interrupted"]
 SearchStatus = Literal["queued", "running", "done", "failed", "interrupted"]
 SearchKind = Literal["search", "job"]
@@ -49,7 +49,7 @@ CacheMode = Literal["refresh", "prefer", "only"]
 GoldTie = Literal["flemish", "belgian", "none", "unverified"]
 PickVerdict = Literal["found", "event page", "missed", "no lane in slice"]
 GoldGroup = Literal["dev", "held-out", "other"]
-EventKind = Literal["add", "skip", "merge", "not_same", "reject_claim", "edit_contact", "remove", "import", "export", "undo"]
+EventKind = Literal["add", "skip", "merge", "not_same", "reject_claim", "remove", "import", "export", "undo"]
 CutReason = Literal["no_belgian_evidence", "weak_openalex", "no_claim", "outside_country", "no_tie", "over_cap", "died"]
 Aside = Literal["outside", "abroad", "unfit"]
 TieGrade = Literal["strong", "medium", "weak", "none"]
@@ -179,8 +179,8 @@ class Source(Model):
     @field_validator("url")
     @classmethod
     def _http_only(cls, url: str, info: ValidationInfo) -> str:
-        """An http or https URL; an fn: URL only for the import and staff kinds, which FN writes itself."""
-        if url.startswith("fn:") and info.data.get("kind") in ("import", "staff"):
+        """An http or https URL; an fn: URL only for the import kind, which FN writes itself."""
+        if url.startswith("fn:") and info.data.get("kind") == "import":
             return url
         if not url.startswith(("http://", "https://")):
             raise ValueError(f"source url must be http or https: {url!r}")
@@ -189,7 +189,7 @@ class Source(Model):
 
 def record_source(url: str, title: str, fields: list[tuple[str, object]], raw: dict, fetched_at: datetime,
                   source_date: str | None = None, *,
-                  kind: Literal["record", "vendor_record", "staff", "import"] = "record",
+                  kind: Literal["record", "vendor_record", "import"] = "record",
                   ) -> tuple[Source, dict[str, tuple[int, int]]]:
     """A record Source (vendor_record for a vendor's answer, import for a CSV row) with a `path: value` line per value.
 
@@ -619,10 +619,15 @@ class NetworkView(Model):
 
 
 class ContactView(Model):
-    kind: Literal["email", "phone"]
+    kind: Literal["email", "phone", "linkedin"]
     value: str | None = None
     claim: ClaimView | None = None
     found: bool = False
+    url: str | None = None
+    label: str | None = None
+    href: str | None = None
+    date: str | None = None
+    removed: str | None = None
 
 
 class FoldView(Model):

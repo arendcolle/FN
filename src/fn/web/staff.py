@@ -22,7 +22,6 @@ from fn.contracts import (
     ResultsHeading,
     Search,
     Source,
-    normalize,
 )
 from fn.present import (
     GROUP_KEYS,
@@ -51,7 +50,7 @@ from fn.present import (
     walk,
     why_view,
 )
-from fn.store import Store, fold
+from fn.store import Store
 from fn.web.html import Safe, h, page
 from fn.web.parts import (
     NETWORK_STEP,
@@ -104,7 +103,6 @@ SECTIONS = {"network": "In your network", "new": "New"}
 INCOMPLETE = "Some sources could not be read, so this list may be incomplete."
 STOPPED = "This search stopped before it finished."
 ORIGINS = ("card", "row", "popup", "import")
-CONTACT_KINDS = ("email", "phone")
 CARD_ACTIONS = ("add", "skip", "same", "new")
 
 router = APIRouter()
@@ -644,12 +642,11 @@ def person_here(person_id: str, params: dict[str, str]) -> str:
     return f"/people/{person_id}?{query}" if query else f"/people/{person_id}"
 
 
-def person_page(store: Store, person_id: str, params: dict[str, str], error: str | None = None,
-                typed: str | None = None, edit: str | None = None, fetched: bool = False) -> str:
+def person_page(store: Store, person_id: str, params: dict[str, str], fetched: bool = False) -> str:
     """The Person page of a canonical id; a network person's New marks are then cleared for the next visit, except
     on a page a script fetched.
 
-    params is the page's query; error and typed re-open the edit field of kind edit with a refused value.
+    params is the page's query.
     """
     search = store.get_search(params.get("search", ""))
     shown, key = shown_of(params.get("shown", "")), params.get("card", "")
@@ -665,7 +662,6 @@ def person_page(store: Store, person_id: str, params: dict[str, str], error: str
     back = (search_back(search, shown, key, group_key(candidate, search.chips) if candidate else None) if search
             else back_link(store, params.get("back", "")))
     place = list_place(store, search, shown, key) if search and key else None
-    edit = edit or (params.get("edit") if params.get("edit") in CONTACT_KINDS else None)
     member = view.person.status == "in_list"
     text = page(
         view.person.name,
@@ -673,7 +669,7 @@ def person_page(store: Store, person_id: str, params: dict[str, str], error: str
         h.main(h.div(profile_head(view, back, place, here, route), why_block(view.why) if view.why else None,
                      summary_list(view.summary), lookup_line(view.lookup, person_id, here),
                      fact_groups(view, here, params.get("all")),
-                     contact_block(view, here, edit, error, typed), found_as_block(view, here),
+                     contact_block(view, here), found_as_block(view, here),
                      possible_block(view, here), class_="fn-column"), class_="fn-page"),
         current="search" if leads_to_search(back) else "network",
         refresh=2 if view.lookup.state == "running" else None,
@@ -749,25 +745,6 @@ async def remove_person(request: Request, person_id: str) -> Response:
     canonical = canonical_of(store, person_id)
     if store.get_persons([canonical])[canonical].list_status == "in_list":
         network.remove(store, canonical, now=now())
-    return back_to(form, f"/people/{canonical}")
-
-
-@router.post("/people/{person_id}/contact")
-async def edit_contact(request: Request, person_id: str) -> Response:
-    """Save a typed email or phone number; a refused value re-opens the field with its sentence, status 400."""
-    store, form = store_of(request), await form_of(request)
-    canonical = canonical_of(store, person_id)
-    kind, value = first(form, "kind"), form.get("value", [""])[0]
-    if kind not in CONTACT_KINDS:
-        raise HTTPException(400, "A contact is an email or a phone number.")
-    held = {fold(c.value) for c in store.claims_of([canonical]) if c.kind == kind}
-    if fold(normalize(value)) not in held:
-        try:
-            network.set_contact(store, canonical, kind, value, now=now(), replaces=first(form, "replaces") or None)
-        except ValueError as refused:
-            next_path = local_path(form.get("next", [""])[0]) or ""
-            params = {k: v[0] for k, v in parse_qs(urlsplit(next_path).query).items()}
-            return HTMLResponse(person_page(store, canonical, params, str(refused), value, kind), 400)
     return back_to(form, f"/people/{canonical}")
 
 

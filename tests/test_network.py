@@ -280,33 +280,6 @@ class ClaimsTest(NetworkTest):
         network.undo(self.store, event.id, now=at(2))
         self.assertEqual(len(self.store.claims_of([ann])), 2)
 
-    def test_contact_edits_replace_hide_and_undo(self):
-        """set_contact writes a staff claim and the email identifier; replaces hides the old claim; undo swaps back.
-
-        A bad email or one another person holds raises ValueError, and email claims never match a search.
-        """
-        ann, bob = self.person("Ann Example", ("seed", "ann")), self.person("Bob Example", ("seed", "bob"))
-        first = network.set_contact(self.store, ann, "email", " Ann@Example.org ", now=at(1))
-        self.assertNotIn("Ann@Example.org", str(first.detail))
-        (old,) = [c for c in self.store.claims_of([ann]) if c.kind == "email"]
-        self.assertEqual((old.value, old.first_seen_at), ("Ann@Example.org", at(1)))
-        source = self.store.get_sources([old.source_id])[old.source_id]
-        self.assertEqual((source.kind, source.url, source.date_method), ("staff", f"fn:staff/{first.id}", "staff_edit"))
-        found = self.store.resolve_person([Identifier(scheme="email", value="ann@example.org")], "Someone")
-        self.assertEqual(found.id, ann)
-        second = network.set_contact(self.store, ann, "email", "ann@example.net", now=at(2), replaces=old.id)
-        self.assertEqual([c.value for c in self.store.claims_of([ann]) if c.kind == "email"], ["ann@example.net"])
-        network.undo(self.store, second.id, now=at(3))
-        self.assertEqual([c.value for c in self.store.claims_of([ann]) if c.kind == "email"], ["Ann@Example.org"])
-        self.assertEqual(self.store.person_ids_by_identifier("email", ["ann@example.net"]), {})
-        for value in ("", "no-at-sign", "a@" + "x" * 200):
-            with self.subTest(value=value), self.assertRaises(ValueError):
-                network.set_contact(self.store, bob, "email", value, now=at(4))
-        with self.assertRaises(ValueError) as held:
-            network.set_contact(self.store, bob, "email", "ann@example.org", now=at(4))
-        self.assertEqual(str(held.exception), "Another person in FN already has this email address.")
-        self.assertEqual(self.store.match_claims('"ann"', exclude=()), [])
-
     def test_a_claim_on_a_merged_record_shows_under_the_canonical_id(self):
         """resolve_person still returns the merged record that holds the identifier.
 
@@ -330,12 +303,12 @@ class ClaimsTest(NetworkTest):
 
 
 class SourceUrlTest(unittest.TestCase):
-    def test_fn_urls_are_valid_for_import_and_staff_sources_only(self):
+    def test_fn_urls_are_valid_for_import_sources_only(self):
         """FN writes fn: URLs for the sources it makes itself; a source from the web still needs http or https."""
-        for kind in ("import", "staff"):
-            Source(id="s", kind=kind, url="fn:staff/e1", text="email: a@b", content_hash="h")
-        with self.assertRaises(ValidationError):
-            Source(id="s", kind="page", url="fn:staff/e1", text="email: a@b", content_hash="h")
+        Source(id="s", kind="import", url="fn:staff/e1", text="email: a@b", content_hash="h")
+        for kind in ("page", "staff"):
+            with self.subTest(kind=kind), self.assertRaises(ValidationError):
+                Source(id="s", kind=kind, url="fn:staff/e1", text="email: a@b", content_hash="h")
 
 
 if __name__ == "__main__":

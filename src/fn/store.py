@@ -9,6 +9,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import get_args
 
 from fn import db, identity
 from fn.contracts import (
@@ -20,6 +21,7 @@ from fn.contracts import (
     Claim,
     ClaimDraft,
     Event,
+    EventKind,
     Identifier,
     IdentifierScheme,
     ImportRecord,
@@ -49,6 +51,7 @@ PERSON_COLUMNS = list(Person.model_fields)
 SOURCE_COLUMNS = list(Source.model_fields)
 CLAIM_COLUMNS = [*(c for c in Claim.model_fields if c != "years"), "years_json"]
 ORG_COLUMNS = list(Org.model_fields)
+EVENT_KINDS = get_args(EventKind)
 EVENT_COLUMNS = [*(c for c in Event.model_fields if c != "detail"), "detail_json"]
 # Contact claims never make a person a search hit.
 UNMATCHED_KINDS = ("email", "phone", "death")
@@ -82,19 +85,9 @@ def fact_key(person_id: str, claim: Claim) -> tuple[str, str, str]:
     return (person_id, claim.kind, claim.org_id or fold(claim.value))
 
 
-def hidden_keys(claims: list[tuple[Claim, SourceKind]]) -> set[tuple[str, str, str]]:
-    """The fact keys a rejected claim hides among one set of a person's claims.
-
-    A key comes back to view when a staff claim of that value was first seen after its latest rejection.
-    """
-    rejected: dict[tuple[str, str, str], datetime] = {}
-    for c, _ in claims:
-        if c.rejected_at:
-            key = fact_key(c.person_id, c)
-            rejected[key] = max(rejected.get(key, c.rejected_at), c.rejected_at)
-    retyped = {fact_key(c.person_id, c): c.first_seen_at for c, kind in claims
-               if kind == "staff" and not c.rejected_at and c.first_seen_at}
-    return {key for key, at in rejected.items() if not (key in retyped and retyped[key] > at)}
+def hidden_keys(claims: list[Claim]) -> set[tuple[str, str, str]]:
+    """The fact keys a rejected claim hides among one set of a person's claims."""
+    return {fact_key(c.person_id, c) for c in claims if c.rejected_at}
 
 
 class Store:
@@ -567,8 +560,8 @@ class Store:
         )
         return {r[0]: r[1] for r in rows}
 
-    def _person_claims(self, person_ids: list[str]) -> list[tuple[Claim, SourceKind]]:
-        """Every claim of each id's whole person and its source kind, under the canonical id, by person, kind, value.
+    def _person_claims(self, person_ids: list[str]) -> list[Claim]:
+        """Every claim of each id's whole person, under the canonical id, by person, kind, value and storage order.
 
         A claim of a merged record counts as first seen at the later of its own time and the merge.
         """
@@ -578,30 +571,30 @@ class Store:
             "records AS (SELECT p.id, a.id AS canonical, p.merged_at FROM asked a JOIN persons p ON p.id = a.id "
             "UNION ALL SELECT p.id, a.id, p.merged_at FROM asked a JOIN persons p ON p.merged_into = a.id) "
             f"SELECT {', '.join(f'c.{c}' for c in CLAIM_COLUMNS if c != 'person_id')}, r.canonical AS person_id, "
-            "r.merged_at, s.kind AS source_kind FROM records r JOIN claims c ON c.person_id = r.id "
-            "JOIN sources s ON s.id = c.source_id ORDER BY r.canonical, c.kind, c.value",
+            "r.merged_at FROM records r JOIN claims c ON c.person_id = r.id "
+            "ORDER BY r.canonical, c.kind, c.value, c.rowid",
             (json.dumps(person_ids),),
         )
         found = []
         for row in rows:
             data = dict(row)
-            merged_at, kind = data.pop("merged_at"), data.pop("source_kind")
+            merged_at = data.pop("merged_at")
             if merged_at and (not data["first_seen_at"] or _at(merged_at) > _at(data["first_seen_at"])):
                 data["first_seen_at"] = merged_at
-            found.append((_claim(data), kind))
+            found.append(_claim(data))
         return found
 
     def claims_of(self, person_ids: list[str], include_hidden: bool = False) -> list[Claim]:
         """Every claim of each id's whole person, once, with person_id the canonical id, by person, kind and value.
 
         Without include_hidden, a rejected claim and the claims of its person with the same kind and folded value
-        are left out, unless a staff claim of that value was first seen after the rejection.
+        are left out.
         """
         claims = self._person_claims(person_ids)
         if include_hidden:
-            return [c for c, _ in claims]
+            return claims
         hidden = hidden_keys(claims)
-        return [c for c, _ in claims if not c.rejected_at and fact_key(c.person_id, c) not in hidden]
+        return [c for c in claims if not c.rejected_at and fact_key(c.person_id, c) not in hidden]
 
     def claim_records(self, claim_ids: list[str]) -> dict[str, str]:
         """The record each claim was stored under, which claims_of replaces with the canonical id."""
@@ -754,16 +747,19 @@ class Store:
         )
 
     def get_event(self, event_id: str) -> Event | None:
-        row = self.conn.execute(f"SELECT {', '.join(EVENT_COLUMNS)} FROM events WHERE id = ?", (event_id,)).fetchone()
+        row = self.conn.execute(
+            f"SELECT {', '.join(EVENT_COLUMNS)} FROM events WHERE id = ? AND kind IN (SELECT value FROM json_each(?))",
+            (event_id, json.dumps(EVENT_KINDS)),
+        ).fetchone()
         return _event(row) if row else None
 
     def events_of(self, person_id: str) -> list[Event]:
-        """The events that name the id as person or other person, newest first."""
+        """The events of a known kind that name the id as person or other person, newest first."""
         rows = self.conn.execute(
             f"SELECT {', '.join(EVENT_COLUMNS)} FROM events WHERE rowid IN "
             "(SELECT rowid FROM events WHERE person_id = ?1 UNION SELECT rowid FROM events WHERE other_person_id = ?1) "
-            "ORDER BY at DESC, rowid DESC",
-            (person_id,),
+            "AND kind IN (SELECT value FROM json_each(?2)) ORDER BY at DESC, rowid DESC",
+            (person_id, json.dumps(EVENT_KINDS)),
         )
         return [_event(r) for r in rows]
 
@@ -858,10 +854,6 @@ class Store:
             row = conn.execute("SELECT person_id FROM person_identifiers WHERE scheme = ? AND value = ?",
                                (identifier.scheme, identifier.value)).fetchone()
         return row[0] == person_id
-
-    def remove_identifier(self, person_id: str, identifier: Identifier) -> None:
-        self.conn.execute("DELETE FROM person_identifiers WHERE person_id = ? AND scheme = ? AND value = ?",
-                          (person_id, identifier.scheme, identifier.value))
 
     # Lookups: what fn-enrich asked of an outside source per person and kind, and the verdict.
     def seed_only_persons(self) -> list[str]:

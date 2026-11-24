@@ -87,7 +87,7 @@ class PersonPageTest(unittest.TestCase):
         self.assertIn('<h1 class="fn-profile__name text-name">Ada Example</h1>', html)
         self.assertIn('<p class="fn-profile__role text-body">Example Labs · Gent</p>', html)
         self.assertIn(f"In your network since {EARLIER.astimezone().day} {EARLIER.astimezone():%B %Y}", html)
-        self.assertEqual(html.count("Not provided"), 2)
+        self.assertEqual(html.count("FN found no contact details."), 1)
         headings = re.findall(r'<h2 class="fn-section text-title">([^<]+)</h2>', html)
         self.assertEqual(headings, ["Work", "Contact"])
         self.assertIn("Studied at Gent University", html)
@@ -126,7 +126,7 @@ class PersonPageTest(unittest.TestCase):
         self.assertEqual((response.status_code, response.headers["location"]), (303, f"/people/{ada}?from=row"))
 
     def test_each_decision_shows_its_done_line_and_undo_restores_the_page(self):
-        """Add, Skip, Remove, a contact edit, merge, not-same and a removed fact each show Undo; Undo puts it back."""
+        """Add, Skip, Remove, merge, not-same and a removed fact each show Undo; Undo puts it back."""
         ada = self.person("Ada Example", "ada")
         fact = self.claim(ada, "topic", "Tidal energy")
         bo = self.person("Bo Candidate", "bo", member=False)
@@ -136,7 +136,6 @@ class PersonPageTest(unittest.TestCase):
             (bo, f"/people/{bo}/add", {}, "Added to your network", ">Add</button>"),
             (bo, f"/people/{bo}/skip", {}, ">Skipped</span>", ">Skip</button>"),
             (ada, f"/people/{ada}/remove", {}, "Ada Example removed from your network.", "In your network since"),
-            (ada, f"/people/{ada}/contact", {"kind": "email", "value": "ada@example.org"}, " · Saved ", "Not provided"),
             (ada, f"/people/{ada}/not-same", {"other": twin}, "Marked as a different person", ">Different person<"),
             (ada, f"/people/{ada}/merge", {"other": twin}, "Merged into this profile", ">Same person<"),
             (ada, f"/claims/{fact}/reject", {}, "Topic: Tidal energy</span><span>· Removed", ">Not correct</button>"),
@@ -161,7 +160,6 @@ class PersonPageTest(unittest.TestCase):
         events = self.store.conn.execute
         for path, fields in ((f"/people/{bo}/skip", {}), (f"/people/{bo}/add", {}), (f"/people/{ada}/remove", {}),
                              (f"/people/{ada}/add", {}), (f"/claims/{fact}/reject", {}),
-                             (f"/people/{ada}/contact", {"kind": "phone", "value": "+32 9 555 01 00"}),
                              (f"/people/{ada}/not-same", {"other": twin}), (f"/people/{ada}/merge", {"other": bo})):
             with self.subTest(path=path):
                 self.post(path, **fields)
@@ -174,40 +172,40 @@ class PersonPageTest(unittest.TestCase):
         self.assertEqual(self.post(f"/events/{last}/undo"), f"/people/{ada}")
         self.assertEqual(events("SELECT COUNT(*) FROM events").fetchone()[0], count)
 
-    def test_a_refused_contact_value_reopens_the_field_with_its_sentence(self):
-        """No @, empty, 300 characters or another person's email give 400 with the sentence; a good one is saved."""
-        ada = self.person("Ada Example", "ada")
-        bo = self.person("Bo Example", "bo")
-        network.set_contact(self.store, bo, "email", "bo@example.org", now=now())
-        for value, sentence in (("no-at-sign", "Enter an email address like name@example.org."), ("", "Enter an email address like name@example.org."),
-                                ("a@" + "x" * 298, "That is too long: at most 200 characters."),
-                                ("bo@example.org", "Another person in FN already has this email address.")):
-            with self.subTest(value=value):
-                response = self.client.post(f"/people/{ada}/contact", data={"kind": "email", "value": value,
-                                                                           "next": f"/people/{ada}"})
-                self.assertEqual(response.status_code, 400)
-                html = unescape(response.text)
-                self.assertIn(f'<p class="fn-error text-small" id="contact-error">{sentence}</p>', html)
-                self.assertIn('aria-invalid="true"', html)
-                self.assertIn(f'value="{value}"', html)
-        self.post(f"/people/{ada}/contact", kind="email", value="ada@example.org")
-        html = self.page(ada)
-        self.assertIn('<a href="mailto:ada@example.org">ada@example.org</a>', html)
-        self.assertRegex(html, r'>Entered in FN</a>, \d+ \w+ \d{4} · Saved ')
-
     def test_an_undo_after_a_later_decision_comes_back_with_the_refusal_banner(self):
         """Undoing a decision that is no longer the person's latest changes nothing and shows the failed Banner."""
         ada = self.person("Ada Example", "ada")
-        fact = self.claim(ada, "topic", "Tidal energy")
+        fact, other = self.claim(ada, "topic", "Tidal energy"), self.claim(ada, "topic", "Wind energy")
         self.post(f"/claims/{fact}/reject")
         removed = self.undo_id(self.page(ada))
-        self.post(f"/people/{ada}/contact", kind="phone", value="+32 9 555 01 00")
+        self.post(f"/claims/{other}/reject")
         location = self.post(f"/events/{removed}/undo", next=f"/people/{ada}")
         self.assertEqual(location, f"/people/{ada}?undo=refused")
         html = self.page(ada, undo="refused")
         self.assertIn('<p class="fn-banner fn-banner--failed text-body" role="status"><span>This could not be undone, '
                       'because Ada Example changed since.</span></p>', html)
         self.assertNotIn("Tidal energy", html)
+
+    def test_no_page_offers_edit_and_the_old_route_is_gone(self):
+        """?edit=email changes nothing on the page, and nothing answers a post to the old contact route."""
+        ada = self.person("Ada Example", "ada")
+        self.claim(ada, "email", "ada@example.org")
+        html = self.page(ada, edit="email")
+        self.assertNotIn('name="value"', html)
+        self.assertNotIn(">Edit<", html)
+        response = self.client.post(f"/people/{ada}/contact", data={"kind": "email", "value": "x@example.org"})
+        self.assertIn(response.status_code, (404, 405))
+        self.assertEqual(self.store.conn.execute("SELECT COUNT(*) FROM events WHERE kind != 'add'").fetchone()[0], 0)
+
+    def test_an_event_of_an_unknown_kind_is_left_out(self):
+        """An old edit_contact row gives no done line and no Undo, and its undo answers 404."""
+        ada = self.person("Ada Example", "ada")
+        self.store.conn.execute("INSERT INTO events (id, at, kind, person_id, detail_json) VALUES (?, ?, ?, ?, ?)",
+                                ("old-event", now().isoformat(), "edit_contact", ada, "{}"))
+        html = self.page(ada)
+        self.assertNotIn("/undo", html)
+        self.assertNotIn(">Saved<", html)
+        self.assertEqual(self.client.post("/events/old-event/undo", data={"next": f"/people/{ada}"}).status_code, 404)
 
     def test_next_pointing_at_another_site_is_ignored(self):
         """Only a path on this site is followed after a decision; anything else goes to the person's page."""

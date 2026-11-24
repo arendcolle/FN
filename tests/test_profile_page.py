@@ -1,6 +1,6 @@
 import re
 import unittest
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from html import unescape
 
 from fastapi.testclient import TestClient
@@ -185,9 +185,9 @@ class ProfilePageTest(unittest.TestCase):
         self.claim(bo, "topic", "Wind energy")
         self.assertNotIn("Studied", self.page(bo))
 
-    def test_a_found_contact_value_has_its_source_name_and_proof_and_only_a_member_gets_edit(self):
-        """A non-member's page holds only the kinds FN found, with no Edit and no summary row; a member's found value keeps
-        Edit and an imported value keeps its citation line."""
+    def test_a_found_contact_value_has_its_source_name_and_proof_and_not_correct(self):
+        """A non-member's page holds only the kinds FN found, with no summary row; every Email and Phone row has one
+        Not correct, nobody has Edit, and an imported value keeps its citation line."""
         long = "a" * 190 + "@health.example.gov"
         ada = self.person("Ada Fictief", "ada")
         self.claim(ada, "email", long, url="https://health.example.gov/staff", title="Staff directory", claim_date="2026-10")
@@ -199,14 +199,16 @@ class ProfilePageTest(unittest.TestCase):
                       'health.example.gov">health.example.gov</summary>', contact)
         self.assertIn('>Staff directory</a>, ', contact)
         self.assertNotIn("fn-quote", contact)
-        for gone in ("Edit", "Not provided", 'class="fn-summary-list'):
+        self.assertEqual(contact.count(">Not correct</button>"), 1)
+        for gone in (">Edit<", "Not provided", 'class="fn-summary-list'):
             self.assertNotIn(gone, html)
         bo = self.person("Bo Fictief", "bo", member=True)
         self.claim(bo, "email", "bo@health.example.gov", url="https://health.example.gov/staff")
         self.claim(bo, "phone", "+1 301 555 0100", source_kind="import", title="people.csv", url="https://example.org/f")
         shown = self.section(self.page(bo), "Contact")
         self.assertIn('aria-label="Source for the email address: health.example.gov"', shown)
-        self.assertEqual(shown.count(">Edit</a>"), 2)
+        self.assertEqual(shown.count(">Not correct</button>"), 2)
+        self.assertNotIn(">Edit<", shown)
         self.assertNotIn("Source for the phone number", shown)
 
     def test_a_person_outside_the_network_without_contact_has_no_contact_section(self):
@@ -443,6 +445,125 @@ class ProfilePageTest(unittest.TestCase):
                 first = words_of(html, '<section class="fn-profile__section"')
                 self.assertLessEqual(first, 90, first)
                 self.assertLessEqual(words_of(html), 180, words_of(html))
+
+    def sourced(self, person_id: str, kind: str, value: str, source: Source, **fields) -> str:
+        """A claim whose source is the given one; returns the claim id."""
+        return self.store.upsert_claim(ClaimDraft(person_id=person_id, kind=kind, value=value, quote=source.text, quote_start=0,
+                                                  quote_end=len(source.text), source=source, **fields), EARLIER).id
+
+    def imported(self, person_id: str, kind: str, value: str, row: int) -> str:
+        """A claim from row `row` of contacts.csv, imported on 3 November 2026."""
+        source = Source(id=f"imp-{row}", kind="import", url=f"fn:import/x#row-{row}", title=f"contacts.csv, row {row}",
+                        text=f"{kind}: {value}", content_hash=f"h-imp-{row}", fetched_at=datetime(2026, 11, 3, 12, tzinfo=UTC))
+        return self.sourced(person_id, kind, value, source, claim_date="2026-11-03", date_precision="day",
+                            date_method="sheet_date")
+
+    def linkedin(self, person_id: str, address: str) -> None:
+        self.store.add_identifier(person_id, Identifier(scheme="profile_url", value=address))
+
+    def test_not_correct_on_an_email_shows_the_next_one_and_undo_brings_it_back(self):
+        """Removing the newest email leaves one Removed line over the older address, which has its own Not correct."""
+        ada = self.person("Ada Fictief", "ada", member=True)
+        old = self.claim(ada, "email", "ada@old.example.org", claim_date="2024-05")
+        new = self.claim(ada, "email", "ada@new.example.org", claim_date="2026-03")
+        self.assertIn(">ada@new.example.org</a>", self.section(self.page(ada), "Contact"))
+        self.post(f"/claims/{new}/reject", next=f"/people/{ada}#contact")
+        contact = self.section(self.page(ada), "Contact")
+        self.assertIn("<span>ada@new.example.org</span><span>· Removed</span>", contact)
+        self.assertIn(">ada@old.example.org</a>", contact)
+        self.assertEqual(re.findall(r'action="/claims/([^/]+)/reject"', contact), [old])
+        undo = re.search(r'action="/events/([^"]+)/undo"', contact).group(1)
+        self.post(f"/events/{undo}/undo", next=f"/people/{ada}#contact")
+        contact = self.section(self.page(ada), "Contact")
+        self.assertNotIn("Removed", contact)
+        self.assertEqual(re.findall(r'action="/claims/([^/]+)/reject"', contact), [new])
+
+    def test_one_email_from_two_pages_is_one_row_and_one_not_correct_hides_both(self):
+        """Two pages naming one address give one Email row; rejecting it hides both and leaves only the Removed line."""
+        ada = self.person("Ada Fictief", "ada", member=True)
+        long = "a" * 190 + "@health.example.gov"
+        first = self.claim(ada, "email", long, claim_date="2025-01")
+        self.claim(ada, "email", long, claim_date="2026-02")
+        self.assertEqual(self.section(self.page(ada), "Contact").count(">Not correct</button>"), 1)
+        self.post(f"/claims/{first}/reject", next=f"/people/{ada}#contact")
+        contact = self.section(self.page(ada), "Contact")
+        self.assertEqual(contact.count('<dt class="text-label">Email</dt>'), 1)
+        self.assertIn(f"<span>{long}</span><span>· Removed</span>", contact)
+        self.assertNotIn("mailto:", contact)
+        self.assertNotIn(">Not correct</button>", contact)
+
+    def test_an_email_rejected_without_an_event_is_not_shown(self):
+        """A rejected email with no decision event behind it is gone, and a network person then gets the import line."""
+        ada = self.person("Ada Fictief", "ada", member=True)
+        self.store.set_claim_rejected(self.claim(ada, "email", "ada@example.org"), now())
+        contact = self.section(self.page(ada), "Contact")
+        self.assertNotIn("ada@example.org", contact)
+        self.assertIn('<p class="fn-note text-small">FN found no contact details. An <a href="/imports/new">import</a> '
+                      "can add them.</p>", contact)
+
+    def test_an_imported_email_and_a_phone_only_each_have_one_row_with_not_correct(self):
+        """An imported email cites its file and row; a person with only a phone has one Phone row; outsiders get no summary row."""
+        ada = self.person("Ada Fictief", "ada", member=True)
+        self.imported(ada, "email", "ada@example.org", 7)
+        contact = self.section(self.page(ada), "Contact")
+        self.assertIn('>From import contacts.csv, row 7</a>, 3 November 2026</p>', contact)
+        self.assertEqual(contact.count(">Not correct</button>"), 1)
+        bo = self.person("Bo Fictief", "bo", member=True)
+        self.claim(bo, "phone", "+1 301 555 0100", url="https://health.example.gov/staff")
+        contact = self.section(self.page(bo), "Contact")
+        self.assertEqual(re.findall(r'<dt class="text-label">([^<]+)</dt>', contact), ["Phone"])
+        self.assertEqual(contact.count(">Not correct</button>"), 1)
+        eli = self.person("Eli Fictief", "eli")
+        self.claim(eli, "phone", "+1 301 555 0101", url="https://health.example.gov/staff")
+        self.imported(eli, "email", "eli@example.org", 8)
+        html = self.page(eli)
+        self.assertEqual(self.section(html, "Contact").count(">Not correct</button>"), 2)
+        self.assertNotIn(">Contact</dt>", html)
+
+    def test_a_linkedin_row_names_its_record_or_its_import_and_has_no_action(self):
+        """The row cites the LinkedIn record or the newest import with its day, has no form, and no source gives no cite line."""
+        record, imp, bare = (self.person(n, k, member=True) for n, k in (("Ada Fictief", "ada"), ("Bo Fictief", "bo"), ("Cy Fictief", "cy")))
+        address = "https://www.linkedin.com/in/ada-fictief"
+        self.linkedin(record, address)
+        card = Source(id="li-1", kind="vendor_record", url=address + "/", title="Ada Fictief", text="name: Ada Fictief",
+                      content_hash="h-li")
+        self.sourced(record, "topic", "Wind energy", card)
+        contact = self.section(self.page(record), "Contact")
+        self.assertIn(f'<a href="{address}">linkedin.com/in/ada-fictief</a>', contact)
+        self.assertIn('>From a LinkedIn record</a></p>', contact)
+        self.assertIn('href="/sources/li-1?back=', contact)
+        self.linkedin(imp, "https://www.linkedin.com/in/bo-fictief")
+        self.imported(imp, "topic", "Wind energy", 3)
+        contact = self.section(self.page(imp), "Contact")
+        self.assertIn(">From import contacts.csv, row 3</a>, 3 November 2026</p>", contact)
+        self.linkedin(bare, "https://www.linkedin.com/in/cy-fictief")
+        contact = self.section(self.page(bare), "Contact")
+        self.assertIn(">linkedin.com/in/cy-fictief</a>", contact)
+        self.assertNotIn("fn-cite", contact)
+        for name in (record, imp, bare):
+            self.assertNotIn("<form", self.section(self.page(name), "Contact"))
+
+    def test_the_linkedin_row_shows_the_record_merged_last(self):
+        """Of three records with an address the one merged last shows, with its host and trailing slash cleaned."""
+        ada, first, last = (self.person("Ada Fictief", k, member=True) for k in ("ada", "ada-2", "ada-3"))
+        self.linkedin(ada, "https://www.linkedin.com/in/ada-one")
+        self.linkedin(first, "https://www.linkedin.com/in/ada-two")
+        self.linkedin(last, "https://be.linkedin.com/in/ada-fictief/")
+        self.store.set_merged_into(first, ada, now() - timedelta(days=1))
+        self.store.set_merged_into(last, ada, now())
+        contact = self.section(self.page(ada), "Contact")
+        self.assertIn('<a href="https://www.linkedin.com/in/ada-fictief">linkedin.com/in/ada-fictief</a>', contact)
+        self.assertNotIn("ada-one", contact)
+        self.assertNotIn("ada-two", contact)
+
+    def test_a_network_person_without_contact_gets_the_import_line(self):
+        """No contact value gives the line with a link to Import; a LinkedIn address alone is a value, so no line."""
+        ada = self.person("Ada Fictief", "ada", member=True)
+        self.assertIn('<a href="/imports/new">import</a>', self.section(self.page(ada), "Contact"))
+        self.linkedin(ada, "https://www.linkedin.com/in/ada-fictief")
+        contact = self.section(self.page(ada), "Contact")
+        self.assertNotIn("FN found no contact details", contact)
+        self.assertIn("linkedin.com/in/ada-fictief", contact)
 
 
 if __name__ == "__main__":

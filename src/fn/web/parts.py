@@ -475,61 +475,54 @@ def profile_head(view: ProfileView, back: BackLink | None, place: ListPlace | No
                   class_="fn-profile__head")]
 
 
-def contact_edit(view: ProfileView, contact: ContactView, here: str, error: str | None, typed: str | None) -> Safe:
-    """The contact Field in place: the value, Save and Cancel, and the refused value's error under it."""
-    label = FIELDS[contact.kind]
-    replaces = [h.input(type="hidden", name="replaces", value=contact.claim.claim_id)] if contact.claim else None
-    return h.dd(h.form(
-        h.div(h.input(class_="fn-input text-body", type="email" if contact.kind == "email" else "tel", name="value",
-                      value=contact.value if typed is None else typed, aria_label=label,
-                      aria_invalid="true" if error else None, aria_describedby="contact-error" if error else None,
-                      autofocus=bool(error)),
-              h.p(error, class_="fn-error text-small", id="contact-error") if error else None),
-        h.input(type="hidden", name="kind", value=contact.kind), replaces,
-        h.input(type="hidden", name="next", value=here),
-        h.button("Save", type="submit", class_="fn-btn fn-btn--dark text-control"),
-        h.a("Cancel", href=here, class_="fn-link text-body"),
-        method="post", action=f"/people/{view.person.person_id}/contact", class_="fn-inline-form",
-    ), class_="fn-contact__edit")
+def contact_value(contact: ContactView, here: str) -> list[Safe]:
+    """An email or phone value as FN found it: the source name that opens its proof, or an import's cite line."""
+    claim = contact.claim
+    scheme = "mailto" if contact.kind == "email" else "tel"
+    link = h.a(contact.value, href=f"{scheme}:{contact.value}")
+    if contact.found:
+        return [h.div(link, " ", proof(claim.model_copy(update={"quote": None}),
+                                       f"Source for the {NOUN[contact.kind]}: {claim.source}", f"{here}#contact"),
+                      class_="fn-contact__value text-body")]
+    cite = [h.a(claim.label, href=with_back(claim.href, here)), f", {claim.date}"]
+    return [h.p(link, class_="fn-contact__value text-body"), h.p(cite, class_="fn-cite text-small")]
 
 
-def contact_block(view: ProfileView, here: str, edit: str | None, error: str | None = None,
-                  typed: str | None = None) -> Safe | None:
-    """Email and phone, each with its value and where it came from, or 'Not provided', with Edit; edit opens one.
+def linkedin_value(contact: ContactView, here: str) -> list[Safe]:
+    """The LinkedIn address, and under it the record or import it came from, when there is one."""
+    when = f", {contact.date}" if contact.date else None
+    cite = h.p(h.a(contact.label, href=with_back(contact.href, here)), when, class_="fn-cite text-small") if contact.label else None
+    return [h.p(h.a(contact.value, href=contact.url), class_="fn-contact__value text-body"), cite]
 
-    A person outside the network shows only the kinds FN holds, with no Edit; None when it holds none. A value FN found
-    on a page shows the source name that opens its proof.
+
+def contact_row(view: ProfileView, contact: ContactView, here: str) -> Safe:
+    """One Contact row: the kind, the value with its source, and Not correct for an email or phone.
+
+    A value just removed shows as one line with Undo, over the next value of that kind if FN holds one.
     """
-    member, rows = view.person.status == "in_list", []
-    for contact in view.contact:
-        label, claim, last = FIELDS[contact.kind], contact.claim, view.last
-        if not (member or claim):
-            continue
-        if member and edit == contact.kind:
-            rows.append(h.div(h.dt(label, class_="text-label"), contact_edit(view, contact, here, error, typed),
-                              class_="fn-contact__row"))
-            continue
-        if claim:
-            scheme = "mailto" if contact.kind == "email" else "tel"
-            link = h.a(contact.value, href=f"{scheme}:{contact.value}")
-            cite = [h.a(claim.label, href=with_back(claim.href, here)), f", {claim.date}"]
-            saved = last and last.kind == "edit_contact" and last.claim_id == claim.claim_id
-            if contact.found:
-                shown = h.div(link, " ", proof(claim.model_copy(update={"quote": None}),
-                                               f"Source for the {NOUN[contact.kind]}: {claim.source}", f"{here}#contact"),
-                              class_="fn-contact__value text-body")
-            else:
-                shown = [h.p(link, class_="fn-contact__value text-body"),
-                         undo_form(last, [cite, " · Saved"], "fn-cite text-small", here, "fn-link text-small") if saved
-                         else h.p(cite, class_="fn-cite text-small")]
-        else:
-            shown = h.p("Not provided", class_="fn-contact__none text-body")
-        edit_href = f"{here}{'&' if '?' in here else '?'}edit={contact.kind}"
-        rows.append(h.div(h.dt(label, class_="text-label"), h.dd(shown),
-                          h.dd(h.a("Edit", class_="text-meta", href=edit_href)) if member else None,
-                          class_="fn-contact__row"))
-    return h.section(h.h2("Contact", class_="fn-section text-title"), h.dl(rows, class_="fn-contact"),
-                     class_="fn-profile__section", id="contact") if rows else None
+    removed = None
+    if contact.removed and view.last:
+        removed = undo_form(view.last, [h.span(contact.removed), h.span("· Removed")], "fn-skipline text-body", f"{here}#contact")
+    if contact.kind == "linkedin":
+        return h.div(h.dt(FIELDS[contact.kind], class_="text-label"), h.dd(linkedin_value(contact, here)), class_="fn-contact__row")
+    shown = contact_value(contact, here) if contact.claim else []
+    acts = h.dd(post_form(f"/claims/{contact.claim.claim_id}/reject", "Not correct", "fn-link text-meta", f"{here}#contact"),
+                class_="fn-contact__acts") if contact.claim else None
+    return h.div(h.dt(FIELDS[contact.kind], class_="text-label"), h.dd(removed, shown), acts, class_="fn-contact__row")
+
+
+def contact_block(view: ProfileView, here: str) -> Safe | None:
+    """Email, phone and LinkedIn, each with its value and where it came from; Email and Phone have Not correct.
+
+    A network person with none shows a line that points to the Import page; anyone else with none gets no section.
+    """
+    rows = [contact_row(view, contact, here) for contact in view.contact]
+    if not rows and view.person.status != "in_list":
+        return None
+    none = h.p("FN found no contact details. An ", h.a("import", href="/imports/new"), " can add them.",
+               class_="fn-note text-small")
+    return h.section(h.h2("Contact", class_="fn-section text-title"), h.dl(rows, class_="fn-contact") if rows else none,
+                     class_="fn-profile__section", id="contact")
 
 
 def lookup_line(view: LookupView, person_id: str, here: str) -> Safe:
