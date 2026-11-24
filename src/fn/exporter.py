@@ -3,11 +3,11 @@ import csv
 import io
 
 from fn import geo
-from fn.contracts import IMPORT_COLUMNS, Claim, PersonView, name_key
+from fn.contracts import IMPORT_COLUMNS, PROFILE_COLUMN, Claim, PersonView, name_key
 from fn.present import belgian_orgs
 from fn.store import Store
 
-COLUMNS = (*IMPORT_COLUMNS, "belgian_organizations", "added", "profile")
+COLUMNS = (*IMPORT_COLUMNS, "belgian_organizations", "added", PROFILE_COLUMN)
 FORMULA_STARTS = ("=", "+", "-", "@")
 
 
@@ -58,6 +58,6 @@ def csv_text(store: Store, people: list[PersonView], base_url: str = "") -> str:
         row = {"name": view.name, "email": view.email, "phone": view.phone, "organization": view.employer,
                "role": view.role, **place_parts(view.place), "linkedin_url": held.get("profile_url"),
                "orcid": held.get("orcid"), "belgian_organizations": orgs, "added": view.added,
-               "profile": f"{base_url}/people/{view.person_id}"}
+               PROFILE_COLUMN: f"{base_url}/people/{view.person_id}"}
         writer.writerow([cell(row[c]) for c in COLUMNS])
     return "﻿" + out.getvalue()

@@ -69,7 +69,13 @@ class UploadTest(ImportPagesTest):
         self.assertIn('<input class="fn-input text-body" id="file" name="file" type="file"', html)
         self.assertIn('enctype="multipart/form-data"', html)
         rows = re.findall(r'<tr><td class="text-meta">(\w+)</td><td class="text-meta">(Yes|No)</td>', html)
-        self.assertEqual(rows, [(c, "Yes" if c == "name" else "No") for c in IMPORT_COLUMNS])
+        self.assertEqual(rows, [(c, "Yes" if c == "name" else "No") for c in (*IMPORT_COLUMNS, "profile")])
+
+    def test_the_upload_page_explains_the_profile_column(self):
+        """The upload page says what the profile column is and that FN recognizes the person by it."""
+        html = self.client.get("/imports/new").text
+        self.assertIn("The address of the person&#x27;s page in FN, as an FN export writes it. FN recognizes the person by it.",
+                      html)
 
     def test_a_posted_csv_redirects_to_a_preview_with_counts_matches_and_rows(self):
         """The preview counts the rows in words, offers each name match unticked and lists every row's outcome."""

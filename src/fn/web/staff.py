@@ -11,6 +11,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fn import deepen, exporter, identity, importer, network
 from fn.contracts import (
     IMPORT_COLUMNS,
+    PROFILE_COLUMN,
     AsideGroup,
     BackLink,
     Candidate,
@@ -824,7 +825,7 @@ def upload_page(error: str | None = None) -> str:
         h.h1("Import people", class_="fn-page__title text-title"),
         h.p("Upload a CSV file with one person per row. FN shows you what it will do before anything is imported.",
             class_="fn-page__lead text-body"),
-        upload_form(error), import_columns(IMPORT_COLUMNS),
+        upload_form(error), import_columns((*IMPORT_COLUMNS, PROFILE_COLUMN)),
         class_="fn-column"), class_="fn-page"), current="network")
 
 
