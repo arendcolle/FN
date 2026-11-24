@@ -7,10 +7,12 @@ from collections import Counter
 from collections.abc import Callable
 from datetime import datetime
 from typing import NamedTuple
+from urllib.parse import urlsplit
 
 from fn import geo, identity, network, orgs
 from fn.contracts import (
     IMPORT_COLUMNS,
+    PROFILE_COLUMN,
     ClaimDraft,
     GeoArea,
     Identifier,
@@ -37,7 +39,12 @@ OUTCOMES: tuple[ImportOutcome, ...] = ("new", "update", "name_match", "skipped")
 ORCID = re.compile(r"\d{4}-\d{4}-\d{4}-\d{3}[\dX]", re.IGNORECASE)
 LINKEDIN = "https://www.linkedin.com/"
 PLACE_COLUMNS = ("city", "state", "country")
-LABELS = {"profile_url": "LinkedIn URL", "orcid": "ORCID", "email": "email address"}
+LABELS = {"profile_url": "LinkedIn URL", "orcid": "ORCID", "email": "email address", PROFILE_COLUMN: "profile address"}
+PROFILE_PATH = re.compile(r"/people/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/?\Z", re.IGNORECASE)
+NOT_PROFILE = "Its profile is not the address of a person page in FN, so FN does not use it to recognize the person."
+NO_PROFILE = "Its profile is the address of a person FN does not hold, so FN does not use it to recognize the person."
+OTHER_NAME = ("Its profile is the address of {name}, whose name is not the row's name, so FN does not use it to "
+              "recognize the person.")
 NOT_CSV = "{file} is not a CSV file. In Excel, use Save as and pick CSV."
 NO_NAME = "{file} has no name column. Rename the column that holds names to name and upload it again."
 NO_ROWS = "{file} has no rows under the column names."
@@ -94,7 +101,7 @@ def table(filename: str, text: str) -> Table:
     columns, ignored = {}, []
     for i, cell in enumerate(head):
         key = "_".join(cell.strip().lower().split())
-        if key in IMPORT_COLUMNS and key not in columns:
+        if key in (*IMPORT_COLUMNS, PROFILE_COLUMN) and key not in columns:
             columns[key] = i
         elif cell.strip():
             ignored.append(cell.strip())
@@ -134,6 +141,19 @@ def identifiers(cells: dict[str, str]) -> tuple[list[Identifier], list[str]]:
     return found, notes
 
 
+def profile_id(cell: str) -> str | None:
+    """The person id in an FN profile address: http or https, a path ending in /people/<id>; else None.
+
+    The host, port, query and fragment do not count, so an export from another host reads the same.
+    """
+    try:
+        parts = urlsplit(cell.strip())
+    except ValueError:
+        return None
+    match = PROFILE_PATH.search(parts.path) if parts.scheme.lower() in ("http", "https") else None
+    return match.group(1).lower() if match else None
+
+
 def place_of(cells: dict[str, str]) -> str:
     return ", ".join(cells[c] for c in PLACE_COLUMNS if c in cells)
 
@@ -160,11 +180,14 @@ def rows_of(store: Store, record: ImportRecord, names: geo.Names | None) -> tupl
     filled = [(n, cells_of(parsed.columns, row)) for n, row in parsed.records]
     idents = {n: identifiers(cells) for n, cells in filled}
     holders = _holders(store, [i for found, _ in idents.values() for i in found])
-    people = store.get_persons(list(set(holders.values())))
+    profiles = {n: profile_id(cells[PROFILE_COLUMN]) for n, cells in filled if PROFILE_COLUMN in cells}
+    canonical = store.canonical_ids([p for p in profiles.values() if p])
+    people = store.get_persons(list({*holders.values(), *canonical.values()}))
     network_keys = store.network_by_group_key()
     seen: dict[tuple, int] = {}
     file_idents: dict[tuple[str, str], int] = {}
     file_names: dict[str, int] = {}
+    file_profiles: dict[str, int] = {}
     rows = []
     for n, cells in filled:
         name = cells.get("name", "")
@@ -178,11 +201,25 @@ def rows_of(store: Store, record: ImportRecord, names: geo.Names | None) -> tupl
                                   message=f"Row {n} is the same as row {seen[key]}, so FN skips it."))
             continue
         seen[key] = n
+        cells.pop(PROFILE_COLUMN, None)
+        gkey = identity.key(name)
         found, notes = idents[n]
         owners: dict[str, str] = {}
         for i in found:
             if owner := holders.get((i.scheme, i.value)):
                 owners.setdefault(owner, i.scheme)
+        tied = None
+        if n in profiles:
+            tied = canonical.get(profiles[n] or "")
+            if profiles[n] is None:
+                notes.append(NOT_PROFILE)
+            elif tied is None:
+                notes.append(NO_PROFILE)
+            elif identity.key(clean_name(people[tied].display_name)) != gkey:
+                notes.append(OTHER_NAME.format(name=people[tied].display_name))
+                tied = None
+            else:
+                owners.setdefault(tied, PROFILE_COLUMN)
         if len(owners) > 1:
             (a, a_scheme), (b, b_scheme) = list(owners.items())[:2]
             rows.append(ImportRow(n=n, name=name, outcome="skipped", cells=cells, message=(
@@ -192,8 +229,13 @@ def rows_of(store: Store, record: ImportRecord, names: geo.Names | None) -> tupl
         outcome: ImportOutcome
         person_id = next(iter(owners), None)
         earlier = next((file_idents[(i.scheme, i.value)] for i in found if (i.scheme, i.value) in file_idents), None)
-        gkey = identity.key(name)
-        if person_id:
+        if person_id and (owners[person_id] == PROFILE_COLUMN or person_id == tied):
+            outcome = "update" if person_id in file_profiles or people[person_id].list_status == "in_list" else "new"
+            if person_id in file_profiles:
+                notes.insert(0, f"Row {file_profiles[person_id]} has the same profile address, so FN adds it to the "
+                                "same person.")
+            file_profiles.setdefault(person_id, n)
+        elif person_id:
             outcome = "update"
         elif earlier:
             outcome = "update"
@@ -286,10 +328,17 @@ def _write(store: Store, record: ImportRecord, rows: list[ImportRow], merge_rows
             into = store.get_persons([target])[target]
         merging = into is not None and into.list_status == "in_list"
         found, _ = identifiers(row.cells)
-        person = store.resolve_person([*found, Identifier(scheme="import", value=f"import:{record.id}:{row.n}")],
-                                      row.name)
-        held = {(c.kind, fold(c.value))
-                for c in store.claims_of([person.id, *([into.id] if merging else [])], include_hidden=True)}
+        idents = [*found, Identifier(scheme="import", value=f"import:{record.id}:{row.n}")]
+        if row.outcome in ("new", "update") and row.person_id:
+            for ident in idents:
+                store.add_identifier(row.person_id, ident)
+            person = store.get_persons([row.person_id])[row.person_id]
+        else:
+            person = store.resolve_person(idents, row.name)
+        claims = store.claims_of([person.id, *([into.id] if merging else [])], include_hidden=True)
+        # An FN export writes an employer as its organization's name, which the claim may word otherwise.
+        held = {(c.kind, fold(c.value)) for c in claims} | {
+            ("affiliation", fold(o.name)) for o in store.get_orgs([c.org_id for c in claims if c.org_id]).values()}
         source, spans = row_source(record, row)
         for draft in drafts(person.id, source, spans, row.cells, locate(row.cells, names)):
             if (draft.kind, fold(draft.value)) not in held:

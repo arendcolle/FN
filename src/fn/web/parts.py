@@ -710,6 +710,7 @@ IMPORT_NOTES = {
     "country": "The country of the city.",
     "linkedin_url": "The address of their LinkedIn profile. FN recognizes the person by it in later imports and searches.",
     "orcid": "Their ORCID iD. FN recognizes the person by it in later imports and searches.",
+    "profile": "The address of the person's page in FN, as an FN export writes it. FN recognizes the person by it.",
 }
 OUTCOME_WORDS = {"new": "New", "update": "In your network", "name_match": "Same name"}
 IMPORT_ROWS_SHOWN = 200

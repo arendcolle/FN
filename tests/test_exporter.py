@@ -100,6 +100,39 @@ class ExporterTest(unittest.TestCase):
         values = [v for (v,) in self.store.conn.execute("SELECT value FROM claims")]
         self.assertFalse([v for v in values if v.startswith("'")])
 
+    def tally(self) -> tuple[int, int, int]:
+        count = lambda sql: self.store.conn.execute(sql).fetchone()[0]  # noqa: E731
+        return (count("SELECT count(*) FROM persons"), count("SELECT count(*) FROM persons WHERE merged_into IS NOT NULL"),
+                count("SELECT count(*) FROM claims"))
+
+    def test_an_unchanged_export_imports_again_without_a_question_or_a_change(self):
+        """Every row of the export is tied by its profile address: no name match, and no person, merge or claim added."""
+        self.imported()
+        text, _ = self.export()
+        before = self.tally()
+        import_id = self.imported(text, "fn-network.csv")
+        counts = importer.get(self.store, import_id).counts
+        self.assertEqual(counts, {"new": 0, "update": 3, "name_match": 0, "skipped": 0})
+        self.assertEqual(self.tally(), before)
+
+    def test_an_email_typed_into_an_export_row_goes_to_that_person(self):
+        """A row tied by its profile address takes the email typed into it as one new claim of that person."""
+        self.imported()
+        text, _ = self.export()
+        lines = text.split("\n")
+        cells = next(csv.reader([lines[1]]))
+        cells[1] = "made.up@example.org"
+        out = io.StringIO()
+        csv.writer(out, lineterminator="\n").writerow(cells)
+        before = self.tally()
+        import_id = self.imported("\n".join([lines[0], out.getvalue().rstrip("\n"), *lines[2:]]), "fn-network.csv")
+        self.assertEqual(importer.get(self.store, import_id).counts["update"], 3)
+        persons, merged, claims = self.tally()
+        self.assertEqual((persons, merged, claims), (before[0], before[1], before[2] + 1))
+        (value,) = self.store.conn.execute("SELECT value FROM claims WHERE kind = 'email' AND value = ?",
+                                           ("made.up@example.org",)).fetchone()
+        self.assertEqual(value, "made.up@example.org")
+
     def test_a_place_splits_into_city_state_and_country(self):
         """The first part is the city; known states and countries go to their column, an unknown middle part is the state."""
         for place, expected in (("Cambridge, MA, USA", ("Cambridge", "MA", "USA")), ("Leuven, Belgium", ("Leuven", "", "Belgium")),

@@ -1,9 +1,11 @@
 import json
+import time
 import unittest
+import uuid
 from datetime import UTC, datetime, timedelta
 
 from fn import importer, network
-from fn.contracts import Identifier
+from fn.contracts import ClaimDraft, Identifier, Org, Source
 from fn.worker import Worker
 from tests.helpers import StubHttp, make_db, make_settings
 
@@ -283,6 +285,132 @@ class ConfirmTest(ImporterTest):
         self.assertEqual(found.counts["new"], 5000)
         importer.confirm(self.worker, found.import_id, set(), T0)
         self.assertEqual(len(self.network()), 5000)
+
+
+PROFILE_HEADER = "name,orcid,email,organization,profile"
+
+
+class ProfileTest(ImporterTest):
+    def setUp(self):
+        super().setUp()
+        self.ann = self.person("Ann Fictive", ("seed", "ann"), in_list=True)
+        self.bo = self.person("Bo Madeup", ("seed", "bo"))
+        self.cy = self.person("Cy Invented", ("seed", "cy"), ("orcid", "https://orcid.org/0000-0002-1825-0097"),
+                              in_list=True)
+
+    def rows(self, *lines: str):
+        return self.upload(csv_bytes(*lines, header=PROFILE_HEADER)).rows
+
+    def people_count(self) -> int:
+        return self.store.conn.execute("SELECT count(*) FROM persons").fetchone()[0]
+
+    def claim_count(self) -> int:
+        return self.store.conn.execute("SELECT count(*) FROM claims").fetchone()[0]
+
+    def test_a_profile_address_ties_the_row_on_any_host(self):
+        """A profile address of a person in the network puts the row with that person, whatever host and form it has."""
+        forms = [f"http://127.0.0.1:8765/people/{self.ann}", f"https://other.example/people/{self.ann.upper()}/",
+                 f"https://other.example/people/{self.ann}?x=1#top"]
+        found = self.upload(csv_bytes(*[f"Ann Fictive,,,,{f}" for f in forms], header=PROFILE_HEADER))
+        self.assertEqual(found.counts, {"new": 0, "update": 3, "name_match": 0, "skipped": 0})
+        self.assertEqual({r.person_id for r in found.rows}, {self.ann})
+        before = (self.people_count(), self.claim_count())
+        importer.confirm(self.worker, found.import_id, set(), T0)
+        self.assertEqual((self.people_count(), self.claim_count()), before)
+
+    def test_a_profile_outside_the_network_adds_that_person_as_new(self):
+        """A profile of a stored person outside the network is new once, and a second row with it joins the first."""
+        found = self.upload(csv_bytes(f"Bo Madeup,,,,https://x.example/people/{self.bo}",
+                                      f"Bo Madeup,,bo@example.org,,https://x.example/people/{self.bo}",
+                                      header=PROFILE_HEADER))
+        first, second = found.rows
+        self.assertEqual((first.outcome, first.person_id, second.outcome, second.person_id),
+                         ("new", self.bo, "update", self.bo))
+        self.assertIn("Row 2 has the same profile address, so FN adds it to the same person.", second.message)
+        before = self.people_count()
+        importer.confirm(self.worker, found.import_id, set(), T0)
+        self.assertEqual(self.people_count(), before)
+        self.assertEqual(self.store.get_persons([self.bo])[self.bo].list_status, "in_list")
+
+    def test_a_profile_that_agrees_with_the_identifier_counts_once(self):
+        """A person outside the network with his ORCID and his own address is new once, then update."""
+        dee = self.person("Dee Madeup", ("orcid", "https://orcid.org/0000-0001-2345-6789"))
+        first, second = self.rows(f"Dee Madeup,0000-0001-2345-6789,,,https://x.example/people/{dee}",
+                                  f"Dee Madeup,0000-0001-2345-6789,dee@example.org,,https://x.example/people/{dee}")
+        self.assertEqual((first.outcome, second.outcome, first.person_id), ("new", "update", dee))
+
+    def test_a_merged_record_counts_as_its_person(self):
+        """An address of a record merged into another person puts the row with that person when the names agree."""
+        self.store.set_merged_into(self.bo, self.ann, T0)
+        (row,) = self.rows(f"Ann Fictive,,,,https://x.example/people/{self.bo}")
+        self.assertEqual((row.outcome, row.person_id), ("update", self.ann))
+
+    def test_a_cell_that_is_no_profile_address_is_said_and_ignored(self):
+        """Each unread form is said in the row and ignored; the name rules decide, and the column is not ignored."""
+        for cell in (f"https://x.example/searches/{self.ann}", self.ann, f"ftp://x.example/people/{self.ann}",
+                     "http://[::1", f"'https://x.example/people/{self.ann}"):
+            with self.subTest(cell=cell):
+                found = self.upload(csv_bytes(f"Ann Fictive,,,,{cell}", header=PROFILE_HEADER))
+                (row,) = found.rows
+                self.assertEqual((row.outcome, row.person_id, row.message), ("name_match", self.ann,
+                                                                          importer.NOT_PROFILE))
+                self.assertEqual(found.ignored_columns, [])
+        (row,) = self.rows("Ann Fictive,,,,https://x.example/people/00000000-0000-4000-8000-000000000000")
+        self.assertEqual((row.outcome, row.message), ("name_match", importer.NO_PROFILE))
+        (row,) = self.rows("Ann Fictive,,,,")
+        self.assertEqual((row.outcome, row.message), ("name_match", ""))
+        with self.assertRaises(importer.ImportRefused) as raised:
+            self.upload(b"profile\nhttps://x.example/people/" + self.ann.encode())
+        self.assertEqual(str(raised.exception), importer.NO_NAME.format(file="people.csv"))
+
+    def test_a_changed_name_does_not_use_the_profile(self):
+        """A row whose name is not the profile person's name is not tied; a case or initial difference still is."""
+        address = f"https://x.example/people/{self.ann}"
+        other, same = self.rows(f"Ann Other,,,,{address}", f"ann fictive q.,,,,{address}")
+        self.assertEqual((other.outcome, other.person_id), ("new", None))
+        self.assertEqual(other.message, importer.OTHER_NAME.format(name="Ann Fictive"))
+        self.assertEqual((same.outcome, same.person_id), ("update", self.ann))
+
+    def test_an_identifier_decides_first_and_a_clash_skips_the_row(self):
+        """An identifier and a profile of one person agree; of two people, the row is skipped with both named."""
+        ann_address = f"https://x.example/people/{self.ann}"
+        self.store.add_identifier(self.cy, Identifier(scheme="email", value="cy@example.org"))
+        agree, orcid, email = self.rows(
+            f"Cy Invented,0000-0002-1825-0097,,,https://x.example/people/{self.cy}",
+            f"Ann Fictive,0000-0002-1825-0097,,,{ann_address}", f"Ann Fictive,,cy@example.org,,{ann_address}")
+        self.assertEqual((agree.outcome, agree.message), ("update", ""))
+        self.assertEqual((orcid.outcome, orcid.message), ("skipped",
+            "Row 3's ORCID belongs to Cy Invented and its profile address to Ann Fictive, so FN skips it."))
+        self.assertEqual((email.outcome, email.message), ("skipped",
+            "Row 4's email address belongs to Cy Invented and its profile address to Ann Fictive, so FN skips it."))
+
+    def test_an_employer_written_as_its_organizations_name_adds_no_claim(self):
+        """A claim worded "Example Labs Inc" and linked to the org "Example Labs" holds the row's organization."""
+        text = "Example Labs Inc"
+        source = Source(id="src-ann", kind="page", url="https://example.org/ann", title="Example page", text=text,
+                        content_hash="h-ann")
+        self.store.upsert_source(source)
+        org = Org(id="ror:0abc12399", name="Example Labs", source_id=source.id, fetched_at=T0)
+        self.store.upsert_org(org, replace=True)
+        self.store.upsert_claim(ClaimDraft(person_id=self.ann, kind="affiliation", value=text, quote=text,
+                                           quote_start=0, quote_end=len(text), source=source, org_id=org.id,
+                                           relation="works_at"), T0)
+        found = self.upload(csv_bytes(f"Ann Fictive,,,Example Labs,https://x.example/people/{self.ann}",
+                                      header=PROFILE_HEADER))
+        before = self.claim_count()
+        importer.confirm(self.worker, found.import_id, set(), T0)
+        self.assertEqual(self.claim_count(), before)
+
+    def test_a_five_megabyte_file_of_profile_addresses_previews_in_under_five_seconds(self):
+        """A file near the size cap of profile addresses reads in a few seconds and its first row is tied."""
+        lines = [f"Ann Fictive,,,,https://x.example/people/{self.ann}"] + [
+            f"Person {n:05d} Example,,,,https://x.example/people/{uuid.uuid4()}" for n in range(60000)]
+        raw = csv_bytes(*lines, header=PROFILE_HEADER)
+        self.assertLess(len(raw), importer.MAX_BYTES)
+        started = time.monotonic()
+        found = self.upload(raw)
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertEqual(found.rows[0].outcome, "update")
 
 
 if __name__ == "__main__":

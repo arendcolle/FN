@@ -1076,6 +1076,8 @@ class CaseResult(Model):
 
 # The CSV import: the columns it reads, the profile URL form it shares with the LinkedIn lane, its rows and steps.
 IMPORT_COLUMNS = ("name", "email", "phone", "organization", "role", "city", "state", "country", "linkedin_url", "orcid")
+# The FN export's last column, the address of the person's page; the import reads it to recognize the person.
+PROFILE_COLUMN = "profile"
 ImportStatus = Literal["preview", "confirmed", "discarded"]
 ImportOutcome = Literal["new", "update", "name_match", "skipped"]
 
