@@ -117,36 +117,25 @@ def names_org(org: str, quote: str) -> bool:
     return any(name_key(s) and words(s) in words(quote) for s in [org, *orgs.names(orgs.org_id(org))])
 
 
-def check(source: Source, start: int, end: int, mention: PageMention) -> tuple[Located | None, list[Considered]]:
-    """The mention with its quotes found in the chunk source.text[start:end], or None, and a row per part dropped.
+def _drop(source: Source, mention: PageMention, stage: str, reason: str) -> Considered:
+    name = clean_name(mention.name)
+    return Considered(person_key=identifier(source.url, name).value, name=name, stage=stage, kept=False, reason=reason)
 
-    The mention needs a name of two words or more, found in its quote. A relation's or topic's quote must lie in
-    the chunk within NEAR_CHARS of the mention quote's start and hold its org or topic. A relation or topic that
-    would be the same claim as an earlier kept one is dropped, because store.upsert_claim keeps one.
-    """
+
+def _attached(source: Source, end: int, span: tuple[int, int], mention: PageMention) -> tuple[Located, list[Considered]]:
+    """The mention located at span with its relations and topics found near it in the chunk ending at end, and a row
+    per relation or topic dropped."""
     text, name = source.text, clean_name(mention.name)
-    key = identifier(source.url, name).value
-
-    def drop(stage: str, reason: str) -> Considered:
-        return Considered(person_key=key, name=name, stage=stage, kept=False, reason=reason)
-
-    if len(name_key(name).split()) < 2:
-        return None, [drop("mention", f"name has fewer than two words: {mention.name!r}")]
-    span = locate(text, mention.quote, start, end)
-    if span is None:
-        return None, [drop("mention", f"quote not found: {mention.quote[:200]!r}")]
-    if words(name) not in words(text[span[0]:span[1]]):
-        return None, [drop("mention", f"name not in quote: {text[span[0]:span[1]][:200]!r}")]
     kept, dropped, claims = [], [], {}
     for rel in mention.relations:
         at = locate(text, rel.quote, span[0], min(span[0] + NEAR_CHARS, end))
         what = f"{rel.relation} {rel.org!r}"
         if at is None:
-            dropped.append(drop("relation", f"relation quote not near the mention: {what}, quote {rel.quote[:200]!r}"))
+            dropped.append(_drop(source, mention, "relation", f"relation quote not near the mention: {what}, quote {rel.quote[:200]!r}"))
         elif not names_org(rel.org, text[at[0]:at[1]]):
-            dropped.append(drop("relation", f"org not in quote: {what}, quote {text[at[0]:at[1]][:200]!r}"))
+            dropped.append(_drop(source, mention, "relation", f"org not in quote: {what}, quote {text[at[0]:at[1]][:200]!r}"))
         elif (claim := (rel.relation in PLACES, normalize(rel.org), at[0])) in claims:
-            dropped.append(drop("relation", f"same claim as {claims[claim].relation} {claims[claim].org!r}: {what}"))
+            dropped.append(_drop(source, mention, "relation", f"same claim as {claims[claim].relation} {claims[claim].org!r}: {what}"))
         else:
             claims[claim] = rel
             kept.append((rel, Span(start=at[0], end=at[1])))
@@ -154,17 +143,36 @@ def check(source: Source, start: int, end: int, mention: PageMention) -> tuple[L
     for topic in mention.topics:
         at = locate(text, topic.quote, span[0], min(span[0] + NEAR_CHARS, end))
         if at is None:
-            dropped.append(drop("topic", f"topic quote not near the mention: {topic.topic!r}, quote {topic.quote[:200]!r}"))
+            dropped.append(_drop(source, mention, "topic", f"topic quote not near the mention: {topic.topic!r}, quote {topic.quote[:200]!r}"))
         elif not name_key(topic.topic) or words(topic.topic) not in words(text[at[0]:at[1]]):
-            dropped.append(drop("topic", f"topic not in quote: {topic.topic!r}, quote {text[at[0]:at[1]][:200]!r}"))
+            dropped.append(_drop(source, mention, "topic", f"topic not in quote: {topic.topic!r}, quote {text[at[0]:at[1]][:200]!r}"))
         elif (again := (name_key(topic.topic), at[0])) in seen:
-            dropped.append(drop("topic", f"same topic as before: {topic.topic!r}"))
+            dropped.append(_drop(source, mention, "topic", f"same topic as before: {topic.topic!r}"))
         else:
             seen.add(again)
             topics.append((normalize(topic.topic), Span(start=at[0], end=at[1])))
     located = Located(name=name, role=normalize(mention.role or "") or None, span=Span(start=span[0], end=span[1]),
                       relations=kept, topics=topics)
     return located, dropped
+
+
+def check(source: Source, start: int, end: int, mention: PageMention) -> tuple[Located | None, list[Considered]]:
+    """The mention with its quotes found in the chunk source.text[start:end], or None, and a row per part dropped.
+
+    The mention needs a name of two words or more, found in its quote. A relation's or topic's quote must lie in
+    the chunk within NEAR_CHARS of the mention quote's start and hold its org or topic. A relation or topic that
+    would be the same claim as an earlier kept one is dropped, because store.upsert_claim keeps one.
+    """
+    name = clean_name(mention.name)
+    text = source.text
+    if len(name_key(name).split()) < 2:
+        return None, [_drop(source, mention, "mention", f"name has fewer than two words: {mention.name!r}")]
+    span = locate(text, mention.quote, start, end)
+    if span is None:
+        return None, [_drop(source, mention, "mention", f"quote not found: {mention.quote[:200]!r}")]
+    if words(name) not in words(text[span[0]:span[1]]):
+        return None, [_drop(source, mention, "mention", f"name not in quote: {text[span[0]:span[1]][:200]!r}")]
+    return _attached(source, end, span, mention)
 
 
 def leads_block(names: list[str]) -> str:
