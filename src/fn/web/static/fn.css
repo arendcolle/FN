@@ -67,12 +67,7 @@ input[type="file"].fn-input { padding: var(--space-2); cursor: pointer; }
 .fn-check input { flex: none; width: var(--space-5); height: var(--space-5); margin: 1px 0 0; accent-color: var(--ink); cursor: pointer; }
 .fn-check input[aria-invalid="true"] { outline: 1px solid var(--failed); outline-offset: 1px; }
 .fn-check input[aria-invalid="true"]:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
-.fn-check + .fn-error, .fn-check__detail { margin-left: calc(var(--space-5) + var(--space-3)); }
-.fn-inline-form { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: flex-start; }
-.fn-inline-form > div { flex: 1 1 16em; min-width: 0; }
-.fn-inline-form .fn-input { padding: var(--space-2) var(--space-3); }
-.fn-inline-form .fn-btn { min-height: calc(1.5em + 2 * var(--space-2) + 2px); }
-.fn-inline-form .fn-link { align-self: center; }
+.fn-check + .fn-error { margin-left: calc(var(--space-5) + var(--space-3)); }
 
 /* Buttons */
 .fn-btn { display: inline-flex; align-items: center; justify-content: center; padding: var(--space-2) var(--space-4); border: 1px solid transparent; border-radius: var(--radius-md); cursor: pointer; text-decoration: none; white-space: nowrap; }
@@ -119,6 +114,7 @@ input[type="file"].fn-input { padding: var(--space-2); cursor: pointer; }
 .fn-card__acts { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; margin-top: var(--space-4); min-height: calc(1em + 2 * var(--space-2) + 2px); }
 .fn-card__match { margin: var(--space-4) 0 0; color: var(--muted); }
 .fn-card__match a { color: var(--ink); }
+.fn-card__match + .fn-card__match { margin-top: var(--space-1); }
 .fn-card__match + .fn-card__acts { margin-top: var(--space-2); }
 .fn-done { color: var(--accent); }
 .fn-card--skipped { padding: var(--space-3) var(--space-6); }
@@ -132,8 +128,8 @@ input[type="file"].fn-input { padding: var(--space-2); cursor: pointer; }
 .fn-cite { margin: var(--space-1) 0 0; color: var(--muted); }
 .fn-cite a { color: var(--muted); }
 
-/* New mark */
-.fn-new { display: inline-block; padding: 0 var(--space-1); border: 1px solid var(--ink); border-radius: var(--radius-sm); color: var(--ink); white-space: nowrap; }
+/* New mark, and the Differs mark in Compare */
+.fn-new, .fn-compare__differs { display: inline-block; padding: 0 var(--space-1); border: 1px solid var(--ink); border-radius: var(--radius-sm); color: var(--ink); white-space: nowrap; }
 
 /* Status line, and the two notes for a search that ended with a problem */
 .fn-status { display: flex; gap: var(--space-3); align-items: center; margin: 0 0 var(--space-5); color: var(--running); }
@@ -208,8 +204,8 @@ button.fn-marker--count { border: 0; }
 .fn-claim__what { margin: 0; }
 .fn-claim__what .text-year { white-space: nowrap; }
 .fn-claim__what .fn-new { margin-right: var(--space-2); }
-.fn-claim__head .fn-link { color: var(--muted); white-space: nowrap; }
-.fn-claim__head .fn-link:hover { color: var(--ink); }
+.fn-claim__head .fn-link, .fn-contact__acts .fn-link { color: var(--muted); white-space: nowrap; }
+.fn-claim__head .fn-link:hover, .fn-contact__acts .fn-link:hover { color: var(--ink); }
 /* The proof is inline after the fact, so its body opens as a block under the line and the line itself never moves. */
 .fn-proof { display: inline; }
 .fn-proof__name { display: inline; margin-left: var(--space-1); color: var(--muted); text-decoration: underline; text-underline-offset: 3px; white-space: nowrap; cursor: pointer; list-style: none; }
@@ -217,8 +213,9 @@ button.fn-marker--count { border: 0; }
 .fn-proof__name:hover, .fn-proof[open] > .fn-proof__name { color: var(--ink); }
 .fn-proof__body { max-width: var(--measure); margin: var(--space-2) 0 var(--space-1); }
 .fn-proof__body .fn-quote { margin: 0; }
+.fn-proof__body > .fn-claim__head + .fn-claim__head { margin-top: var(--space-3); } /* The wordings of an "Also described as" line. */
 .fn-claim--removed { padding: var(--space-3) 0; color: var(--muted); }
-.fn-claim--removed .fn-skipline .fn-link { color: var(--ink); }
+.fn-claim--removed .fn-skipline .fn-link, .fn-contact__row .fn-skipline .fn-link { color: var(--ink); }
 
 /* Lines: other items that repeat on staff pages, such as Found as and Possible matches */
 .fn-lines { margin: 0 0 var(--space-6); }
@@ -230,6 +227,20 @@ button.fn-marker--count { border: 0; }
 .fn-line__acts { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
 .fn-line--done { color: var(--muted); }
 .fn-line--done .fn-link { color: var(--ink); }
+.fn-line--compare > .fn-line__main { flex-basis: 100%; } /* The table takes the line's width; the buttons wrap under it. */
+
+/* Compare: two records side by side, field by field, inside a line */
+.fn-compare { position: relative; width: 100%; table-layout: fixed; }
+.fn-compare caption { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; } /* For screen readers; the column headings show the sides. */
+.fn-compare th, .fn-compare td { padding: var(--space-2) var(--space-3) var(--space-2) 0; overflow-wrap: anywhere; }
+.fn-compare th:last-child, .fn-compare td:last-child { padding-right: 0; }
+.fn-compare thead > tr > :first-child { width: calc(2 * var(--space-12)); }
+.fn-compare thead th { vertical-align: bottom; }
+.fn-compare tbody tr:last-child > * { border-bottom: 0; }
+.fn-compare__differs { display: block; width: max-content; margin-top: var(--space-1); } /* Under the field name at every width, so the marks line up. */
+.fn-compare__none { color: var(--muted); }
+.fn-compare__list { list-style: none; margin: 0; padding: 0; }
+.fn-line__main > * + .fn-compare { margin-top: var(--space-3); }
 
 /* Network row */
 .fn-row { display: flex; gap: var(--space-5); justify-content: space-between; align-items: baseline; padding: var(--space-4) var(--space-3); border-top: 1px solid var(--rule); }
@@ -253,6 +264,7 @@ button.fn-marker--count { border: 0; }
 .fn-profile__role { margin: 0; overflow-wrap: anywhere; }
 .fn-profile__status { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); align-items: baseline; margin: var(--space-3) 0 0; color: var(--muted); }
 .fn-profile__status .fn-link { color: var(--ink); }
+.fn-profile__head .fn-lines { margin: var(--space-3) 0 0; }
 .fn-profile__acts { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; margin-top: var(--space-4); min-height: calc(1em + 2 * var(--space-2) + 2px); }
 .fn-contact { margin: 0 0 var(--space-7); }
 .fn-contact__row { display: grid; grid-template-columns: calc(2 * var(--space-12)) minmax(0, 1fr) auto; gap: var(--space-1) var(--space-4); align-items: baseline; padding: var(--space-4) 0; border-top: 1px solid var(--rule); }
@@ -261,7 +273,6 @@ button.fn-marker--count { border: 0; }
 .fn-contact__row dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .fn-contact__value { margin: 0; }
 .fn-contact__none { margin: 0; color: var(--muted); }
-.fn-contact__edit { display: block; grid-column: 2 / -1; }
 .fn-profile__combined { margin: var(--space-1) 0 0; color: var(--muted); }
 .fn-profile__combined a { color: inherit; }
 .fn-profile__section { margin: var(--space-12) 0 0; }
@@ -350,7 +361,6 @@ button.fn-marker--count { border: 0; }
   .fn-row__side { flex-direction: row; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-3); }
   .fn-contact__row { grid-template-columns: minmax(0, 1fr) auto; }
   .fn-contact__row dt { grid-column: 1 / -1; }
-  .fn-contact__edit { grid-column: 1 / -1; }
   .fn-summary-list__row { grid-template-columns: minmax(0, 1fr); }
   .fn-proof__name { margin-left: 0; }
 }
