@@ -1,6 +1,7 @@
 """The people a stored page names: one extract call per chunk, each quote found in the page text, and their claims."""
 import re
 from bisect import bisect_right
+from collections.abc import Callable
 from datetime import date
 from urllib.parse import urlsplit
 
@@ -50,6 +51,9 @@ NEAR_CHARS = 1_500
 # A lead's place stands this near the lead's name on a page, and its quote is cut to this many characters.
 PAGE_DATES = ("page_date", "read_date")
 NAME_REACH = 1_000
+# A name form is the last word of the person's name with up to this many words before it, on one line.
+FORM_WORDS = 3
+NAME_TOKEN = re.compile(r"[^\W\d_][\w.'-]*")
 QUOTE_CHARS = 300
 LEGAL_FORMS = frozenset({"llp", "llc", "inc", "ltd", "plc", "pllc", "pc", "corp", "co", "nv", "sa", "bv"})
 PLACES: frozenset[Relation] = frozenset({"born_in", "lives_in", "origin"})
@@ -175,6 +179,36 @@ def check(source: Source, start: int, end: int, mention: PageMention) -> tuple[L
     return _attached(source, end, span, mention)
 
 
+def name_forms(text: str, start: int, end: int, person: str, same: Callable[[str, str], bool]) -> list[int]:
+    """Where in text[start:end] a name form of person starts: the last word of the name with up to FORM_WORDS words
+    before it on one line, accepted by same(person, form)."""
+    last = name_key(clean_name(person)).split()[-1:]
+    tokens = list(NAME_TOKEN.finditer(text, start, end))
+    found = []
+    for i, token in enumerate(tokens):
+        if name_key(token.group()).split()[-1:] != last:
+            continue
+        for k in range(1, FORM_WORDS + 1):
+            if i < k or "\n" in (form := text[tokens[i - k].start():token.end()]):
+                break
+            if same(person, form):
+                found.append(tokens[i - k].start())
+                break
+    return found
+
+
+def anchored(source: Source, start: int, end: int, mention: PageMention, person: str,
+             same: Callable[[str, str], bool]) -> tuple[Located, list[Considered]] | None:
+    """The mention at its own quote when its name is the person by same and the chunk source.text[start:end] writes a
+    name form of the person inside the quote or starting at most NAME_REACH characters before it; else None."""
+    if len(name_key(clean_name(mention.name)).split()) < 2 or not same(person, mention.name):
+        return None
+    span = locate(source.text, mention.quote, start, end)
+    if span is None or not any(at >= span[0] - NAME_REACH for at in name_forms(source.text, start, span[1], person, same)):
+        return None
+    return _attached(source, end, span, mention)
+
+
 def leads_block(names: list[str]) -> str:
     """The names with white space collapsed, empty and repeated ones left out, one per line."""
     return "\n".join(dict.fromkeys(n for n in (" ".join(name.split()) for name in names) if n))
@@ -224,12 +258,13 @@ def read_all(ctx: StepContext, sources: list[Source],
     return pages
 
 
-def read_person(ctx: StepContext, pages: list[tuple[Source, str]],
+def read_person(ctx: StepContext, pages: list[tuple[Source, str]], same: Callable[[str, str], bool] | None = None,
                 ) -> list[tuple[list[tuple[Located, PersonMention]], list[Considered]]]:
     """The named person on each page, in page order, from one extract_person call per chunk, ctx.settings.llm_workers at once.
 
     Each mention is checked as read_all checks one. A chunk whose call fails gives a row with the error, and a warning
-    unless the recording is missing; any other exception is raised once every call is logged.
+    unless the recording is missing; any other exception is raised once every call is logged. With same, a mention
+    dropped because its quote lacks its name is kept when `anchored` accepts it.
     """
     spans = [chunks(source.text) for source, _ in pages]
     parts = [(source, start, end, name) for (source, name), cuts in zip(pages, spans) for start, end in cuts]
@@ -240,7 +275,7 @@ def read_person(ctx: StepContext, pages: list[tuple[Source, str]],
 
     answers = iter(fan_out(ask, parts, ctx.settings.llm_workers))
     found_pages = []
-    for (source, _), cuts in zip(pages, spans):
+    for (source, person), cuts in zip(pages, spans):
         found: list[tuple[Located, PersonMention]] = []
         considered: list[Considered] = []
         for i, (start, end) in enumerate(cuts, 1):
@@ -255,6 +290,8 @@ def read_person(ctx: StepContext, pages: list[tuple[Source, str]],
                 raise people
             for mention in people:
                 located, dropped = check(source, start, end, mention)
+                if located is None and same is not None and (kept := anchored(source, start, end, mention, person, same)):
+                    located, dropped = kept
                 found += [(located, mention)] if located else []
                 considered += dropped
         found_pages.append((found, considered))

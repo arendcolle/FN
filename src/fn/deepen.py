@@ -202,7 +202,8 @@ def look_up(ctx: StepContext, chosen: list[Pick]) -> DeepenOut:
                 read.url, read.title, text, {"lookup": {"truncated": read.truncated}}, ctx.now(),
                 read.published or ctx.now().date().isoformat(), kind="page", plain=True,
                 date_method="page_date" if read.published else "read_date")
-    found = dict(zip(sources, extract.read_person(ctx, [(s, plans[at].pick.name) for (at, _), s in sources.items()])))
+    found = dict(zip(sources, extract.read_person(ctx, [(s, plans[at].pick.name) for (at, _), s in sources.items()],
+                                                  same=named_as)))
     lookups, claim_ids = [], []
     for at, plan in enumerate(plans):
         lookup, added = store(ctx, plan, [Page(page, reads[scout.page_key(page.url)], sources.get((at, page.url)),

@@ -1,4 +1,5 @@
 import logging
+import time
 import unittest
 from collections.abc import Callable
 from datetime import UTC, date, datetime
@@ -6,7 +7,7 @@ from datetime import UTC, date, datetime
 import httpx
 from pydantic import BaseModel
 
-from fn import extract, geo, llm, rank
+from fn import deepen, extract, geo, llm, rank
 from fn.contracts import (
     ClaimDraft,
     DeathsOut,
@@ -644,6 +645,60 @@ class PersonTest(unittest.TestCase):
         self.assertEqual([(task, data["person"]) for task, data in stub.data], [("extract_person", "Jan Peeters")] * 2)
         self.assertEqual([(located.name, m.died) for located, m in found], [("Jan Peeters", 2020)])
         self.assertEqual(considered, [])
+
+    def read_person(self, text: str, person: str, name: str, quote: str, same=deepen.named_as) -> tuple[list, list]:
+        """The kept spans and the drop reasons of one page read for person whose model answer is one mention."""
+        stub = RecordingLLM(lambda page: [mention(name, quote)])
+        ctx = StepContext(search_id="s", store=None, llm=stub, http=None, now=now, new_id=new_id,
+                          log=logging.getLogger("fn.step"), settings=self.settings)
+        [(found, considered)] = extract.read_person(ctx, [(self.source(text), person)], same=same)
+        return [(located.span.start, located.span.end) for located, _ in found], [c.reason.split(":")[0] for c in considered]
+
+    def test_read_person_keeps_a_mention_whose_quote_lacks_its_name_only_with_the_name_rule(self):
+        """With the name rule a mention whose name is the person and whose chunk writes a name form of the person at
+        or before the quote is kept at its own quote; without it, or for a name the check refuses, it is dropped."""
+        title = "Professor of physics."
+        cases = [("Jan (Johnny) Peeters is professor of physics.", "Jan Peeters", "Jan Peeters",
+                  "Jan (Johnny) Peeters is professor of physics."),
+                 ("Jan Peeters teaches physics.", "Jan Karel Peeters", "Jan Karel Peeters", "Jan Peeters teaches physics."),
+                 (f"Faculty\nJan D'Hondt\n{title}", "Jan D'Hondt", "Jan D'Hondt", title),
+                 (f"Ann Smith-Jones\n{title}", "Ann Smith-Jones", "Ann Smith-Jones", title)]
+        for text, person, name, quote in cases:
+            with self.subTest(person=person):
+                at = text.index(quote)
+                self.assertEqual(self.read_person(text, person, name, quote), ([(at, at + len(quote))], []))
+                self.assertEqual(self.read_person(text, person, name, quote, same=None)[1], ["name not in quote"])
+        text = f"Faculty\nJan Peeters\n{title}"
+        for name, quote, person, reason in [("Jan Peeters", "", "Jan Peeters", "quote not found"),
+                                            ("Jan Peeters", "Not on the page.", "Jan Peeters", "quote not found"),
+                                            ("Prof. Peeters", title, "Jan Peeters", "name has fewer than two words"),
+                                            ("Jan Peeters", title, "Peeters", "name not in quote")]:
+            with self.subTest(name=name, quote=quote, person=person):
+                self.assertEqual(self.read_person(text, person, name, quote), ([], [reason]))
+
+    def test_read_person_looks_for_the_name_up_to_name_reach_before_the_quote_in_its_own_chunk(self):
+        """A name form starting NAME_REACH characters before the quote counts and one character further does not; the
+        name in the title line counts; the name in the previous chunk does not."""
+        quote = "Professor of physics."
+        for pad, expected in [(extract.NAME_REACH - 13, True), (extract.NAME_REACH - 12, False)]:
+            text = "Jan Peeters\n" + "x" * pad + "\n" + quote
+            with self.subTest(pad=pad):
+                self.assertEqual(bool(self.read_person(text, "Jan Peeters", "Jan Peeters", quote)[0]), expected)
+        near = "Faculty\nJan Peeters\n" + "x" * 178 + "\n" + quote
+        self.assertEqual(len(self.read_person(near, "Jan Peeters", "Jan Peeters", quote)[0]), 1)
+        text = "\n".join("x" * 99 for _ in range(58)) + "\nJan Peeters\n\n" + quote + "\n" + "y" * 200
+        self.assertEqual(len(extract.chunks(text)), 2)
+        self.assertEqual(self.read_person(text, "Jan Peeters", "Jan Peeters", quote)[0], [])
+
+    def test_read_person_scans_a_chunk_full_of_the_surname_in_under_half_a_second(self):
+        """A chunk of 5,900 characters of the surname is read in under half a second and still finds the name form
+        after it."""
+        quote = "Professor of physics."
+        text = "Peeters " * 737 + "J. Peeters\n" + quote
+        started = time.perf_counter()
+        kept, _ = self.read_person(text, "Jan Peeters", "Jan Peeters", quote)
+        self.assertEqual(len(kept), 1)
+        self.assertLess(time.perf_counter() - started, 0.5)
 
     def contacts(self, text: str, name: str = "Jan Peeters") -> list[tuple]:
         return [(d.kind, d.value) for d in extract.contacts("p1", self.source(text), name)]
