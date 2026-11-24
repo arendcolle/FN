@@ -221,6 +221,55 @@ class DeepenTest(unittest.TestCase):
         self.assertEqual(self.verdicts(out), {other: "not_sure", bare: "not_sure"})
         self.assertEqual((self.held(other, "role"), self.held(bare), out.claim_ids), ([], [], []))
 
+    def titled_mention(self, name: str = "Jan Peeters", quote: str | None = None) -> dict:
+        quote = quote or f"Professor of physics at {EMPLOYER}."
+        return {"name": name, "quote": quote, "role": "professor of physics", "relations": [
+            {"relation": "works_at", "org": EMPLOYER, "quote": f"physics at {EMPLOYER}"}]}
+
+    def lookup_verdict(self, text: str, quote: str | None = None, name: str = "Jan Peeters") -> tuple[str, list[str]]:
+        """The verdict and role claims of a lookup of Jan Peeters whose page is text and whose model answer is one
+        mention (twice) named name with its quote."""
+        person_id = self.person("Jan Peeters")
+        self.serve(URL.format("jan"), text)
+        found = self.titled_mention(name, quote)
+        out = self.deepen({"Jan Peeters": [page(URL.format("jan"))]}, lambda page_text_, who: [found, found])
+        self.detail = out.lookups[0].detail
+        return self.verdicts(out)[person_id], [c.quote for c in self.held(person_id, "role")]
+
+    def test_a_quote_under_the_name_heading_confirms_the_page_and_a_far_or_later_name_does_not(self):
+        """A mention whose quote lacks the name counts when the person's name stands in the quote or at most NAME_REACH
+        characters before it, and not when it stands further back or only after the quote."""
+        title = f"Professor of physics at {EMPLOYER}."
+        verdict, roles = self.lookup_verdict(f"Faculty\nJan Peeters\n{title}\nMore")
+        self.assertEqual((verdict, roles), ("added", [title]))
+        self.setUp()
+        far = f"Faculty\nJan Peeters\n{'x' * 1_000}\n{title}\nMore"
+        self.assertEqual(self.lookup_verdict(far)[0], "not_sure")
+        self.assertIn("does not name the person", self.detail)
+        self.setUp()
+        self.assertEqual(self.lookup_verdict(f"Faculty\n{title}\nJan Peeters\nMore")[0], "not_sure")
+        self.setUp()
+        bio = "I teach physics at Example University."
+        verdict, _ = self.lookup_verdict(f"Faculty\nJan Peeters\n{bio}\nMore", bio)
+        self.assertEqual(verdict, "added")
+
+    def test_a_mention_named_as_someone_else_stays_refused_near_the_persons_name(self):
+        """The model's name must be the looked-up person, so a title line under two names is kept only for the
+        model's name Jan Peeters. The rule accepts the second case; a later tightening is not a regression."""
+        text = f"Faculty\nJan Peeters\nEls Janssens\nProfessor of physics at {EMPLOYER}.\nMore"
+        self.assertEqual(self.lookup_verdict(text, name="Els Janssens")[0], "not_sure")
+        self.setUp()
+        self.assertEqual(self.lookup_verdict(text)[0], "added")
+
+    def test_a_namesake_near_the_quote_does_not_confirm_the_person(self):
+        """A name form of another person with the same surname near the quote is no name form of the person, however
+        near, while an initial form of the person is."""
+        title = f"Professor of physics at {EMPLOYER}."
+        text = "Faculty\nJan Peeters\n" + "x" * 1_200 + "\n{}" + title + "\nMore"
+        self.assertEqual(self.lookup_verdict(text.format("Piet Peeters\n"))[0], "not_sure")
+        self.setUp()
+        self.assertEqual(self.lookup_verdict(text.format("J. Peeters\n"))[0], "added")
+
     def test_a_page_without_a_role_adds_no_role_claim(self):
         """A mention without a role stores its relations but no role taken from the page title."""
         person_id = self.person("Jan Peeters")
