@@ -45,6 +45,7 @@ from fn.contracts import (
     SummaryRow,
     WhyView,
     name_key,
+    profile_url,
 )
 from fn.evidence import places
 from fn.geo import regions_of
@@ -60,14 +61,14 @@ LIST_ROLES = ("fellow_of", "member_of", "consul_for")
 JOINING = ("works_at", "affiliated_with", "worked_at")
 CURRENT = JOINING[:2]
 PROSE = ("page", "seed_page", "vendor_page")
-FIELDS = {"topic": "Topic", "email": "Email", "phone": "Phone"}
-RECORD_LABELS = {"record": "OpenAlex record", "vendor_record": "LinkedIn record", "staff": "Entered in FN"}
+FIELDS = {"topic": "Topic", "email": "Email", "phone": "Phone", "linkedin": "LinkedIn"}
+RECORD_LABELS = {"record": "OpenAlex record", "vendor_record": "LinkedIn record"}
 # Dates of the day a record was read or changed, which never are a fact's own year.
-RECORD_DATES = ("page_date", "sitemap", "wayback_first_seen", "document_heading", "read_date", "sheet_date", "staff_edit")
+RECORD_DATES = ("page_date", "sitemap", "wayback_first_seen", "document_heading", "read_date", "sheet_date")
 FOLD_SHOWN = 20
 TIES = "Ties to Flanders and Belgium"
 GROUPS = ("Work", "Education", TIES, "Places")
-DONE = {"add": "Added to your network", "skip": "Skipped", "edit_contact": "Saved", "merge": "Merged into this profile",
+DONE = {"add": "Added to your network", "skip": "Skipped", "merge": "Merged into this profile",
         "not_same": "Marked as a different person"}
 RESULTS_STEP = 20
 HEADINGS = {1: "Topic and a tie to Flanders or Belgium", 2: "Topic, no known tie", 3: "Tie, topic not confirmed", 4: "Other people found"}
@@ -1099,6 +1100,34 @@ def contact_of(kind: str, claims: list[Claim], sources: dict[str, Source]) -> Co
     return ContactView(kind=kind, value=claim.value, claim=view, found=prose(source))
 
 
+def linkedin_of(store: Store, persons: list[str]) -> ContactView | None:
+    """The LinkedIn address of the record merged last, with the LinkedIn record or import it came from, or None.
+
+    A source is the record's vendor_record with that address, else its newest import; without one the row has
+    no citation. An unmerged record counts as merged first.
+    """
+    records = {r.id: r for p in persons for r in store.records_of(p)}
+    held = store.identifiers_of(list(records))
+    holders = [records[i] for i, found in held.items() if any(f.scheme == "profile_url" for f in found)]
+    if not holders:
+        return None
+    record = max(holders, key=lambda r: (r.merged_at.isoformat() if r.merged_at else "", r.id))
+    url = profile_url(next(i.value for i in held[record.id] if i.scheme == "profile_url"))
+    view = ContactView(kind="linkedin", value=url.removeprefix("https://www."), url=url)
+    claims = store.claims_of(persons, include_hidden=True)
+    owner = store.claim_records([c.id for c in claims])
+    sources = store.get_sources(list({c.source_id for c in claims if owner[c.id] == record.id})).values()
+    vendor = next((s for s in sources if s.kind == "vendor_record" and profile_url(s.url) == url), None)
+    imports = [s for s in sources if s.kind == "import" and s.fetched_at]
+    source = vendor or max(imports, key=lambda s: s.fetched_at, default=None)
+    if source is None:
+        return view
+    if source is vendor:
+        return view.model_copy(update={"label": "From a LinkedIn record", "href": f"/sources/{source.id}"})
+    return view.model_copy(update={"label": f"From import {source.title}", "href": f"/sources/{source.id}",
+                                   "date": day_words(source.fetched_at)})
+
+
 def work_org(claims: list[Claim], facts: dict[str, Org], sources: dict[str, Source], today: date) -> str | None:
     """The organization of the first Work line that has one among the claims, else None."""
     work = [c for c in claims if group_of(c, facts, sources[c.source_id]) == "Work"]
@@ -1272,11 +1301,14 @@ def profile(store: Store, person_id: str, today: date, card: list[str] | None = 
     if gone:
         removed = next((v for found in lines.values() for v in found if v.claim_id == gone[0].id),
                        claim_view(gone[0], sources[gone[0].source_id], facts.get(gone[0].org_id or "")))
+    contact = [contact_of(kind, claims, sources) for kind in ("email", "phone")]
+    contact = [c.model_copy(update={"removed": gone[0].value}) if gone and c.kind == gone[0].kind else c for c in contact]
+    contact = [c for c in [*contact, linkedin_of(store, persons)] if c and (c.value or c.removed)]
     shown_tie = evidence_tie(store, persons, claims, facts, today) if tie_ids is None else tie_ids
     fold_line = fold_of(work, sources)
     rows = found_as(store, persons, claims, sources, matches, facts, today, not (any(lines.values()) or fold_line))
     return ProfileView(
-        person=views[0], contact=[contact_of(kind, claims, sources) for kind in ("email", "phone")],
+        person=views[0], contact=contact,
         facts=[FactGroup(title=title, facts=lines.get(title, []), fold=fold_line if title == "Work" else None)
                for title in GROUPS if lines.get(title) or (title == "Work" and fold_line)],
         found_as=rows, possible=views[2:] if name_match else views[1:],

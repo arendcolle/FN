@@ -1,24 +1,12 @@
 """Who is in the network: the staff decisions, each one event that undo can reverse."""
-import hashlib
 import uuid
 from collections.abc import Sequence
 from datetime import datetime
 
 from fn import identity
-from fn.contracts import (
-    AddedVia,
-    ClaimDraft,
-    Event,
-    EventKind,
-    Identifier,
-    Section,
-    Source,
-    normalize,
-)
+from fn.contracts import AddedVia, Event, EventKind, Section
 from fn.store import Store
 
-CONTACT_KINDS = ("email", "phone")
-MAX_CONTACT = 200
 LATER = "Someone made a later decision about this person, so this one can no longer be undone."
 
 
@@ -190,66 +178,6 @@ def reject_claim(store: Store, claim_id: str, *, now: datetime, also: Sequence[s
                       person_id=person, claim_id=claim_id)
 
 
-def _checked(kind: str, value: str) -> str:
-    """The typed contact value trimmed; raises ValueError with a sentence a page can show."""
-    if kind not in CONTACT_KINDS:
-        raise ValueError(f"A contact is an email or a phone number, not {kind}.")
-    value = normalize(value)
-    if len(value) > MAX_CONTACT:
-        raise ValueError(f"That is too long: at most {MAX_CONTACT} characters.")
-    if kind == "email" and "@" not in value.strip("@"):
-        raise ValueError("Enter an email address like name@example.org.")
-    if kind == "phone" and sum(c.isdigit() for c in value) < 7:
-        raise ValueError("Enter a phone number with at least 7 digits.")
-    return value
-
-
-def staff_source(event_id: str, line: str, now: datetime) -> Source:
-    """A staff source holding the one line staff typed, dated today."""
-    text = normalize(line)
-    content_hash = hashlib.sha256(text.encode()).hexdigest()
-    url = f"fn:staff/{event_id}"
-    return Source(id=hashlib.sha1(f"staff\0{url}\0{content_hash}".encode()).hexdigest(), kind="staff", url=url,
-                  title="Typed by staff", text=text, content_hash=content_hash, source_date=now.date().isoformat(),
-                  date_method="staff_edit", fetched_at=now)
-
-
-def set_contact(store: Store, person_id: str, kind: str, value: str, *, now: datetime,
-                replaces: str | None = None) -> Event:
-    """Write a typed email or phone number as a staff claim on the person, and reject the claim it replaces.
-
-    A typed email also becomes the person's email identifier. Raises ValueError with a sentence for a bad
-    value or an email another person holds.
-    """
-    value = _checked(kind, value)
-    with store.tx():
-        (person,) = _canonical(store, [person_id])
-        added = False
-        if kind == "email":
-            address = Identifier(scheme="email", value=value.lower())
-            holder = store.person_ids_by_identifier("email", [address.value]).get(address.value)
-            if holder and _canonical(store, [holder])[0] != person:
-                raise ValueError("Another person in FN already has this email address.")
-            added = holder is None and store.add_identifier(person, address)
-        prior = None
-        if replaces:
-            replaced = store.get_claim(replaces)
-            if replaced is None:
-                raise ValueError("The fact this replaces no longer exists.")
-            prior = _iso(replaced.rejected_at)
-            store.set_claim_rejected(replaces, now)
-        event_id = str(uuid.uuid4())
-        source = staff_source(event_id, f"{kind}: {value}", now)
-        claim = store.upsert_claim(ClaimDraft(
-            person_id=person, kind=kind, value=value, quote=source.text, quote_start=0, quote_end=len(source.text),
-            source=source, claim_date=now.date().isoformat(), date_precision="day", date_method="staff_edit",
-        ), at=now)
-        detail = {"claim_id": claim.id, "replaces": replaces, "prior_rejected_at": prior, "identifier_added": added}
-        event = Event(id=event_id, at=now, kind="edit_contact", person_id=person, claim_id=claim.id, detail=detail)
-        store.add_event(event)
-        return event
-
-
 def record_import(store: Store, import_id: str, *, now: datetime, detail: dict) -> Event:
     with store.tx():
         return _event(store, "import", now, detail, import_id=import_id)
@@ -298,15 +226,6 @@ def _undo_not_same(store: Store, event: Event, now: datetime) -> None:
         store.set_merged_into(separated["id"], separated["merged_into"], _at(separated["merged_at"]))
 
 
-def _undo_contact(store: Store, event: Event, now: datetime) -> None:
-    store.set_claim_rejected(event.detail["claim_id"], now)
-    if event.detail["replaces"]:
-        store.set_claim_rejected(event.detail["replaces"], _at(event.detail["prior_rejected_at"]))
-    if event.detail["identifier_added"]:
-        claim = store.get_claim(event.detail["claim_id"])
-        store.remove_identifier(event.person_id, Identifier(scheme="email", value=claim.value.lower()))
-
-
 def _undo_skip(store: Store, event: Event, now: datetime) -> None:
     for person, status in event.detail["prior_status"].items():
         store.set_list_status(person, status)
@@ -323,7 +242,7 @@ def _undo_reject(store: Store, event: Event, now: datetime) -> None:
 
 
 UNDO = {"add": _undo_add, "skip": _undo_skip, "remove": _undo_remove, "merge": _undo_merge,
-        "not_same": _undo_not_same, "reject_claim": _undo_reject, "edit_contact": _undo_contact}
+        "not_same": _undo_not_same, "reject_claim": _undo_reject}
 
 
 def _later(newest_first: list[Event], event: Event) -> bool:

@@ -77,7 +77,7 @@ class ClaimViewTest(unittest.TestCase):
         page = present.claim_view(claim(quote='Anne "the engineer" Example'), source("vendor_page"), None)
         self.assertEqual(page.quote.text, "“Anne 'the engineer' Example”")
         self.assertEqual((page.quote.label, page.quote.date, page.label), ("Lab people", "date unknown", "Lab people"))
-        labels = {"vendor_record": "LinkedIn record", "staff": "Entered in FN", "seed_page": "Lab people"}
+        labels = {"vendor_record": "LinkedIn record", "seed_page": "Lab people"}
         for kind, label in labels.items():
             with self.subTest(kind=kind):
                 self.assertEqual(present.claim_view(claim(), source(kind), None).label, label)
