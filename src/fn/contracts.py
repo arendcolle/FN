@@ -499,8 +499,8 @@ class ClaimView(Model):
     url: str | None = None
     # The years in full when they have gaps, such as '2009, 2011–2012'.
     all_years: str = ""
-    # The role claim a joined role line hides together with its own claim.
-    joined_claim_id: str | None = None
+    # The other claims of the line that Not correct hides together with its own claim.
+    fold_ids: list[str] = []
 
 
 class OrgView(Model):
@@ -636,10 +636,17 @@ class FoldView(Model):
     orgs: list[str]
 
 
+class TitlesView(Model):
+    what: str
+    source: str
+    facts: list[ClaimView]
+
+
 class FactGroup(Model):
     title: str
     facts: list[ClaimView]
     fold: FoldView | None = None
+    titles: TitlesView | None = None
 
 
 class RecordView(Model):

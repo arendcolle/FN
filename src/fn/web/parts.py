@@ -22,6 +22,7 @@ from fn.contracts import (
     ReasonView,
     Search,
     SummaryRow,
+    TitlesView,
     WhyView,
     name_key,
 )
@@ -392,9 +393,10 @@ def role_line(view: PersonView) -> str:
     return " · ".join(x for x in (job, view.place) if x)
 
 
-def post_form(action: str, label: str, button_class: str, here: str, **fields: str) -> Safe:
-    """A plain POST form with one button, the fields and the page to go back to."""
-    return h.form([h.input(type="hidden", name=k, value=v) for k, v in fields.items()],
+def post_form(action: str, label: str, button_class: str, here: str, **fields: str | list[str]) -> Safe:
+    """A plain POST form with one button, the fields (one hidden input per value) and the page to go back to."""
+    return h.form([h.input(type="hidden", name=k, value=v) for k, found in fields.items()
+                   for v in ([found] if isinstance(found, str) else found)],
                   h.input(type="hidden", name="next", value=here),
                   h.button(label, type="submit", class_=button_class), method="post", action=action)
 
@@ -585,7 +587,7 @@ def claim_line(view: ClaimView, last: LastView | None, here: str) -> Safe:
                        proof(view, f"Source for {view.what}: {view.source}", back),
                        class_="fn-claim__line"),
                  post_form(f"/claims/{view.claim_id}/reject", "Not correct", "fn-link text-meta", back,
-                           **({"also": view.joined_claim_id} if view.joined_claim_id else {})),
+                           also=view.fold_ids),
                  class_="fn-claim__head")
     return h.div(head, class_="fn-claim", id=anchor)
 
@@ -599,6 +601,28 @@ def fold_line(fold: FoldView) -> Safe:
         h.div(h.p(listed, class_="fn-cite text-small"), class_="fn-proof__body"), class_="fn-proof")
     return h.div(h.div(h.div(h.span(what, class_="fn-claim__what text-body"), " ", proof, class_="fn-claim__line"),
                        class_="fn-claim__head"), class_="fn-claim", id="work-fold")
+
+
+def title_head(view: ClaimView, here: str) -> Safe:
+    """One loose title inside the gathered line: New, the wording and years, its quote and cite, and Not correct."""
+    anchor = f"claim-{view.claim_id}"
+    new = h.span("New", class_="fn-new text-label") if view.is_new else None
+    years = [", ", h.span(view.years, class_="text-year")] if view.years else None
+    return h.div(h.div(h.p(new, view.what, years, class_="fn-claim__what text-body"),
+                       h.blockquote(view.quote.text, class_="fn-quote text-quote") if view.quote else None,
+                       cite_line(view, f"{here}#{anchor}"), class_="fn-claim__line"),
+                 post_form(f"/claims/{view.claim_id}/reject", "Not correct", "fn-link text-meta", f"{here}#{anchor}",
+                           also=view.fold_ids),
+                 class_="fn-claim__head", id=anchor)
+
+
+def titles_line(titles: TitlesView, here: str) -> Safe:
+    """The gathered loose titles: one sentence and a proof that lists each title with its quote, cite and Not correct."""
+    proof = h.details(
+        h.summary(titles.source, class_="fn-proof__name text-small", aria_label=f"Source for {titles.what}: {titles.source}"),
+        h.div([title_head(v, here) for v in titles.facts], class_="fn-proof__body"), class_="fn-proof")
+    return h.div(h.div(h.div(h.span(titles.what, class_="fn-claim__what text-body"), " ", proof, class_="fn-claim__line"),
+                       class_="fn-claim__head"), class_="fn-claim", id="work-titles")
 
 
 def with_all(here: str, anchor: str) -> str:
@@ -622,10 +646,11 @@ def fact_groups(view: ProfileView, here: str, every: str | None) -> list[Safe]:
     out = []
     for group in view.facts:
         anchor = group.title.split()[0].lower()
-        if (all(c.claim_id in covered for c in group.facts) and not group.fold) or (
+        if (all(c.claim_id in covered for c in group.facts) and not group.fold and not group.titles) or (
                 group.title == "Places" and head_place(group, view)):
             continue
-        items = [claim_line(c, view.last, here) for c in group.facts] + ([fold_line(group.fold)] if group.fold else [])
+        items = ([claim_line(c, view.last, here) for c in group.facts] + ([titles_line(group.titles, here)] if group.titles else [])
+                 + ([fold_line(group.fold)] if group.fold else []))
         shown = items if every in ("1", anchor) else items[:FACT_STEP]
         more = len(items) - len(shown)
         out.append(h.section(
