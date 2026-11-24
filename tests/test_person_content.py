@@ -37,6 +37,7 @@ HEALTH = org("openalex:I2", "Example Health", "US")
 BAEF = org("ror:03q6ab901", "Belgian American Educational Foundation", "BE", region="BRU", city="Brussels")
 UCLOUVAIN = org("ror:02495e989", "UCLouvain", "BE", region="WAL", city="Louvain-la-Neuve")
 TIES = "Ties to Flanders and Belgium"
+CONSUL = "Consul for Belgian American Educational Foundation"
 LEUVEN = org("ror:05f950310", "KU Leuven", "BE", city="Leuven")
 
 
@@ -505,6 +506,191 @@ class RecordsAndUndoTest(PersonContentCase):
         self.client.post(f"/claims/{mine}/reject", data={"also": theirs, "next": f"/people/{ada}"})
         self.assertEqual([c.value for c in self.store.claims_of([bo])], ["Solar energy"])
         self.assertEqual(self.store.claims_of([ada]), [])
+
+
+class FoldTest(PersonContentCase):
+    """Two claims that state one fact are one line, at the page: stored claims and the head line do not change."""
+
+    def twins(self, person: str, **fields) -> tuple[str, str]:
+        """A consul_for claim at BAEF as a role from a seed list and as an affiliation from a page: two line keys."""
+        listed = self.source("Honorary consuls", kind="seed_page", title="Example list", url="https://lists.example/consuls")
+        first = self.claim(person, "role", BAEF.name, src=listed, relation="consul_for", org_id=BAEF.id, **fields)
+        second = self.claim(person, "affiliation", BAEF.name, relation="consul_for", org_id=BAEF.id, **fields)
+        return first, second
+
+    def reject_line(self, html: str, section: str, what: str, person: str) -> None:
+        """Press Not correct on the line of the section that reads what, with the ids its form carries."""
+        chunk = next(c for c in self.section(html, section).split('<div class="fn-claim"') if f">{what}" in c)
+        claim, form = re.search(r'action="/claims/([^"/]+)/reject">(.*?)</form>', chunk, re.DOTALL).groups()
+        also = re.findall(r'name="also" value="([^"]+)"', form)
+        self.client.post(f"/claims/{claim}/reject", data={"also": also, "next": f"/people/{person}"})
+
+    def removed(self, html: str) -> list[str]:
+        return re.findall(r"<span>([^<]+)</span><span>· Removed</span>", html)
+
+    def test_a_tie_from_a_list_and_a_page_is_one_line_and_not_correct_removes_both(self):
+        """One consul line stands for the role claim and the affiliation claim; Not correct and Undo act on both."""
+        ada = self.person("Ada Voorbeeld", "ada")
+        born = self.claim(ada, "location", "Leuven, Belgium", relation="born_in")
+        self.twins(ada)
+        self.search_with([[ada]], [CardFit(tie_grade="strong", tie_claim_ids=[born])])
+        html = self.page(ada, search="s1", card=ada)
+        self.assertEqual(self.lines(html, TIES).count(CONSUL), 1)
+        self.reject_line(html, TIES, CONSUL, ada)
+        after = self.page(ada, search="s1", card=ada)
+        self.assertEqual(self.removed(self.section(after, TIES)), [CONSUL])
+        self.assertEqual(self.store.claims_of([ada])[0].relation, "born_in")
+        self.assertEqual(len(self.store.claims_of([ada])), 1)
+        undo = re.search(r'action="/events/([^"]+)/undo"', after).group(1)
+        self.client.post(f"/events/{undo}/undo", data={"next": f"/people/{ada}"})
+        self.assertEqual(self.lines(self.page(ada, search="s1", card=ada), TIES).count(
+            CONSUL), 1)
+
+    def test_a_tie_the_summary_covers_leaves_out_ties_when_one_line_holds_both_claims(self):
+        """Without a fit the summary shows the consul tie, and the section that holds only that fact is left out."""
+        ada = self.person("Ada Voorbeeld", "ada")
+        self.twins(ada)
+        html = self.page(ada)
+        self.assertEqual(self.summary(html).get("Tie to Belgium"), CONSUL)
+        self.assertEqual(self.section(html, TIES), "")
+
+    def test_one_organization_is_one_work_line_with_all_its_years(self):
+        """Works at with an id, Worked at by name and Named at with an id make one line with the span of all three."""
+        ada = self.person("Ada Voorbeeld", "ada")
+        self.claim(ada, "affiliation", HEALTH.name, relation="works_at", org_id=HEALTH.id, claim_date="2024")
+        self.claim(ada, "affiliation", HEALTH.name, relation="worked_at", years=[2010, 2011, 2012], claim_date="2012")
+        self.claim(ada, "affiliation", HEALTH.name, relation="affiliated_with", org_id=HEALTH.id, years=[2015, 2016])
+        self.assertEqual(self.lines(self.page(ada)), ["Works at Example Health, 2010–2024"])
+
+    def test_two_ids_with_one_name_fold_only_when_the_words_match(self):
+        """Named at under two ids reads the same and is one line; Works at and Named at stay two."""
+        first, second = org("openalex:I901", "Twin Institute", "US"), org("openalex:I902", "Twin Institute", "US")
+        for found in (first, second):
+            self.store.upsert_org(found, replace=True)
+        ada, bo = self.person("Ada Voorbeeld", "ada"), self.person("Bo Voorbeeld", "bo")
+        self.claim(ada, "affiliation", first.name, relation="affiliated_with", org_id=first.id, years=[2010, 2011])
+        self.claim(ada, "affiliation", second.name, relation="affiliated_with", org_id=second.id, years=[2014, 2015])
+        self.claim(bo, "affiliation", first.name, relation="works_at", org_id=first.id, years=[2010, 2011])
+        self.claim(bo, "affiliation", second.name, relation="affiliated_with", org_id=second.id, years=[2014, 2015])
+        self.assertEqual(self.lines(self.page(ada)), ["Named at Twin Institute, 2010–2015"])
+        self.assertEqual(len(self.lines(self.page(bo), "Work")), 2)
+
+    def test_two_stated_roles_at_one_employer_stay_two_lines(self):
+        """Engineer and director at Alpha Labs stay two lines; a worked_at without a role folds into the newer role."""
+        ada = self.person("Ada Voorbeeld", "ada")
+        for role, relation, year in (("engineer", "affiliated_with", "2012"), ("director", "works_at", "2024")):
+            src = self.source(f"Ada Voorbeeld, {role} at Alpha Labs.")
+            self.claim(ada, "role", role, src=src, quote=role, claim_date=year)
+            self.claim(ada, "affiliation", "Alpha Labs", src=src, quote=f"{role} at Alpha Labs", relation=relation,
+                       claim_date=year)
+        self.claim(ada, "affiliation", "Alpha Labs", relation="worked_at", claim_date="2018")
+        self.assertEqual(self.lines(self.page(ada)), ["Director, Alpha Labs, 2018–2024", "Engineer, Alpha Labs, 2012"])
+
+    def test_loose_titles_gather_in_one_line_that_opens_into_each_title(self):
+        """Three titles of one host read as one sentence without the title another holds; each has its own Not correct."""
+        ada = self.person("Ada Voorbeeld", "ada")
+        self.claim(ada, "affiliation", HEALTH.name, relation="works_at", org_id=HEALTH.id)
+        for value in ("honorary consul", "honorary consul in Springfield", "ereconsul"):
+            self.claim(ada, "role", value)
+        want = ["Works at Example Health", "Also described as Ereconsul · Honorary consul in Springfield"]
+        for params in ({}, {"all": "work"}):
+            html = self.page(ada, **params)
+            self.assertEqual(self.lines(html), want)
+        block = re.search(r'<div class="fn-claim" id="work-titles">(.*?)</details>', html, re.DOTALL).group(1)
+        self.assertIn(">example.org</summary>", block)
+        body = re.search(r'<div class="fn-proof__body">(.*)', block + "</details>", re.DOTALL).group(1)
+        self.assertEqual(len(re.findall(r'<div class="fn-claim__head" id="claim-', body)), 3)
+        self.assertEqual(body.count("Not correct</button>"), 3)
+        self.assertNotIn("Not correct", block.split('<div class="fn-proof__body">')[0])
+
+    def test_titles_of_two_hosts_say_so_and_a_title_of_punctuation_is_left_out_of_the_line(self):
+        """Lecturer, docent and a dash from two hosts read as 'Docent · Lecturer' from 2 sources."""
+        ada = self.person("Ada Voorbeeld", "ada")
+        self.claim(ada, "role", "lecturer", src=self.source("lecturer of ada", url="https://a.example/1"))
+        self.claim(ada, "role", "–", src=self.source("– of ada", url="https://a.example/2"))
+        self.claim(ada, "role", "docent", src=self.source("docent of ada", url="https://b.example/1"))
+        html = self.page(ada)
+        self.assertEqual(self.lines(html), ["Also described as Docent · Lecturer"])
+        self.assertIn(">2 sources</summary>", html)
+        self.assertIn('aria-label="Source for Also described as Docent · Lecturer: 2 sources"', html)
+
+    def test_a_loose_title_that_reads_like_a_joined_line_folds_into_it_and_one_title_stays_a_line(self):
+        """A role without an organization equal to a joined line is that line; a single loose title is a normal line."""
+        ada, bo = self.person("Ada Voorbeeld", "ada"), self.person("Bo Voorbeeld", "bo")
+        text = "Ada Voorbeeld, managing director at BGR group."
+        src = self.source(text)
+        self.claim(ada, "role", "managing director at BGR group", src=src, quote="managing director at BGR group")
+        self.claim(ada, "affiliation", "BGR group", src=src, quote="director at BGR group", relation="works_at")
+        self.claim(ada, "role", "managing director at BGR group")
+        self.assertEqual(self.lines(self.page(ada)), ["Managing director at BGR group"])
+        self.claim(bo, "role", "docent")
+        self.assertEqual(self.lines(self.page(bo)), ["Docent"])
+        cy = self.person("Cy Voorbeeld", "cy")
+        src = self.source(text)
+        self.claim(cy, "role", "managing director at BGR group", src=src, quote="managing director at BGR group", years=[2020])
+        self.claim(cy, "affiliation", "BGR group", src=src, quote="director at BGR group", relation="works_at", years=[2020])
+        self.claim(cy, "role", "managing director at BGR group", years=[YEAR])
+        self.claim(cy, "role", "docent")
+        self.assertEqual(self.lines(self.page(cy)), ["Managing director at BGR group, 2020–2026", "Docent"])
+
+    def test_a_rejected_twin_stays_hidden_and_a_new_twin_marks_the_line_new(self):
+        """Twins with two keys: Not correct on the line hides both, and a twin stored after seen_at makes it New."""
+        ada = self.person("Ada Voorbeeld", "ada")
+        born = self.claim(ada, "location", "Leuven, Belgium", relation="born_in")
+        self.twins(ada)
+        self.search_with([[ada]], [CardFit(tie_grade="strong", tie_claim_ids=[born])])
+        self.reject_line(self.page(ada, search="s1", card=ada), TIES, CONSUL, ada)
+        html = self.page(ada, search="s1", card=ada)
+        self.assertEqual(self.lines(html, TIES), ["Born in Leuven, Belgium"])
+        self.assertEqual(self.removed(self.section(html, TIES)), [CONSUL])
+        bo = self.person("Bo Voorbeeld", "bo", member=True)
+        listed = self.source("Honorary consuls", kind="seed_page", title="Example list", url="https://lists.example/consuls")
+        self.claim(bo, "role", BAEF.name, src=listed, relation="consul_for", org_id=BAEF.id)
+        born = self.claim(bo, "location", "Leuven, Belgium", relation="born_in")
+        self.search_with([[bo]], [CardFit(tie_grade="strong", tie_claim_ids=[born])], "s2")
+        self.store.set_seen(bo, EARLIER + timedelta(hours=1))
+        later = self.source("Consul page")
+        draft = ClaimDraft(person_id=bo, kind="affiliation", value=BAEF.name, quote=later.text, quote_start=0,
+                           quote_end=len(later.text), source=later, relation="consul_for", org_id=BAEF.id)
+        self.store.upsert_claim(draft, now())
+        html = self.page(bo, search="s2", card=bo)
+        self.assertEqual(self.lines(html, TIES), [f"New{CONSUL}", "Born in Leuven, Belgium"])
+        self.assertIn('<span class="fn-new text-label">New</span>Consul for', html)
+
+    def test_places_at_one_spot_fold_to_the_longer_words(self):
+        """Austin, TX and Austin at one spot are one line; Austin, Texas without coordinates and Born in stay."""
+        ada = self.person("Ada Voorbeeld", "ada")
+        coords = {"lat": 30.2672, "lon": -97.7431}
+        self.claim(ada, "location", "Austin, TX", claim_date="2020", **coords)
+        self.claim(ada, "location", "Austin", claim_date="2021", **{"lat": 30.267, "lon": -97.743})
+        self.claim(ada, "location", "Austin, Texas", claim_date="2019")
+        self.claim(ada, "location", "Austin", relation="born_in", **coords)
+        self.claim(ada, "location", "Dallas, TX", claim_date="2022", lat=32.7767, lon=-96.797)
+        self.assertCountEqual(self.lines(self.page(ada, all="places"), "Places"), [
+            "Based in Austin, TX, 2020–2021", "Based in Austin, Texas, 2019", "Born in Austin", "Based in Dallas, TX, 2022"])
+
+    def test_166_organizations_each_with_a_twin_give_166_lines(self):
+        """An id claim and a name claim for each of 166 organizations make 166 lines, 163 behind Show more."""
+        ada = self.person("Ada Voorbeeld", "ada")
+        for n in range(166):
+            found = org(f"openalex:I{500 + n}", f"Firm {n:03d}", "FR")
+            self.store.upsert_org(found, replace=True)
+            self.claim(ada, "affiliation", found.name, relation="worked_at", org_id=found.id, years=[2000, 2001])
+            self.claim(ada, "affiliation", found.name, relation="worked_at", years=[2002, 2003])
+        self.assertEqual(len(self.lines(self.page(ada, all="work"))), 166)
+        self.assertIn(">Show 163 more</a>", self.page(ada))
+
+    def test_a_removed_title_stands_alone_with_undo_and_the_rest_stay_gathered(self):
+        """Not correct on one of three titles leaves a removed line with Undo and a sentence of the other two."""
+        ada = self.person("Ada Voorbeeld", "ada")
+        ids = {value: self.claim(ada, "role", value) for value in ("docent", "lecturer", "visiting professor")}
+        self.client.post(f"/claims/{ids['docent']}/reject", data={"next": f"/people/{ada}"})
+        html = self.page(ada)
+        self.assertEqual(self.removed(html), ["Docent"])
+        self.assertEqual(self.lines(html), ["Also described as Lecturer · Visiting professor"])
+        undo = re.search(r'action="/events/([^"]+)/undo"', html).group(1)
+        self.client.post(f"/events/{undo}/undo", data={"next": f"/people/{ada}"})
+        self.assertEqual(self.lines(self.page(ada)), ["Also described as Docent · Lecturer · Visiting professor"])
 
 
 class FirstScreenBudgetTest(PersonContentCase):

@@ -3,8 +3,8 @@ import json
 import re
 from calendar import month_name
 from collections import Counter
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from html import unescape
 from urllib.parse import urlsplit
@@ -43,6 +43,7 @@ from fn.contracts import (
     Search,
     Source,
     SummaryRow,
+    TitlesView,
     WhyView,
     name_key,
     profile_url,
@@ -398,6 +399,7 @@ class Line:
     last: int
     tier: int = 3
     folded: bool = False
+    roles: list[Claim] = field(default_factory=list)
 
     @property
     def span(self) -> int:
@@ -440,7 +442,8 @@ def names(text: str, name: str) -> bool:
 def lines_of(claims: list[Claim], facts: dict[str, Org], sources: dict[str, Source]) -> list[Line]:
     """One line per fact: claims with one kind, relation and organization or value are one line, cited by the newest.
 
-    A stated role joined to an employer claim is one line with it. A rejected claim is a line of its own.
+    A stated role joined to an employer claim is one line with it. The claims one Not correct removed share the
+    rejected state in their key, so they make one removed line.
     """
     joins = joined_roles(claims, sources)
     taken = {r.id for r in joins.values()}
@@ -448,12 +451,11 @@ def lines_of(claims: list[Claim], facts: dict[str, Org], sources: dict[str, Sour
     for claim in claims:
         if claim.id in taken:
             continue
-        if claim.rejected_at:
-            key = (claim.id,)
-        elif claim.id in joins:
+        if claim.id in joins:
             key = ("joined", fold(joins[claim.id].value), claim.org_id or fold(claim.value))
         else:
             key = line_key(claim)
+        key = (bool(claim.rejected_at), *key)
         same.setdefault(key, []).append(claim)
     return [line_of(found, joins, facts, sources) for found in same.values()]
 
@@ -462,7 +464,8 @@ def line_of(found: list[Claim], joins: dict[str, Claim], facts: dict[str, Org], 
     shown = newest(found)
     org = facts.get(shown.org_id or "")
     role = joins.get(shown.id) or (shown if shown.kind == "role" and shown.relation is None else None)
-    parts = [*found, *(joins[c.id] for c in found if c.id in joins)]
+    roles = [joins[c.id] for c in found if c.id in joins]
+    parts = [*found, *roles]
     own = frozenset().union(*(own_years(c, sources[c.source_id]) for c in parts))
     last = max((int(u) for c in parts for u in rank.units(c) if u != rank.UNDATED), default=0)
     what = what_of(shown, org)
@@ -471,7 +474,120 @@ def line_of(found: list[Claim], joins: dict[str, Claim], facts: dict[str, Org], 
         name = org.name if org else shown.value
         if not names(what, name):
             what = f"{what}, {name}"
-    return Line(claims=found, shown=shown, role=role, org=org, what=what, own=own, last=last)
+    return Line(claims=found, shown=shown, role=role, org=org, what=what, own=own, last=last, roles=roles)
+
+
+def text_key(what: str) -> str:
+    """The words with spaces collapsed and case folded, so two lines that read the same compare equal."""
+    return " ".join(what.split()).casefold()
+
+
+def newest_key(line: Line) -> tuple[str, str]:
+    """The sort key of newest for the line's shown claim."""
+    return line.shown.claim_date or "", line.shown.id
+
+
+def merged(base: Line, others: list[Line]) -> Line:
+    """The base line with the claims and roles of the others, the years of all, the latest year and the best tier."""
+    return replace(base, claims=[*base.claims, *(c for o in others for c in o.claims)],
+                   roles=[*base.roles, *(r for o in others for r in o.roles)],
+                   own=base.own.union(*(o.own for o in others)), last=max(base.last, *(o.last for o in others)),
+                   tier=min(base.tier, *(o.tier for o in others)))
+
+
+def collapse(lines: list[Line], sets: list[tuple[Line, list[Line]]]) -> list[Line]:
+    """The lines with each (base, others) set made one merged line, standing where the set's first line stood."""
+    place = {id(line): n for n, line in enumerate(lines)}
+    out: dict[int, Line | None] = {}
+    for base, others in filter(lambda found: found[1], sets):
+        first = min((base, *others), key=lambda line: place[id(line)])
+        out |= {id(line): None for line in (base, *others)}
+        out[id(first)] = merged(base, others)
+    return [found for line in lines if (found := out.get(id(line), line))]
+
+
+def groups_of(lines: list[Line], key: Callable[[Line], object]) -> list[list[Line]]:
+    """The lines in groups of one key, in the order of each group's first line; a None key leaves the line alone."""
+    found: dict = {}
+    for n, line in enumerate(lines):
+        found.setdefault(key(line) or n, []).append(line)
+    return [group for group in found.values() if len(group) > 1]
+
+
+def org_key(lines: list[Line]) -> Callable[[Line], object]:
+    """The key of a Work line about an organization: its orgs row id, else the smallest id of a row in the lines
+    with its name, else its name; None for a line without a relation.
+    """
+    ids: dict[str, str] = {}
+    for line in lines:
+        if line.org:
+            ids[text_key(line.org.name)] = min(line.org.id, ids.get(text_key(line.org.name), line.org.id))
+
+    def key(line: Line) -> tuple | None:
+        if line.shown.relation not in RELATIONS:
+            return None
+        found = line.org.id if line.org else ids.get(text_key(line.shown.value))
+        return bool(line.shown.rejected_at), "org" if found else "name", found or text_key(line.shown.value)
+    return key
+
+
+def fold_org(lines: list[Line]) -> list[Line]:
+    """Work lines about one organization are one line: lines with one stated role fold into the newest of them, and
+    lines without a role into the newest role line, else into the newer of their Works at and Worked at lines, else
+    the newest.
+    """
+    sets = []
+    for group in groups_of(lines, org_key(lines)):
+        bare = [line for line in group if not line.joined]
+        roles: dict[str, list[Line]] = {}
+        for line in group:
+            if line.joined:
+                roles.setdefault(text_key(line.role.value), []).append(line)
+        heads = [(base, [line for line in same if line is not base])
+                 for same in roles.values() for base in [max(same, key=newest_key)]]
+        if heads:
+            top = max((base for base, _ in heads), key=newest_key)
+            heads = [(base, others + bare if base is top else others) for base, others in heads]
+        else:
+            current = [line for line in bare if line.shown.relation in ("works_at", "worked_at")]
+            base = max(current or bare, key=newest_key)
+            heads = [(base, [line for line in bare if line is not base])]
+        sets += heads
+    return collapse(lines, sets)
+
+
+def fold_places(lines: list[Line]) -> list[Line]:
+    """Place lines at one spot, to two decimals of latitude and longitude, are one line with the longest words."""
+    def spot(line: Line) -> tuple | None:
+        claim = line.shown
+        if claim.kind != "location" or claim.lat is None or claim.lon is None:
+            return None
+        return bool(claim.rejected_at), claim.relation, round(claim.lat, 2), round(claim.lon, 2)
+    sets = []
+    for group in groups_of(lines, spot):
+        base = max(group, key=lambda line: (len(line.what), *newest_key(line)))
+        sets.append((base, [line for line in group if line is not base]))
+    return collapse(lines, sets)
+
+
+def fold_words(lines: list[Line]) -> list[Line]:
+    """Lines with the same words, case and spacing aside, are one line; one about an organization stands before a
+    loose title.
+    """
+    sets = []
+    for group in groups_of(lines, lambda line: (bool(line.shown.rejected_at), text_key(line.what)) if text_key(line.what) else None):
+        base = max(group, key=lambda line: (line.org is not None or line.joined, *newest_key(line)))
+        sets.append((base, [line for line in group if line is not base]))
+    return collapse(lines, sets)
+
+
+def fold_lines(lines: list[Line], work: bool) -> list[Line]:
+    """The lines with the ones that state one fact folded into one, each where its group's first line stood.
+
+    Work lines about one organization fold first, then places at one spot, then lines with the same words. Lines
+    fold only within one rejected state.
+    """
+    return fold_words(fold_places(fold_org(lines) if work else lines))
 
 
 def work_lines(claims: list[Claim], facts: dict[str, Org], sources: dict[str, Source], today: date,
@@ -998,18 +1114,20 @@ def line_key(claim: Claim) -> tuple:
 
 def line_view(line: Line, sources: dict[str, Source], seen_at: datetime | None, name: str,
               words: Sequence[str]) -> ClaimView:
-    """The line as the page shows it: its newest claim's view with the line's own years, its proof quote and, for a
-    joined role, the role's id and both in the words.
+    """The line as the page shows it: its shown claim's view with the line's own years, its proof quote, the ids of
+    its other claims, which Not correct hides with it, and, for a joined role, both in the words.
     """
     shown = line.shown
     source = sources[shown.source_id]
     view = claim_view(shown, source, line.org, seen_at, cut_quote=False)
     text = proof_quote(shown, source, name, words)
+    every = (*line.claims, *line.roles)
     update = {"years": span_words(line.own), "all_years": gap_words(line.own),
-              "is_new": any(seen_at and c.first_seen_at and c.first_seen_at > seen_at for c in (*line.claims, line.role) if c),
+              "fold_ids": list(dict.fromkeys(c.id for c in every if c is not shown)),
+              "is_new": any(seen_at and c.first_seen_at and c.first_seen_at > seen_at for c in every),
               "quote": QuoteView(text=text, label=view.label, href=view.href, date=view.date) if text else None}
     if line.joined:
-        update |= {"what": line.what, "joined_claim_id": line.role.id}
+        update["what"] = line.what
     return view.model_copy(update=update)
 
 
@@ -1019,9 +1137,21 @@ def fact_lines(claims: list[Claim], facts: dict[str, Org], sources: dict[str, So
 
     A line is new when any of its claims is; new lines come first, then newest first, equal dates by claim id.
     """
-    lines = sorted(lines_of(claims, facts, sources), key=lambda s: (s.shown.claim_date or "", s.shown.id), reverse=True)
+    lines = sorted(fold_lines(lines_of(claims, facts, sources), work=False), key=newest_key, reverse=True)
     views = [line_view(line, sources, seen_at, name, words) for line in lines]
     return sorted(views, key=lambda v: not v.is_new)
+
+
+def titles_of(views: list[ClaimView]) -> TitlesView:
+    """The gathered line of loose titles: 'Also described as' and the wordings in order, leaving out one whose words
+    all stand in another or that repeats an earlier one, and the source name when the titles share one.
+    """
+    words = [set(name_key(v.what).split()) for v in views]
+    kept = [v.what for n, v in enumerate(views) if not any(
+        words[n] < other or (words[n] == other and m < n) for m, other in enumerate(words) if m != n)]
+    names = list(dict.fromkeys(v.source for v in views))
+    return TitlesView(what=f"Also described as {' · '.join(kept)}", source=names[0] if len(names) == 1 else f"{len(names)} sources",
+                      facts=views)
 
 
 def fold_of(lines: list[Line], sources: dict[str, Source]) -> FoldView | None:
@@ -1053,9 +1183,15 @@ def evidence_tie(store: Store, persons: list[str], claims: list[Claim], facts: d
     return list(found.claim_ids) if found.grade in rank.TIED else []
 
 
-def same_fact(claim: Claim, claims: list[Claim]) -> list[str]:
-    """The ids of the claims that stand in the claim's line."""
-    return [c.id for c in claims if line_key(c) == line_key(claim)]
+def same_fact(claim: Claim, claims: list[Claim], facts: dict[str, Org], sources: dict[str, Source]) -> list[str]:
+    """The ids of the claims that stand in the claim's line of its section, the claim's own when it has none."""
+    group = group_of(claim, facts, sources[claim.source_id])
+    if group is None:
+        return [claim.id]
+    section = [c for c in claims if group_of(c, facts, sources[c.source_id]) == group]
+    found = fold_lines(lines_of(section, facts, sources), work=group == "Work")
+    line = next((s for s in found if any(c is claim for c in (*s.claims, *s.roles))), None)
+    return [c.id for c in (*line.claims, *line.roles)] if line else [claim.id]
 
 
 def years_of(ids: list[str], claims: list[Claim], sources: dict[str, Source]) -> str:
@@ -1071,13 +1207,13 @@ def summary_of(claims: list[Claim], facts: dict[str, Org], sources: dict[str, So
     """
     rows = []
     tie = tie_claim(claims, facts, ids)
-    if (study := newest([c for c in claims if c.relation == "studied_at"])) and not (tie and tie.id in same_fact(study, claims)):
-        line = same_fact(study, claims)
+    if (study := newest([c for c in claims if c.relation == "studied_at"])) and not (tie and tie.id in same_fact(study, claims, facts, sources)):
+        line = same_fact(study, claims, facts, sources)
         org = facts.get(study.org_id or "")
         rows.append(SummaryRow(key="Studied", value=org.name if org else study.value, years=years_of(line, claims, sources),
                                claim_ids=line))
     if tie:
-        org, line = facts.get(tie.org_id or ""), same_fact(tie, claims)
+        org, line = facts.get(tie.org_id or ""), same_fact(tie, claims, facts, sources)
         rows.append(SummaryRow(key="Tie to Flanders" if ev.in_flanders(tie, org) else "Tie to Belgium", value=what_of(tie, org),
                                years=years_of(line, claims, sources), claim_ids=line))
     if not member:
@@ -1296,7 +1432,13 @@ def profile(store: Store, person_id: str, today: date, card: list[str] | None = 
     lines = {title: fact_lines(found, facts, sources, seen_at, person.display_name, words) for title, found in groups.items()
              if title != "Work"}
     work = work_lines(groups.get("Work", []), facts, sources, today, views[0].place)
-    lines["Work"] = [line_view(s, sources, seen_at, person.display_name, words) for s in work if not s.folded]
+    shown_work = fold_lines([s for s in work if not s.folded], work=True)
+    loose = [s for s in shown_work if s.role is s.shown and not s.shown.rejected_at]
+    titles = None
+    if len(loose) > 1:
+        titles = titles_of([line_view(s, sources, seen_at, person.display_name, words) for s in loose])
+        shown_work = [s for s in shown_work if s not in loose]
+    lines["Work"] = [line_view(s, sources, seen_at, person.display_name, words) for s in shown_work]
     removed = None
     if gone:
         removed = next((v for found in lines.values() for v in found if v.claim_id == gone[0].id),
@@ -1306,11 +1448,12 @@ def profile(store: Store, person_id: str, today: date, card: list[str] | None = 
     contact = [c for c in [*contact, linkedin_of(store, persons)] if c and (c.value or c.removed)]
     shown_tie = evidence_tie(store, persons, claims, facts, today) if tie_ids is None else tie_ids
     fold_line = fold_of(work, sources)
-    rows = found_as(store, persons, claims, sources, matches, facts, today, not (any(lines.values()) or fold_line))
+    rows = found_as(store, persons, claims, sources, matches, facts, today, not (any(lines.values()) or fold_line or titles))
     return ProfileView(
         person=views[0], contact=contact,
-        facts=[FactGroup(title=title, facts=lines.get(title, []), fold=fold_line if title == "Work" else None)
-               for title in GROUPS if lines.get(title) or (title == "Work" and fold_line)],
+        facts=[FactGroup(title=title, facts=lines.get(title, []), fold=fold_line if title == "Work" else None,
+                         titles=titles if title == "Work" else None)
+               for title in GROUPS if lines.get(title) or (title == "Work" and (fold_line or titles))],
         found_as=rows, possible=views[2:] if name_match else views[1:],
         name_match=views[1] if name_match else None, last=last_of(store, person, event, removed),
         summary=summary_of(claims, facts, sources, shown_tie, member), records=len(rows) if len(persons) > 1 else 1,
