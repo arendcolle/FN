@@ -1324,9 +1324,12 @@ def separated_label(store: Store, record_id: str) -> str:
 
 
 def looking(store: Store, search: Search) -> bool:
-    """Whether the search is running its lookup step now; only version 2 chips and later have that step."""
-    return (search.status == "running" and search.chips is not None and search.chips.version >= 2
-            and any(s.step == deepen.STEP and s.status == "running" for s in store.list_steps(search.id)))
+    """Whether the search is looking up now: a lookup step runs in a running search, or any step runs in a done one.
+    Only version 2 chips and later have the lookups."""
+    if search.status not in ("running", "done") or search.chips is None or search.chips.version < 2:
+        return False
+    return any(s.status == "running" and (s.step == deepen.STEP or search.status == "done")
+               for s in store.list_steps(search.id))
 
 
 def lookup_parts(store: Store, records: list[str], at: datetime, today: date) -> str:

@@ -5,6 +5,7 @@ import sys
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextvars import copy_context
+from functools import partial
 
 from fn import deepen, fitcheck, geo, orgs, parse, rank, resolve
 from fn.contracts import (
@@ -112,14 +113,13 @@ def first_pass(ctx: StepContext, chips: Chips) -> DeepenOut:
         ctx.store.close()
 
 
-def finish(ctx: StepContext, outs: list[LaneOut], chips: Chips, first: DeepenOut) -> None:
+def finish(ctx: StepContext, outs: list[LaneOut], chips: Chips, first: DeepenOut) -> Callable[[], None]:
     """Run the steps after the lanes in order: link the employers of the hit people, resolve the lane outputs, rank the
-    entries, save the candidates, run the second lookup pass for people the first pass left out, ask the model
-    which stored people fit the question, and rank and save again after each of the last two when it changed something.
+    entries, save the candidates, ask the model which stored people fit the question, and rank and save again with
+    its verdicts. Returns the second lookup pass, for the caller to run once the search is done.
 
-    The first pass ran after the seeds publish, the second runs after the first save. The link step runs with version 2
-    chips and an HTTP client, and again after a second pass that added claims. A lookup or fit step that raises leaves
-    the ranking before it saved.
+    The first lookup pass ran after the seeds publish. The link step runs with version 2 chips and an HTTP client. A
+    fit step that raises leaves the ranking before it saved.
     """
     linking = ctx.http is not None and chips.version >= 2
     by_rank = sorted((h for out in outs for h in out.hits), key=lambda h: h.rank)
@@ -128,17 +128,23 @@ def finish(ctx: StepContext, outs: list[LaneOut], chips: Chips, first: DeepenOut
         link(ctx, hit)
     resolved = run_step(ctx, "resolve", resolve.run, ResolveIn(outs=outs))
     rank_and_save(ctx, resolved, chips, FitOut())
-    deepened = look_up(ctx, DeepenIn(chips=chips, skip=first.picked, used=first.gaps))
-    if deepened.claim_ids:
-        if linking:
-            link(ctx, hit)
-        rank_and_save(ctx, resolved, chips, FitOut())
     try:
         fit = run_step(ctx, "fit", fitcheck.run, FitIn(question=ctx.store.get_search(ctx.search_id).question, chips=chips))
     except Exception:  # noqa: BLE001 any error is kept on the step row and the ranking before it stands
-        return
+        fit = FitOut()
     if fit.verdicts:
         rank_and_save(ctx, resolved, chips, fit)
+    return partial(second_pass, ctx, resolved, chips, first, hit if linking else None)
+
+
+def second_pass(ctx: StepContext, resolved: ResolveOut, chips: Chips, first: DeepenOut, linked: list[str] | None) -> None:
+    """Look up the people the first pass left out, picked from the list saved after the fit check; when that added
+    claims, link the employers of linked again (when given) and rank and save with the stored fit verdicts."""
+    deepened = look_up(ctx, DeepenIn(chips=chips, skip=first.picked, used=first.gaps))
+    if deepened.claim_ids:
+        if linked is not None:
+            link(ctx, linked)
+        rank_and_save(ctx, resolved, chips, stored_fit(ctx))
 
 
 def stored_fit(ctx: StepContext) -> FitOut:
@@ -193,7 +199,7 @@ def run_lane(ctx: StepContext, lane: Lane, given: LaneIn) -> tuple[LaneOut, bool
         ctx.store.close()
 
 
-def run(ctx: StepContext, search: Search) -> None:
+def run(ctx: StepContext, search: Search) -> Callable[[], None]:
     """Run the Quick steps: parse, cities, the seeds lane alone, then the other lanes side by side, with a publish as
     each lane ends but the last, then the steps after the lanes.
 
@@ -248,7 +254,7 @@ def run(ctx: StepContext, search: Search) -> None:
     if failed == len(LANES):
         raise RuntimeError("every lane failed")
     first = started.result() if started else DeepenOut()
-    finish(ctx, in_lane_order(outs), chips, first)
+    return finish(ctx, in_lane_order(outs), chips, first)
 
 
 def main(argv: list[str] | None = None, llm: StructuredLLM | None = None) -> int:

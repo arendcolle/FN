@@ -87,15 +87,29 @@ class Worker:
             search_id=search_id, store=self.store, llm=self.llm, http=self.http, now=now, new_id=new_id,
             log=logging.getLogger("fn.step"), settings=self.settings,
         )
+        then = None
         try:
-            (workflow or search.run)(ctx, found)
+            if workflow is None:
+                then = search.run(ctx, found)
+            else:
+                workflow(ctx, found)
         except Exception:
             error = redact(traceback.format_exc(), self.settings.secrets())
             log.error("search %s failed\n%s", search_id, error)
             self.store.set_search_status(search_id, "failed", error=error, finished_at=now())
         else:
             self.store.set_search_status(search_id, "done", finished_at=now())
+            if then is not None:
+                self.run_after_done(search_id, then)
         return self.store.get_search(search_id)
+
+    def run_after_done(self, search_id: str, then: Callable[[], None]) -> None:
+        """Run the lookups that follow a done search; a failure is logged redacted and the search stays done."""
+        try:
+            then()
+        except Exception:
+            error = redact(traceback.format_exc(), self.settings.secrets())
+            log.error("search %s: the lookups after done failed\n%s", search_id, error)
 
     def sweep(self) -> list[str]:
         """Mark searches left queued or running by an earlier boot interrupted."""

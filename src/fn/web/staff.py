@@ -232,15 +232,16 @@ def results_list(store: Store, search: Search, view: str, shown: int, show_skipp
                  group_shown: int = RESULTS_STEP) -> tuple[Safe, bool, bool, dict]:
     """The results list: the status element, note or notice, the cards, Show more and the skipped line.
 
-    The status element holds the status line while the search runs and the count line when it is done. Also whether
-    it has cards, whether anyone has a place on the map, and the request log facts. A running list names the status
-    and fragment URLs results.js polls, and holds the reading line in a template for a page that has none yet;
-    progress is read before the cards, so they are never older than it.
+    The status element holds the status line while the search runs, the count line when it is done, and both while a
+    done search still looks up facts. Also whether it has cards, whether anyone has a place on the map, and the
+    request log facts. A polled list names the status and fragment URLs for results.js and holds the reading line
+    in a template; progress is read before the cards, so they are never older than it.
     """
     active, stopped = search.status in ("queued", "running"), search.status in ("failed", "interrupted")
-    progress = store.search_progress(search.id) if active else None
+    busy = looking(store, search)
+    progress = store.search_progress(search.id) if active or busy else None
     count, found, placed, facts = person_cards(store, search, shown, show_skipped, view, active, group, group_shown)
-    if progress:
+    if active:
         top = None
     elif stopped:
         top = status_note(STOPPED, "Run again", search.question) if found else notice(search, 0)
@@ -253,12 +254,11 @@ def results_list(store: Store, search: Search, view: str, shown: int, show_skipp
                                          ("skipped", 1 if show_skipped else None),
                                          ("view", "map" if view == "map" else None), ("group", group),
                                          ("group_shown", group_shown if group and group_shown != RESULTS_STEP else None)) if v})
-    busy = looking(store, search) if progress else False
     poll = {"data_status": f"/searches/{search.id}/status",
             "data_progress": f"{progress.status} {progress.version}{' looking' if busy else ''}",
             "data_cards": f"/searches/{search.id}/cards" + (f"?{query}" if query else "")} if progress else {}
     read = reading_line(reading(search.chips)) if progress else None
-    return h.div(top, h.div(status_line(progress.people, busy) if progress else count, role="status"), found,
+    return h.div(top, h.div(count, status_line(progress.people, busy) if progress else None, role="status"), found,
                  h.template(read, data_read=True) if read else None,
                  class_="fn-results__list", data_placed=placed, **poll), bool(found), placed, facts
 
@@ -271,7 +271,7 @@ def search_page(store: Store, search: Search, view: str = "list", shown: int = R
     A running search shows the status line, and a page without people a notice with the map hidden. view picks
     the list or the map on narrow screens; each has its own URL, so the refresh while a search runs keeps it.
     """
-    active = search.status in ("queued", "running")
+    active = search.status in ("queued", "running") or looking(store, search)
     found, cards, placed, facts = results_list(store, search, view, shown, show_skipped, group, group_shown)
     views = [h.a(name.title(), href=results_href(search.id, shown, show_skipped, name), data_view=name,
                  aria_current="page" if name == view else None) for name in ("list", "map")]

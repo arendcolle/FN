@@ -36,6 +36,27 @@ class WorkerTest(unittest.TestCase):
         self.assertEqual(step.status, "interrupted")
         self.assertIsNotNone(step.ended_at)
 
+    def test_sweep_interrupts_a_running_step_of_a_done_search_from_an_earlier_boot(self):
+        """A step left running under a done search of an earlier boot becomes interrupted with an end time; the search
+        stays done and is not returned, and a done search of this boot is untouched."""
+        old = self.worker()
+        earlier = old.create_search("earlier")
+        self.store.set_search_status(earlier.id, "done", finished_at=earlier.created_at)
+        step = StepRun(id="s1", search_id=earlier.id, seq=1, step="deepen", status="running",
+                       started_at=earlier.created_at, input_model="DeepenIn")
+        self.store.start_step(step, "{}")
+        new = self.worker()
+        current = new.create_search("this boot")
+        self.store.set_search_status(current.id, "done", finished_at=current.created_at)
+        self.store.start_step(step.model_copy(update={"id": "s2", "search_id": current.id}), "{}")
+        self.assertEqual(new.sweep(), [])
+        self.assertEqual(self.store.get_search(earlier.id).status, "done")
+        (stopped,) = self.store.list_steps(earlier.id)
+        self.assertEqual(stopped.status, "interrupted")
+        self.assertIsNotNone(stopped.ended_at)
+        (mine,) = self.store.list_steps(current.id)
+        self.assertEqual((mine.status, mine.ended_at), ("running", None))
+
     def test_exception_outside_a_step_fails_the_search(self):
         """An exception raised by the workflow itself, before any step, still marks the search failed."""
         worker = self.worker()

@@ -281,7 +281,8 @@ class Store:
         return [(_event({k: r[k] for k in r.keys() if k != "undone"}), bool(r["undone"])) for r in rows]
 
     def sweep(self, boot_id: str, now: datetime) -> list[str]:
-        """Mark queued or running searches from other boots, and their running steps, interrupted.
+        """Mark queued or running searches from other boots, and their running steps, interrupted; a running step of a
+        done search from another boot is interrupted too.
 
         Returns the ids of the searches it marked.
         """
@@ -299,6 +300,8 @@ class Store:
                     "UPDATE step_runs SET status = 'interrupted', ended_at = ? WHERE search_id = ? AND status = 'running'",
                     (_iso(now), search_id),
                 )
+            conn.execute("UPDATE step_runs SET status = 'interrupted', ended_at = ? WHERE status = 'running' AND search_id IN "
+                         "(SELECT id FROM searches WHERE status = 'done' AND boot_id != ?)", (_iso(now), boot_id))
         return ids
 
     def failed_lanes(self, search_id: str) -> list[str]:

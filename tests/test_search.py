@@ -15,6 +15,7 @@ from fn.contracts import (
     DeepenIn,
     DeepenOut,
     FitAnswer,
+    FitOut,
     FitRow,
     Identifier,
     LaneHit,
@@ -27,7 +28,7 @@ from fn.contracts import (
     Search,
     Source,
 )
-from fn import geo, rank, search
+from fn import geo, network, present, rank, search
 from fn.lanes import scout as scout_lane
 from fn.net import HttpError
 from fn.steps import StepContext, run_step
@@ -105,7 +106,7 @@ class SearchStepsTest(unittest.TestCase):
         self.assertEqual(self.store.search_progress(search_id).model_dump(),
                          {"status": "done", "people": 2, "version": 2})
         steps = [s.step for s in self.store.list_steps(search_id)]
-        self.assertEqual((steps[:2], steps[-5:]), (["parse", "cities"], ["resolve", "rank", "save", "deepen", "fit"]))
+        self.assertEqual((steps[:2], steps[-5:]), (["parse", "cities"], ["resolve", "rank", "save", "fit", "deepen"]))
         self.assertEqual(sorted(steps[2:-5]), ["deepen", "lane:seeds", "lane:web", "publish"])
 
     def run_with(self, given: Chips, lanes) -> str:
@@ -240,7 +241,7 @@ class SearchStepsTest(unittest.TestCase):
         steps = [(s.step, s.status) for s in self.store.list_steps(search_id)]
         names = [s for s, _ in steps]
         self.assertEqual((names[:2], names[-7:]),
-                         (["parse", "cities"], ["resolve", "rank", "save", "deepen", "fit", "rank", "save"]))
+                         (["parse", "cities"], ["resolve", "rank", "save", "fit", "rank", "save", "deepen"]))
         self.assertEqual(sorted(names[2:-7]), ["deepen", "lane:seeds", "lane:web", "link", "publish"])
         self.assertEqual(self.llm.calls, 3)
         ids = {c.person_id for c in self.store.list_candidates(search_id)}
@@ -263,27 +264,27 @@ class SearchStepsTest(unittest.TestCase):
         """The error stays on the fit step row; no second rank runs and the first candidates stay saved."""
         search_id = self.fitted([self.finds("seeds", "Ann Smith")], mock.Mock(side_effect=ConnectionError("model is down")))
         steps = [(s.step, s.status) for s in self.store.list_steps(search_id)]
-        self.assertEqual(steps[-5:], [("resolve", "ok"), ("rank", "ok"), ("save", "ok"), ("deepen", "ok"), ("fit", "error")])
+        self.assertEqual(steps[-5:], [("resolve", "ok"), ("rank", "ok"), ("save", "ok"), ("fit", "error"), ("deepen", "ok")])
         self.assertEqual(self.store.get_search(search_id).status, "done")
         self.assertEqual(len(self.store.list_candidates(search_id)), 1)
         search.refinish(self.context(search_id), self.store.get_search(search_id))
         self.assertEqual(self.rank_verdicts(search_id)[-1], {})
 
-    def test_a_lookup_that_added_claims_ranks_and_saves_again_before_the_fit_step(self):
-        """With claim ids from the deepen step the search links the new employers, ranks and saves again, then the fit
-        step runs."""
+    def test_a_lookup_that_added_claims_ranks_and_saves_again_after_the_fit_step(self):
+        """With claim ids from the deepen step the search links the new employers, ranks and saves again, after the fit
+        step ran."""
         with mock.patch("fn.deepen.run", return_value=DeepenOut(claim_ids=["c1"])):
             search_id = self.fitted([self.finds("seeds", "Ann Smith")])
         names = [s.step for s in self.store.list_steps(search_id)]
-        self.assertEqual(names[-10:], ["resolve", "rank", "save", "deepen", "link", "rank", "save", "fit", "rank", "save"])
+        self.assertEqual(names[-10:], ["resolve", "rank", "save", "fit", "rank", "save", "deepen", "link", "rank", "save"])
 
     def test_a_deepen_step_that_raises_keeps_the_first_ranking_and_the_fit_step_runs(self):
         """The error stays on the deepen step row, no extra rank runs and the search ends done."""
         with mock.patch("fn.deepen.run", side_effect=ConnectionError("search is down")):
             search_id = self.fitted([self.finds("seeds", "Ann Smith")])
         steps = [(s.step, s.status) for s in self.store.list_steps(search_id)]
-        self.assertEqual(steps[-7:], [("resolve", "ok"), ("rank", "ok"), ("save", "ok"), ("deepen", "error"),
-                                      ("fit", "ok"), ("rank", "ok"), ("save", "ok")])
+        self.assertEqual(steps[-7:], [("resolve", "ok"), ("rank", "ok"), ("save", "ok"), ("fit", "ok"),
+                                      ("rank", "ok"), ("save", "ok"), ("deepen", "error")])
         self.assertEqual(self.store.get_search(search_id).status, "done")
         self.assertEqual(len(self.store.list_candidates(search_id)), 1)
 
@@ -554,6 +555,116 @@ class SearchStepsTest(unittest.TestCase):
         ended = [e for e in events if e[0] == "deepen"]
         self.assertEqual(len(ended), 1)
         self.assertIn(("close", ended[0][1]), events[events.index(ended[0]) + 1:])
+
+    def second(self, run):
+        """A stand-in for deepen.run: the first pass, beside the lanes, finds nothing, and the second calls run."""
+        return self.passes(lambda ctx, inp: DeepenOut(), run)
+
+    def test_the_second_pass_starts_after_the_search_is_done_and_the_fit_check_ended(self):
+        """The second pass runs when the search is done and the fit step ended ok, and a pass that picks nobody adds no
+        rank or save."""
+        seen = []
+
+        def look(ctx: StepContext, inp: DeepenIn) -> DeepenOut:
+            seen.append((ctx.store.get_search(ctx.search_id).status, [(s.step, s.status) for s in ctx.store.list_steps(ctx.search_id)]))
+            return DeepenOut()
+
+        with self.second(look):
+            search_id = self.fitted([self.finds("seeds", "Ann Smith"), self.finds("web", "Pat Lee")])
+        self.assertEqual(seen[0][0], "done")
+        self.assertIn(("fit", "ok"), seen[0][1])
+        steps = self.store.list_steps(search_id)
+        self.assertEqual([s.step for s in steps][-4:], ["fit", "rank", "save", "deepen"])
+        self.assertGreaterEqual(steps[-1].started_at, self.store.get_search(search_id).finished_at)
+
+    def test_a_second_pass_that_adds_a_claim_reranks_and_keeps_every_fit_verdict(self):
+        """A pass that stored a claim links, ranks and saves again with the verdicts of the fit step, so a person it
+        said no to stays set aside, and the version goes up by one."""
+        ann = self.store.resolve_person([Identifier(scheme="seed", value="Ann Smith")], "Ann Smith").id
+        pat = self.store.resolve_person([Identifier(scheme="seed", value="Pat Lee")], "Pat Lee").id
+        verdicts = {ann: "no", pat: "yes"}
+        versions = []
+
+        def look(ctx: StepContext, inp: DeepenIn) -> DeepenOut:
+            versions.append(ctx.store.search_progress(ctx.search_id).version)
+            return DeepenOut(claim_ids=["c1"])
+
+        with self.second(look):
+            search_id = self.fitted([self.finds("seeds", "Ann Smith"), self.finds("web", "Pat Lee")],
+                                    lambda ctx, inp: FitOut(verdicts=verdicts))
+        names = [s.step for s in self.store.list_steps(search_id)]
+        self.assertEqual(names[-7:], ["fit", "rank", "save", "deepen", "link", "rank", "save"])
+        self.assertEqual(self.rank_verdicts(search_id)[-1], verdicts)
+        self.assertEqual({c.person_id: c.aside for c in self.store.list_candidates(search_id)}[ann], "unfit")
+        self.assertEqual(self.store.search_progress(search_id).version, versions[0] + 1)
+
+    def test_a_pass_that_raises_after_done_keeps_the_list_and_the_search_done(self):
+        """A raising lookup keeps its error row and a raising rank after a claim is logged; both leave the list saved
+        and the search done."""
+        def fails(ctx: StepContext, inp: DeepenIn) -> DeepenOut:
+            raise ConnectionError("search is down")
+
+        with self.second(fails):
+            search_id = self.fitted([self.finds("seeds", "Ann Smith"), self.finds("web", "Pat Lee")])
+        self.assertEqual([(s.step, s.status) for s in self.store.list_steps(search_id)][-1], ("deepen", "error"))
+        self.assertEqual((self.store.get_search(search_id).status, len(self.store.list_candidates(search_id))), ("done", 2))
+        real, after = rank.run, []
+
+        def broken(ctx: StepContext, inp: RankIn):
+            if after:
+                raise RuntimeError("rank is broken")
+            return real(ctx, inp)
+
+        with self.second(lambda ctx, inp: after.append(1) or DeepenOut(claim_ids=["c1"])), \
+                mock.patch("fn.rank.run", broken), \
+                self.assertLogs("fn.worker", "ERROR") as logs:
+            search_id = self.fitted([self.finds("seeds", "Ann Smith"), self.finds("web", "Pat Lee")])
+        self.assertIn("the lookups after done failed", logs.output[0])
+        self.assertEqual((self.store.get_search(search_id).status, len(self.store.list_candidates(search_id))), ("done", 2))
+
+    def test_a_search_queued_behind_waits_for_the_second_pass(self):
+        """While the second pass of A runs, A is done and looking up and B waits queued; B's first step starts once the
+        pass ended."""
+        inside, release = threading.Event(), threading.Event()
+
+        def hold(ctx: StepContext, inp: DeepenIn) -> DeepenOut:
+            inside.set()
+            self.assertTrue(release.wait(10))
+            return DeepenOut()
+
+        with self.second(hold), mock.patch("fn.search.LANES", [self.finds("seeds", "Ann Smith"), self.finds("web", "Pat Lee")]):
+            first = self.worker.create_search("Who knows wind?", V2, "edited").id
+            second = self.worker.create_search("Who knows wind?", V2, "edited").id
+            futures = [self.worker.submit(first), self.worker.submit(second)]
+            self.assertTrue(inside.wait(10))
+            self.assertEqual((self.store.get_search(first).status, self.store.get_search(second).status), ("done", "queued"))
+            self.assertTrue(present.looking(self.store, self.store.get_search(first)))
+            release.set()
+            for future in futures:
+                future.result(timeout=10)
+        deepen_ended = [s for s in self.store.list_steps(first) if s.step == "deepen"][-1].ended_at
+        self.assertGreaterEqual(self.store.list_steps(second)[0].started_at, deepen_ended)
+
+    def test_a_person_added_during_the_pass_is_in_the_network_section_after_it(self):
+        """Pat added to the network while the second pass runs stands in the network section once the pass reranked."""
+        pat = self.store.resolve_person([Identifier(scheme="seed", value="Pat Lee")], "Pat Lee").id
+        inside, release = threading.Event(), threading.Event()
+
+        def hold(ctx: StepContext, inp: DeepenIn) -> DeepenOut:
+            inside.set()
+            self.assertTrue(release.wait(10))
+            return DeepenOut(claim_ids=["c1"])
+
+        with self.second(hold), mock.patch("fn.search.LANES", [self.finds("seeds", "Ann Smith"), self.finds("web", "Pat Lee")]):
+            search_id = self.worker.create_search("Who knows wind?", V2, "edited").id
+            future = self.worker.submit(search_id)
+            self.assertTrue(inside.wait(10))
+            self.assertEqual(self.store.get_search(search_id).status, "done")
+            self.assertEqual({c.person_id: c.section for c in self.store.list_candidates(search_id)}[pat], "new")
+            network.add(self.store, [pat], via="search", now=now())
+            release.set()
+            future.result(timeout=10)
+        self.assertEqual({c.person_id: c.section for c in self.store.list_candidates(search_id)}[pat], "network")
 
     def test_progress_of_an_unknown_search_is_none(self):
         """search_progress returns None for an id with no search."""
