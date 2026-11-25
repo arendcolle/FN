@@ -162,7 +162,7 @@ class StubHttp:
         return httpx.Response(200, json={"meta": {"count": 0}, "results": []})
 
     def post(self, url: str, body: dict, params: dict[str, str] | None = None, *, timeout_s: float | None = None,
-             cost=None, keep=None, cache: CacheMode = "refresh") -> httpx.Response:
+             cost=None, keep=None, cache: CacheMode = "refresh", before=None) -> httpx.Response:
         shown = f"POST {url} {params or {}} {json.dumps(body, sort_keys=True)}"
         if cache == "only":
             current_recorder().record("http", shown, 0, error="not in the response cache")

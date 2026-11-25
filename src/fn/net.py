@@ -152,12 +152,21 @@ class Client:
         os.replace(tmp.name, path)
 
     def _send(self, request: httpx.Request, shown: str, key: str, *, cost: Callable[[bytes], float | None] | None,
-              keep: Callable[[bytes], bool] | None, cache: CacheMode) -> httpx.Response:
-        """The one path for every call: the cache first when the mode asks for it, then the network with retries."""
+              keep: Callable[[bytes], bool] | None, cache: CacheMode,
+              before: Callable[[], None] | None = None) -> httpx.Response:
+        """The one path for every call: the cache first when the mode asks for it, then the network with retries.
+
+        cache "none" never reads or writes the cache, and in replay it raises CacheMiss unsent. before runs once
+        the request is signed and before it is sent.
+        """
         path = cache_file(self.cache, key)
         recorder = current_recorder()
         replay = self.settings.http_mode == "replay"
-        if replay or cache != "refresh" or self.settings.http_mode == "prefer":
+        if cache == "none":
+            if replay:
+                recorder.record("http", f"replay {shown}", 0, error="never cached")
+                raise CacheMiss(f"replay: {shown} is never cached")
+        elif replay or cache != "refresh" or self.settings.http_mode == "prefer":
             served = "replay" if replay else "cache"
             if path.exists():
                 body = path.read_bytes()
@@ -172,6 +181,8 @@ class Client:
         except MissingKey as exc:
             recorder.record("http", shown, 0, error=str(exc))
             raise
+        if before:
+            before()
         retry_on = (429, 503) if request.method == "GET" else (429,)
         retried = False
         while True:
@@ -192,10 +203,10 @@ class Client:
                     recorder.record("http", shown, ms, status=response.status_code, response_sha=sha,
                                     error=f"{type(exc).__name__}: {exc}")
                     raise
-                if saved:
+                if saved and cache != "none":
                     self._write_cache(path, body)
                 recorder.record("http", shown, ms, status=response.status_code, response_sha=sha,
-                                response_path=str(path) if saved else None, cost_usd=price)
+                                response_path=str(path) if saved and cache != "none" else None, cost_usd=price)
                 kept = {k: v for k, v in response.headers.items() if k.lower().startswith("x-ratelimit-")}
                 return httpx.Response(response.status_code, content=body, headers=kept, request=request)
             location = response.headers.get("location")
@@ -207,7 +218,8 @@ class Client:
             error = f"{shown} returned {response.status_code}"
             if wait is not None:
                 error += f"; Retry-After {wait:g}s" + (f" is over {MAX_RETRY_AFTER_S}s" if wait > MAX_RETRY_AFTER_S else "")
-            if text := redact(body.decode(errors="replace"), self.settings.secrets())[:ERROR_BODY_CHARS].strip():
+            text = redact(body.decode(errors="replace"), self.settings.secrets())[:ERROR_BODY_CHARS].strip()
+            if text and cache != "none":
                 error += f": {text}"
             recorder.record("http", shown, ms, status=response.status_code, error=error)
             if retried or wait is None or wait > MAX_RETRY_AFTER_S:
@@ -216,10 +228,12 @@ class Client:
             retried = True
 
     def get(self, url: str, params: dict[str, str] | None = None, *, redirects: int = 0,
-            agent: str | None = None, check: Callable[[str], None] | None = None) -> httpx.Response:
+            agent: str | None = None, check: Callable[[str], None] | None = None,
+            cache: CacheMode = "refresh") -> httpx.Response:
         """GET url with params as a recorded call of the running step and return the 2xx response.
 
         check is called with the address of each redirect hop before it is followed and raises to refuse it.
+        cache "none" never reads or writes the cache, and raises CacheMiss in replay.
 
         A 429 or 503 with Retry-After up to 30 s is retried once after that wait. redirects is how many 301, 302,
         303, 307 or 308 hops to follow, each a recorded call; a live final answer is also cached under url. agent
@@ -232,7 +246,7 @@ class Client:
             shown = f"GET {unquote(str(request.url))}"
             first = first or str(request.url)
             try:
-                response = self._send(request, shown, str(request.url), cost=None, keep=None, cache="refresh")
+                response = self._send(request, shown, str(request.url), cost=None, keep=None, cache=cache)
             except Redirect as moved:
                 if not redirects:
                     raise
@@ -240,21 +254,22 @@ class Client:
                 if check:
                     check(current)
                 continue
-            if hop and self.settings.http_mode != "replay":
+            if hop and cache != "none" and self.settings.http_mode != "replay":
                 self._write_cache(cache_file(self.cache, first), response.content)
             return response
         raise HttpError(f"GET {url} redirected more than {redirects} times")
 
     def post(self, url: str, body: dict, params: dict[str, str] | None = None, *, timeout_s: float | None = None,
              cost: Callable[[bytes], float | None] | None = None, keep: Callable[[bytes], bool] | None = None,
-             cache: CacheMode = "refresh") -> httpx.Response:
+             cache: CacheMode = "refresh", before: Callable[[], None] | None = None) -> httpx.Response:
         """POST body as JSON to url with params as a recorded call of the running step and return the 2xx response.
 
         cache is refresh (call out, write the cache), prefer (serve the cache, else call out) or only (never call
-        out). cost(body) prices a live answer and keep(body) False leaves it uncached. timeout_s replaces the 30 s
+        out) or none (neither read nor write it). before runs after the key is applied, only when the call
+        goes out. cost(body) prices a live answer and keep(body) False leaves it uncached. timeout_s replaces the 30 s
         read timeout. Only a 429 is retried. Raises MissingKey, CacheMiss and HttpError as get does.
         """
         request = self._request("POST", url, params, body, timeout_s)
         shown = f"POST {unquote(str(request.url))} {json.dumps(body, ensure_ascii=False, separators=(',', ':'))}"
         key = f"POST {request.url}\n{json.dumps(body, sort_keys=True, separators=(',', ':'))}"
-        return self._send(request, shown, key, cost=cost, keep=keep, cache=cache)
+        return self._send(request, shown, key, cost=cost, keep=keep, cache=cache, before=before)

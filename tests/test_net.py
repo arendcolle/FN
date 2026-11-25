@@ -361,6 +361,52 @@ class NetTest(unittest.TestCase):
             self.send(online, lambda http: http.post(SEARCH, {**BODY, "mode": "deep"}, cache="only"))
         self.assertEqual(len(self.sent), 2)
 
+    def test_a_get_with_cache_none_never_reads_or_writes_the_cache(self):
+        """cache="none" calls out every time even over a cached file, writes no file even for a followed redirect,
+        and raises CacheMiss unsent in replay.
+        """
+        url = "https://example.org/account"
+        client = self.client([httpx.Response(200, text=f"a{n}") for n in range(2)])
+        client.cache.mkdir(parents=True, exist_ok=True)
+        net.cache_file(client.cache, url).write_text("old")
+        for n in range(2):
+            self.assertEqual(self.fetch(client, url, cache="none").text, f"a{n}")
+        self.assertEqual((len(self.sent), net.cache_file(client.cache, url).read_text()), (2, "old"))
+        moved = self.client([httpx.Response(302, headers={"location": "/b"}), httpx.Response(200, text="final")])
+        self.assertEqual(self.fetch(moved, url, redirects=1, cache="none").text, "final")
+        self.assertEqual(len(self.sent), 4)
+        self.assertEqual(net.cache_file(client.cache, url).read_text(), "old")
+        replay = self.client([], self.settings.model_copy(update={"http_mode": "replay"}))
+        with self.assertRaisesRegex(net.CacheMiss, "never cached"):
+            self.fetch(replay, url, cache="none")
+        self.assertEqual(len(self.sent), 4)
+
+    def test_a_refused_get_with_cache_none_keeps_the_answer_out_of_its_error(self):
+        """The error of a refused cache="none" call names the status and holds none of the answer's text."""
+        url = "https://example.org/account"
+        with self.assertRaises(net.HttpError) as raised:
+            self.fetch(self.client([httpx.Response(403, text="account of sam@example.org")]), url, cache="none")
+        self.assertEqual(str(raised.exception), f"GET {url} returned 403")
+
+    def test_before_runs_only_when_a_post_goes_out(self):
+        """before runs once per call that is sent, after the request is signed, and never for a cache hit, a
+        replay or a call without the key.
+        """
+        ran = []
+        before = lambda: ran.append(len(self.sent))
+        client = self.client([httpx.Response(200, json={"results": [1]})], self.keyed)
+        self.send(client, lambda http: http.post(SEARCH, BODY, cache="prefer", before=before))
+        self.assertEqual(ran, [0])
+        self.send(client, lambda http: http.post(SEARCH, BODY, cache="prefer", before=before))
+        self.assertEqual((ran, len(self.sent)), ([0], 1))
+        replay = self.client([], self.keyed.model_copy(update={"http_mode": "replay"}))
+        self.send(replay, lambda http: http.post(SEARCH, BODY, before=before))
+        with self.assertRaises(net.CacheMiss):
+            self.send(replay, lambda http: http.post(SEARCH, {**BODY, "mode": "base"}, before=before))
+        with self.assertRaises(net.MissingKey):
+            self.send(self.client([]), lambda http: http.post(SEARCH, {**BODY, "mode": "base"}, before=before))
+        self.assertEqual(ran, [0])
+
     def test_keep_false_leaves_no_cache_file_but_the_call_is_recorded_and_returned(self):
         """An answer keep() refuses is returned and recorded with its status and hash but not written.
 
