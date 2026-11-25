@@ -45,22 +45,27 @@ def fold(text: str) -> str:
 
 
 @cache
-def _rows() -> list[tuple[str, str]]:
-    """Every (alias, org id) in the file; raises ValueError for an id not in ror:/wikidata: form or an alias listed twice."""
+def _rows() -> list[tuple[str, str, bool]]:
+    """Every (alias, org id, post) in the file; raises ValueError for an id not in ror:/wikidata: form, an alias listed
+    twice or a post cell that is neither empty nor yes.
+    """
     rows, seen = [], set()
     for row in csv.DictReader(ALIASES.read_text(encoding="utf-8").splitlines()):
         if not REGISTRY_ID.fullmatch(row["org_id"]):
             raise ValueError(f"org_aliases.csv: {row['org_id']!r} for {row['alias']!r} is not ror:<id> or wikidata:<Q>")
         if fold(row["alias"]) in seen:
             raise ValueError(f"org_aliases.csv: alias {row['alias']!r} is listed twice")
+        mark = (row.get("post") or "").strip()
+        if mark not in ("", "yes"):
+            raise ValueError(f"org_aliases.csv: post {mark!r} for {row['alias']!r} is not empty or yes")
         seen.add(fold(row["alias"]))
-        rows.append((row["alias"], row["org_id"]))
+        rows.append((row["alias"], row["org_id"], mark == "yes"))
     return rows
 
 
 @cache
 def _by_alias() -> dict[str, str]:
-    return {fold(alias): org for alias, org in _rows()}
+    return {fold(alias): org for alias, org, _ in _rows()}
 
 
 @cache
@@ -81,12 +86,27 @@ def ref(text: str) -> str | None:
 
 def names(org: str | None) -> list[str]:
     """Every spelling the alias file gives the org, in file order; empty for an org it does not list."""
-    return [alias for alias, found in _rows() if found == org] if org else []
+    return [alias for alias, found, _ in _rows() if found == org] if org else []
 
 
 def ids() -> list[str]:
     """Every org id in the alias file, once each, in file order."""
-    return list(dict.fromkeys(org for _, org in _rows()))
+    return list(dict.fromkeys(org for _, org, _ in _rows()))
+
+
+@cache
+def _posts() -> frozenset[tuple[str, str]]:
+    return frozenset((fold(alias), org) for alias, org, post in _rows() if post)
+
+
+def post(text: str, org: str | None) -> bool:
+    """Whether the alias file marks this spelling of org as a post away from its home, such as a US arm or a consulate."""
+    return (fold(text), org) in _posts()
+
+
+def overruled(answers: dict[str, str | None]) -> dict[str, str]:
+    """Each stored ROR answer for a name the alias file gives another org: the folded name and the answer's org."""
+    return {key: org for key, org in answers.items() if org and _by_alias().get(key, org) != org}
 
 
 def belgian_claims(claims: list[Claim], facts: dict[str, Org]) -> list[tuple[Claim, Org]]:
@@ -273,38 +293,49 @@ def chosen(body: dict, fetched_at: datetime, name: str) -> tuple[OrgFacts, Sourc
         raise OrgError(f"unexpected answer, {type(exc).__name__}: {exc}") from exc
 
 
-def unlinked(store: Store, person_ids: list[str] | None) -> list[tuple[str, str, int]]:
-    """The id, value and position of every claim without an org and with a match relation, rejected ones too.
+def unlinked(store: Store, person_ids: list[str] | None, wrong: dict[str, str]) -> list[tuple[str, str, int]]:
+    """The id, value and position of every claim without an org and with a match relation, rejected ones too, and of
+    every such claim at the org that wrong gives its folded name.
 
     With person_ids, only the claims of those persons, each at the first index of its person in the list; else all, at 0.
     """
     if person_ids is None:
-        return [(claim_id, value, 0) for claim_id, value in store.unlinked_affiliations(MATCH_RELATIONS)]
+        found = store.unlinked_affiliations(MATCH_RELATIONS)
+        if wrong:
+            found += [(i, v) for i, v, org in store.linked_affiliations(MATCH_RELATIONS, sorted(set(wrong.values())))
+                      if wrong.get(fold(v)) == org]
+        return [(claim_id, value, 0) for claim_id, value in found]
     canonical = store.canonical_ids(person_ids)
     places: dict[str, int] = {}
     for i, person_id in enumerate(person_ids):
         places.setdefault(canonical.get(person_id, person_id), i)
     return [(c.id, c.value, places[c.person_id]) for c in store.claims_of(list(places), include_hidden=True)
-            if c.org_id is None and c.relation in MATCH_RELATIONS and c.person_id in places]
+            if (c.org_id is None or c.org_id == wrong.get(fold(c.value))) and c.relation in MATCH_RELATIONS
+            and c.person_id in places]
 
 
 def match(ctx: StepContext, inp: OrgMatchIn) -> OrgMatchOut:
     """Ask ROR once per employer name that has claims without an org, and link the chosen org to every claim of the name.
 
-    A stored answer is reused without a call. With person_ids only the claims of those persons are read, and names are
-    asked in the order of the ids; with most, no more than that many names are asked and the rest count as left.
-    Raises OrgError naming the name at a 429, a 5xx or a failed call, with the earlier answers stored, and RuntimeError
-    without an HTTP client.
+    A name in the alias file is linked from the file, never asked or counted, and overrules a stored answer for it.
+    Any other stored answer is reused without a call. With person_ids only those persons' claims are read, and names
+    are asked in the order of the ids; with most, no more than that many are asked and the rest count as left.
+    Raises OrgError naming the name at a 429, a 5xx or a failed call; RuntimeError without an HTTP client.
     """
     if ctx.http is None:
         raise RuntimeError("fn-orgs --match needs an HTTP client")
     groups: dict[str, tuple[str, list[str], int]] = {}
-    for claim_id, value, place in unlinked(ctx.store, inp.person_ids):
+    answers = ctx.store.org_answers()
+    for claim_id, value, place in unlinked(ctx.store, inp.person_ids, overruled(answers)):
         name, claim_ids, first = groups.get(fold(value), (value, [], place))
         groups[fold(value)] = (name, [*claim_ids, claim_id], min(first, place))
-    answers = ctx.store.org_answers()
+    aliases = _by_alias()
     asked = picked = linked = failed = left = 0
-    for key, (name, claim_ids, _) in sorted(groups.items(), key=lambda g: (g[0] not in answers, g[1][2], g[0])):
+    known = answers.keys() | aliases.keys()
+    for key, (name, claim_ids, _) in sorted(groups.items(), key=lambda g: (g[0] not in known, g[1][2], g[0])):
+        if key in aliases:
+            linked += ctx.store.relink_claims(claim_ids, aliases[key])
+            continue
         if key in answers:
             linked += ctx.store.link_claims(claim_ids, answers[key]) if answers[key] else 0
             continue

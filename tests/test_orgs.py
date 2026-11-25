@@ -72,6 +72,38 @@ class AliasTest(unittest.TestCase):
         self.assertEqual((orgs.names(None), orgs.ref("Nowhere"), orgs.org_id("Nowhere")), ([], None, None))
         self.assertEqual((orgs.org_id("KVAB"), orgs.ref("KVAB")), (KVAB, None))
 
+    def test_a_post_spelling_names_its_parent_and_carries_the_mark(self):
+        """A post spelling gives the parent's id and is marked there; the parent's own name and other texts are not."""
+        vrt = orgs.org_id("VRT")
+        self.assertRegex(vrt, REGISTRY_ID)
+        for text in ("VRT NWS", " vrt  news "):
+            self.assertEqual((orgs.org_id(text), orgs.post(text, vrt)), (vrt, True))
+        self.assertEqual((orgs.org_id("VRT"), orgs.post("VRT", vrt)), (vrt, False))
+        self.assertEqual((orgs.org_id("UCB USA"), orgs.org_id("UCB USA") == orgs.org_id("UCB Pharma")), (orgs.org_id("UCB Pharma"), True))
+        self.assertTrue(orgs.post("UCB USA", orgs.org_id("UCB Pharma")))
+        self.assertEqual(orgs.org_id("Flanders Investment and Trade"), orgs.org_id("Flanders Investment & Trade"))
+        self.assertIsNone(orgs.org_id("VRT NWS Brussels"))
+        self.assertIsNone(orgs.org_id(""))
+        self.assertFalse(orgs.post("VRT NWS", orgs.org_id("UCB Pharma")))
+
+    def test_a_post_cell_other_than_empty_or_yes_stops_the_load(self):
+        """A mark of maybe raises ValueError naming it; a row without the cell reads as no post."""
+        folder = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        path = folder / "aliases.csv"
+        caches = (orgs._rows, orgs._by_alias, orgs._posts)
+        self.addCleanup(lambda: [c.cache_clear() for c in caches])
+        patcher = mock.patch.object(orgs, "ALIASES", path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        path.write_text("alias,org_id,post\nFoo Lab,ror:0abc12345,maybe\n", encoding="utf-8")
+        [c.cache_clear() for c in caches]
+        with self.assertRaisesRegex(ValueError, "post 'maybe' for 'Foo Lab' is not empty or yes"):
+            orgs._rows()
+        path.write_text("alias,org_id,post\nFoo Lab,ror:0abc12345\nBar Lab,ror:0abc12346,yes\n", encoding="utf-8")
+        [c.cache_clear() for c in caches]
+        self.assertEqual(orgs._rows(), [("Foo Lab", "ror:0abc12345", False), ("Bar Lab", "ror:0abc12346", True)])
+
     def test_every_frequent_seed_institution_is_mapped_or_listed_unmapped(self):
         """Each institution string on 5 or more seed rows is in the alias file or on the unmapped list, never both."""
         counts = Counter(inst["name"] for row in ROWS for inst in row["institutions"])
@@ -175,6 +207,15 @@ class FnOrgsTest(unittest.TestCase):
         self.assertIn("locations.0.geonames_details.country_subdivision_code: BRU", vub.text)
         self.assertEqual(kvab.url, "https://www.wikidata.org/wiki/Q1301699")
         self.assertIn("claims.P17: Q31\nclaims.P17.P297: BE", kvab.text)
+
+    def test_every_post_row_points_at_a_belgian_record(self):
+        """After the recorded facts are saved, at least 10 post rows exist and each org they point at has country BE."""
+        save_recorded_orgs(self.store, self.settings)
+        posts = {org for _, org, post in orgs._rows() if post}
+        self.assertGreaterEqual(len(posts), 10)
+        found = self.store.get_orgs(sorted(posts))
+        self.assertEqual({o: found[o].country_code for o in posts}, {o: "BE" for o in posts})
+        self.assertEqual(self.store.get_orgs([orgs.org_id("VRT")])[orgs.org_id("VRT")].country_code, "BE")
 
     def test_calls_are_recorded_under_the_job_which_stays_off_the_searches_list(self):
         """The job has one orgs step holding every ROR and Wikidata call; its debug page lists them; / does not list it."""
@@ -553,6 +594,49 @@ class MatchTest(unittest.TestCase):
         self.assertEqual((job.status, out), ("done", OrgMatchOut(asked=3, chosen=1, linked=1, failed=2)))
         self.assertEqual(self.org_of(bad, text, good), [None, None, "ror:00j54wy13"])
         self.assertEqual(list(self.store.org_answers()), [orgs.fold(INBO)])
+
+    def test_an_alias_name_links_from_the_file_without_a_call(self):
+        """With most=0, three spellings of an alias name link from the file despite a stored NULL answer; no call is made."""
+        self.store.save_org_answer("vrt nws", "VRT NWS", None, NOW)
+        claims = [self.claim("VRT NWS"), self.claim("  vrt nws "), self.claim("VRT NWS Brussels")]
+        job = self.match_for(most=0)
+        self.assertEqual((job, self.asked), (OrgMatchOut(asked=0, chosen=0, linked=2, failed=0, left=1), []))
+        self.assertEqual(self.org_of(*claims), [orgs.org_id("VRT")] * 2 + [None])
+
+    def test_every_alias_spelling_links_in_one_run(self):
+        """One claim per row of the alias file links to the row's org in one run, with no call."""
+        rows = orgs._rows()
+        claims = [self.claim(alias) for alias, _, _ in rows]
+        out = self.match_for()
+        self.assertEqual((out.asked, out.linked, self.asked), (0, len(rows), []))
+        self.assertEqual(self.org_of(*claims), [org for _, org, _ in rows])
+
+    def test_an_alias_overrules_a_stored_answer_and_relinks_only_what_it_linked(self):
+        """The alias moves a claim linked by a stored answer for its name; claims at other orgs or of other names stay."""
+        vrt, inbo, mit = orgs.org_id("VRT"), "ror:00j54wy13", "ror:042nb2s44"
+        self.store.save_org_answer("vrt nws", "VRT NWS", inbo, NOW)
+        other = self.store.resolve_person([Identifier(scheme="mention", value="m2")], "Ann Doe")
+        moved, at_mit, at_vrt, named = (self.claim("VRT NWS"), self.claim("VRT NWS", "worked_at"),
+                                        self.claim("VRT NWS", "affiliated_with"), self.claim(INBO))
+        theirs = self.store.upsert_claim(ClaimDraft(
+            person_id=other.id, kind="affiliation", relation="works_at", value="VRT NWS", quote="VRT NWS", quote_start=0,
+            quote_end=7, source=page_source("https://example.org/ann", "Page", "VRT NWS", {}, NOW, None)))
+        for claim, org in ((moved, inbo), (at_mit, mit), (at_vrt, vrt), (named, inbo), (theirs, inbo)):
+            self.store.conn.execute("UPDATE claims SET org_id = ? WHERE id = ?", (org, claim.id))
+        self.assertEqual(self.match_for(person_ids=[self.person.id]).linked, 1)
+        self.assertEqual(self.org_of(moved, at_mit, at_vrt, named, theirs), [vrt, mit, vrt, inbo, inbo])
+        self.assertEqual(self.store.org_answers(), {"vrt nws": inbo})
+        self.assertEqual(self.match_for().linked, 1)
+        self.assertEqual(self.org_of(theirs), [vrt])
+
+    def test_alias_names_link_before_a_429_stops_the_asks(self):
+        """A 429 on the first asked name fails the job, and the claim of an alias name is already linked."""
+        limited, alias = self.claim("Aa Lab"), self.claim("VRT NWS")
+        self.answers["Aa Lab"] = (429, b"slow down")
+        with self.assertLogs("fn.worker", "ERROR"):
+            job, out = self.run_match()
+        self.assertEqual((job.status, out, self.asked), ("failed", None, ["Aa Lab"]))
+        self.assertEqual(self.org_of(limited, alias), [None, orgs.org_id("VRT")])
 
     def test_a_seed_load_after_a_match_keeps_the_link_and_a_second_load_writes_nothing(self):
         """A claim linked by a match keeps its org when the seed rows load again, and that load changes no row."""
