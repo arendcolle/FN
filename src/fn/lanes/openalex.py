@@ -3,6 +3,8 @@ from dataclasses import dataclass, field
 from collections.abc import Callable
 from datetime import datetime
 
+import httpx
+
 from fn import geo, orgs, parse
 from fn.contracts import (
     Chips,
@@ -41,6 +43,8 @@ AREA_YEARS = 6
 AREA_INSTITUTIONS = 100
 FETCH_WORKERS = 3
 NO_QUERY = "no topic or institution chip"
+# Credits of the day's 10,000 that fn-index and fn-enrich leave for searches (design D4).
+RESERVE = 3000
 
 
 @dataclass
@@ -54,6 +58,14 @@ class Seen:
 
 def short(openalex_id: str) -> str:
     return openalex_id.rsplit("/", 1)[-1]
+
+
+def remaining(response: httpx.Response) -> float | None:
+    """The credits OpenAlex says are left today, from the x-ratelimit-remaining header; None without a number."""
+    try:
+        return float(response.headers["x-ratelimit-remaining"])
+    except (KeyError, ValueError):
+        return None
 
 
 def note(reason: str, kept: bool = False, stage: str = "query") -> Considered:
