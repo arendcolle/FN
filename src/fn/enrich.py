@@ -2,6 +2,7 @@
 import argparse
 import math
 import sys
+import threading
 from collections import Counter
 from datetime import UTC, datetime
 
@@ -20,11 +21,13 @@ from fn.contracts import (
     record_source,
 )
 from fn.lanes import openalex
+from fn.net import HttpError
 from fn.steps import StepContext, fan_out, run_step
 from fn.store import Store
 from fn.worker import Worker
 
 KINDS: tuple[LookupKind, ...] = ("openalex_author", "orcid_employment")
+REFUSED = "an OpenAlex 429 (the day's credits are used up)"
 LIMIT = 200
 WORKERS = 4
 AUTHORS_PER_LOOKUP = 10
@@ -37,6 +40,11 @@ def queue(store: Store, kind: LookupKind) -> list[str]:
     found = store.seed_only_persons() if kind == "openalex_author" else list(store.identifier_holders("orcid"))
     done, ranks = store.looked_up(kind), store.kept_card_ranks()
     return sorted((p for p in found if p not in done), key=lambda p: ranks.get(p, math.inf))
+
+
+def refused(answer: object) -> bool:
+    """Whether answer is OpenAlex's 429: the day's budget, not a fact about the person."""
+    return isinstance(answer, HttpError) and answer.status == 429
 
 
 def failed(person_id: str, kind: LookupKind, exc: Exception) -> Lookup:
@@ -59,21 +67,40 @@ def verdict_of(person_id: str, levels: list[tuple[str, identity.Level, str]], se
     return Lookup(person_id=person_id, kind="openalex_author", verdict=verdict, detail=detail)
 
 
-def authors(ctx: StepContext, people: list[str]) -> list[Lookup]:
+def authors(ctx: StepContext, people: list[str]) -> tuple[list[Lookup], str]:
     """One OpenAlex author search by name per seed record; each kept author is stored as its own record.
 
-    The kept authors' last known institutions come in one batched call, for their location.
+    The kept authors' last known institutions come in one batched call, for their location. No search starts
+    after an answer under openalex.RESERVE credits or a 429; a person not searched or refused gets no lookup.
+    Also returns why the searches stopped, or ''.
     """
     persons = ctx.store.get_persons(people)
     org_ids: dict[str, set[str]] = {}
     for claim in ctx.store.claims_of(people):
         if claim.kind == "affiliation" and claim.org_id:
             org_ids.setdefault(claim.person_id, set()).add(claim.org_id)
-    bodies = fan_out(lambda p: ctx.http.get(f"{openalex.API}/authors", {
-        "search": persons[p].display_name, "per_page": str(AUTHORS_PER_LOOKUP), "select": openalex.AUTHOR_SELECT,
-    }).json(), people, WORKERS)
+    stop = threading.Event()
+
+    def search(p: str) -> tuple[dict, float | None] | None:
+        if stop.is_set():
+            return None
+        try:
+            response = ctx.http.get(f"{openalex.API}/authors", {
+                "search": persons[p].display_name, "per_page": str(AUTHORS_PER_LOOKUP), "select": openalex.AUTHOR_SELECT})
+        except HttpError as exc:
+            if exc.status == 429:
+                stop.set()
+            raise
+        left = openalex.remaining(response)
+        if left is not None and left < openalex.RESERVE:
+            stop.set()
+        return response.json(), left
+
+    answers = fan_out(search, people, WORKERS)
+    asked = [(p, a if isinstance(a, Exception) else a[0]) for p, a in zip(people, answers) if a is not None and not refused(a)]
+    low = [a[1] for a in answers if isinstance(a, tuple) and a[1] is not None and a[1] < openalex.RESERVE]
     kept = {p: kept_authors(b["results"], persons[p].display_name, org_ids.get(p, set()))
-            for p, b in zip(people, bodies) if not isinstance(b, Exception)}
+            for p, b in asked if not isinstance(b, Exception)}
     last = [(a.get("last_known_institutions") or [None])[0] for found in kept.values() for a in found]
     inst_ids = list(dict.fromkeys(openalex.short(i["id"]) for i in last if i))
     try:
@@ -82,7 +109,9 @@ def authors(ctx: StepContext, people: list[str]) -> list[Lookup]:
     except Exception as exc:  # noqa: BLE001 the lookups that needed the institutions fail, the others go on
         institutions, missing = {}, exc
     found = []
-    for person_id, body in zip(people, bodies):
+    for person_id, body in asked:
+        if kept.get(person_id) and refused(missing):
+            continue
         if isinstance(body, Exception) or (kept[person_id] and missing):
             found.append(failed(person_id, "openalex_author", body if isinstance(body, Exception) else missing))
             continue
@@ -98,7 +127,9 @@ def authors(ctx: StepContext, people: list[str]) -> list[Lookup]:
             found.append(lookup)
         except Exception as exc:  # noqa: BLE001 one failed lookup is an error row, the batch goes on
             found.append(failed(person_id, "openalex_author", exc))
-    return found
+    why = (REFUSED if any(refused(a) for a in answers) or refused(missing)
+           else f"the OpenAlex reserve ({min(low):,.0f} credits left today)" if low else "")
+    return found, why
 
 
 def date_of(when: dict | None) -> str | None:
@@ -178,17 +209,22 @@ def run(ctx: StepContext, inp: EnrichIn) -> EnrichOut:
     if ctx.http is None:
         raise RuntimeError("fn-enrich needs an HTTP client")
     done: list[Lookup] = []
+    stopped = ""
     for kind in inp.kinds:
         people = queue(ctx.store, kind)[:inp.limit - len(done)]
         if not people:
             continue
-        found = (authors if kind == "openalex_author" else employments)(ctx, people)
+        if kind == "openalex_author":
+            found, stopped = authors(ctx, people)
+        else:
+            found = employments(ctx, people)
         for lookup in found:
             if lookup.verdict == "error":
                 ctx.store.save_lookup(lookup, ctx.now())
         done += found
     ctx.log.info("fn-enrich: %d lookups, %s", len(done), dict(Counter(f.verdict for f in done)))
-    return EnrichOut(lookups=done)
+    return EnrichOut(lookups=done, stopped=stopped,
+                     waiting=len(queue(ctx.store, "openalex_author")) if stopped else 0)
 
 
 def refresh(store: Store, settings: Settings, http: HttpClient, inp: EnrichIn) -> Search:
@@ -226,7 +262,8 @@ def main() -> int:
         print(f"{f.kind} {f.person_id} {persons[f.person_id].display_name}: {f.verdict} ({f.detail})")
     counts = Counter(f.verdict for f in out.lookups)
     print(f"fn-enrich job {job.id} done: {len(out.lookups)} lookups; "
-          + ", ".join(f"{v} {counts[v]}" for v in ("matched", "ambiguous", "no_match", "error")))
+          + ", ".join(f"{v} {counts[v]}" for v in ("matched", "ambiguous", "no_match", "error"))
+          + (f"; stopped at {out.stopped}, {out.waiting:,} people still wait" if out.stopped else ""))
     store.close()
     return 0
 

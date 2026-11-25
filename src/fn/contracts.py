@@ -1011,6 +1011,8 @@ class Lookup(Model):
 
 class EnrichOut(Model):
     lookups: list[Lookup]
+    stopped: str = ""
+    waiting: int = 0
 
 
 # The deepen step: one web lookup per chosen person, its answer the pages to read.

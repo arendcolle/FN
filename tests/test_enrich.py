@@ -1,4 +1,8 @@
+import contextlib
 import hashlib
+import io
+import re
+import sys
 import threading
 import unittest
 from datetime import UTC, date, datetime, timedelta
@@ -18,6 +22,7 @@ from fn.contracts import (
     Search,
     Source,
 )
+from fn.contracts import EnrichOut
 from fn.lanes import openalex
 from tests.helpers import make_db, make_settings
 
@@ -73,6 +78,39 @@ class Recorded:
                        for i in ids if f"https://openalex.org/{i}" in GEO]
             return httpx.Response(200, json={"meta": {"count": len(results)}, "results": results})
         return httpx.Response(404, json={"error": f"no fixture for {request.url}"})
+
+
+class Budget(Recorded):
+    """Recorded, with the /authors answers numbered in the order they arrive.
+
+    An int in answers is a status (429 is a plain-text refusal), a string is the x-ratelimit-remaining header of
+    that answer; default is the header of the others. inst does the same for the /institutions answer.
+    """
+
+    def __init__(self, *args, answers: dict[int, int | str] | None = None, default: str | None = None,
+                 inst: int | str | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.answers, self.default, self.inst, self.count, self.lock = answers or {}, default, inst, 0, threading.Lock()
+
+    def reply(self, answer: int | str | None, request: httpx.Request) -> httpx.Response:
+        if isinstance(answer, int):
+            self.requests.append(request)
+            return httpx.Response(answer, text="made-up refusal" if answer == 429 else "made-up failure")
+        done = super().__call__(request)
+        return done if answer is None else httpx.Response(200, content=done.content, headers={"x-ratelimit-remaining": answer})
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/institutions":
+            return self.reply(self.inst, request)
+        if request.url.path != "/authors":
+            return super().__call__(request)
+        with self.lock:
+            self.count += 1
+            number = self.count
+        return self.reply(self.answers.get(number, self.default), request)
+
+    def paths(self, path: str) -> list[httpx.Request]:
+        return [r for r in self.requests if r.url.path == path]
 
 
 class EnrichTest(unittest.TestCase):
@@ -271,6 +309,146 @@ class EnrichTest(unittest.TestCase):
         self.enrich(handler, "openalex_author")
         self.enrich(handler, "orcid_employment")
         self.assertEqual(threads, {m: {threading.get_ident()} for m in threads})
+
+    def fresh(self):
+        """A new empty database for the next subtest."""
+        self.settings = make_settings(self).model_copy(update={"http_mode": "live"})
+        self.store = make_db(self, self.settings)
+
+    def seeds(self, count: int, tag: str = "") -> list[str]:
+        return [self.seed(f"Test Seed {tag}{n}", SMALL) for n in range(count)]
+
+    def run_enrich(self, handler: Budget, kinds: list[str] | None = None, limit: int = 200):
+        """Run the job; the verdict by record and the step's EnrichOut."""
+        client = net.Client(self.settings, httpx.MockTransport(handler), sleep=lambda _: None)
+        job = enrich.refresh(self.store, self.settings, client, EnrichIn(kinds=kinds or ["openalex_author"], limit=limit))
+        self.assertEqual(job.status, "done", job.error)
+        step = next(iter(self.store.list_steps(job.id)))
+        rows = self.store.conn.execute("SELECT person_id, verdict FROM lookups")
+        return {r[0]: r[1] for r in rows}, EnrichOut.model_validate_json(self.store.get_payload(step.id)[1])
+
+    def test_an_answer_under_the_reserve_starts_no_search_after_it(self):
+        """No author search starts after an answer under the reserve; a person not searched gets no row.
+
+        A person whose search failed gets an error row and stays queued.
+        """
+        with mock.patch.object(enrich, "WORKERS", 1):
+            ids = self.seeds(8)
+            handler = Budget(answers={2: 500, 3: "2990"})
+            rows, out = self.run_enrich(handler)
+            self.assertEqual(len(handler.paths("/authors")), 3)
+            self.assertEqual(rows, {ids[0]: "no_match", ids[1]: "error", ids[2]: "no_match"})
+            self.assertEqual((out.stopped, out.waiting), ("the OpenAlex reserve (2,990 credits left today)", 6))
+        with mock.patch.object(enrich, "WORKERS", 4):
+            self.fresh()
+            self.seeds(60)
+            handler = Budget(answers={3: "2990"})
+            rows, out = self.run_enrich(handler)
+            asked = len(handler.paths("/authors"))
+            self.assertLess(asked, 60)
+            self.assertEqual((len(rows), out.waiting), (asked, 60 - asked))
+
+    def test_a_429_stores_no_row_and_the_next_run_asks_those_people_again(self):
+        """A refused person gets no row and no search starts after the refusal; the next run asks each once."""
+        with mock.patch.object(enrich, "WORKERS", 1):
+            self.seeds(5)
+            handler = Budget(answers={1: 429})
+            rows, out = self.run_enrich(handler)
+            self.assertEqual((len(handler.paths("/authors")), rows), (1, {}))
+            self.assertEqual((out.stopped, out.waiting), (enrich.REFUSED, 5))
+            again = Budget()
+            rows, out = self.run_enrich(again)
+            self.assertEqual(len(again.paths("/authors")), 5)
+            self.assertEqual((len(rows), out.stopped), (5, ""))
+
+    def test_fn_enrich_prints_why_it_stopped_and_exits_0(self):
+        """The last line says why the author searches stopped and how many people still wait; the exit code is 0."""
+        real = net.Client
+        cases = [({3: "2990"}, r"done: 3 lookups; matched 0, ambiguous 0, no_match 3, error 0; "
+                               r"stopped at the OpenAlex reserve \(2,990 credits left today\), 5 people still wait"),
+                 ({1: 429}, r"done: 0 lookups; matched 0, ambiguous 0, no_match 0, error 0; "
+                            r"stopped at an OpenAlex 429 \(the day's credits are used up\), 8 people still wait"),
+                 ({}, r"done: 8 lookups; matched 0, ambiguous 0, no_match 8, error 0$")]
+        for answers, ending in cases:
+            with self.subTest(answers=answers), mock.patch.object(enrich, "WORKERS", 1):
+                self.fresh()
+                self.seeds(8)
+                handler = Budget(answers=answers)
+                out = io.StringIO()
+                with mock.patch("fn.enrich.from_env", return_value=self.settings), \
+                        mock.patch("fn.net.Client", lambda s: real(s, httpx.MockTransport(handler), sleep=lambda _: None)), \
+                        mock.patch.object(sys, "argv", ["fn-enrich", "--kind", "openalex_author"]), \
+                        contextlib.redirect_stdout(out):
+                    self.assertEqual(enrich.main(), 0)
+                self.assertRegex(out.getvalue().splitlines()[-1], rf"^fn-enrich job \S+ {ending}")
+
+    def test_an_answer_without_a_number_for_credits_does_not_stop(self):
+        """No header, an empty, text or nan header, 9000 left, and 2990 on the institution answer alone stop nothing."""
+        author_for = {f"Test Seed {n}": [author(f"A900000{n}", f"Test Seed {n}", SMALL)] for n in range(3)}
+        for default in (None, "abc", "", "nan", "9000"):
+            with self.subTest(default=default), mock.patch.object(enrich, "WORKERS", 1):
+                self.fresh()
+                self.seeds(3)
+                rows, out = self.run_enrich(Budget(author_for, default=default))
+                self.assertEqual((len(rows), out.stopped), (3, ""))
+        with self.subTest(inst="2990"), mock.patch.object(enrich, "WORKERS", 1):
+            self.fresh()
+            self.seeds(3)
+            handler = Budget(author_for, inst="2990")
+            rows, out = self.run_enrich(handler)
+            self.assertEqual((len(rows), out.stopped, len(handler.paths("/institutions"))), (3, "", 1))
+        with self.subTest(default="-5"), mock.patch.object(enrich, "WORKERS", 1):
+            self.fresh()
+            self.seeds(3)
+            rows, out = self.run_enrich(Budget(default="-5"))
+            self.assertEqual((len(rows), out.stopped, out.waiting), (1, "the OpenAlex reserve (-5 credits left today)", 2))
+        with self.subTest(default="9000", reserve=9500), mock.patch.object(enrich, "WORKERS", 1), \
+                mock.patch.object(openalex, "RESERVE", 9500):
+            self.fresh()
+            self.seeds(3)
+            rows, out = self.run_enrich(Budget(default="9000"))
+            self.assertEqual((len(rows), out.waiting), (1, 2))
+
+    def test_a_429_on_the_institution_call_leaves_the_found_people_without_a_row(self):
+        """A person whose kept author needs the refused institution call gets no row; one without a kept author does."""
+        with mock.patch.object(enrich, "WORKERS", 1):
+            found, plain = self.seeds(2)
+            handler = Budget({"Test Seed 0": [author("A9000001", "Test Seed 0", SMALL)]}, inst=429)
+            rows, out = self.run_enrich(handler)
+            self.assertEqual(rows, {plain: "no_match"})
+            self.assertEqual((out.stopped, out.waiting), (enrich.REFUSED, 1))
+            self.assertNotIn(found, rows)
+
+    def test_orcid_lookups_run_after_the_author_searches_stop(self):
+        """A stop of the author searches leaves the rest of the limit to the ORCID lookups, which need no credits."""
+        with mock.patch.object(enrich, "WORKERS", 1):
+            self.seeds(3)
+            holders = [self.orcid_holder(o) for o in (ORCID_A, ORCID_B)]
+            rows, out = self.run_enrich(Budget(answers={1: "2990"}), ["openalex_author", "orcid_employment"])
+            self.assertEqual(sorted(rows.values()), ["no_match"] * 3)
+            self.assertTrue(set(holders) <= set(rows))
+            self.assertEqual((len(rows), out.waiting), (3, 2))
+            self.fresh()
+            self.orcid_holder(ORCID_A)
+            rows, out = self.run_enrich(Budget(), ["orcid_employment"])
+            self.assertEqual((len(rows), out.stopped), (1, ""))
+
+    def test_an_empty_queue_or_a_limit_of_0_asks_nothing_and_reports_no_stop(self):
+        """With nobody queued, or a limit of 0, no request is made and nothing is reported as stopped."""
+        for people, limit in ((0, 200), (3, 0)):
+            with self.subTest(people=people, limit=limit):
+                self.fresh()
+                self.seeds(people)
+                handler = Budget()
+                rows, out = self.run_enrich(handler, limit=limit)
+                self.assertEqual((handler.requests, rows, out.stopped, out.waiting), ([], {}, "", 0))
+
+    def test_a_queue_shorter_than_the_workers_keeps_every_answer(self):
+        """Two people on four workers, both answers under the reserve: both get a row and nobody waits."""
+        self.seeds(2)
+        rows, out = self.run_enrich(Budget(default="2990"))
+        self.assertEqual((len(rows), out.waiting), (2, 0))
+        self.assertTrue(out.stopped)
 
 
 if __name__ == "__main__":
