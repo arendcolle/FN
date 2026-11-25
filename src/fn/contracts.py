@@ -45,7 +45,7 @@ PlaceKind = Literal["metro", "anywhere_us", "abroad"]
 Need = Literal["must", "nice"]
 CallKind = Literal["http", "llm"]
 LLMMode = Literal["live", "record", "replay", "prefer"]
-CacheMode = Literal["refresh", "prefer", "only"]
+CacheMode = Literal["refresh", "prefer", "only", "none"]
 GoldTie = Literal["flemish", "belgian", "none", "unverified"]
 PickVerdict = Literal["found", "event page", "missed", "no lane in slice"]
 GoldGroup = Literal["dev", "held-out", "other"]
@@ -93,11 +93,12 @@ def clean_name(name: str) -> str:
 
 class HttpClient(Protocol):
     def get(self, url: str, params: dict[str, str] | None = None, *, redirects: int = 0,
-            agent: str | None = None, check: Callable[[str], None] | None = None) -> httpx.Response: ...
+            agent: str | None = None, check: Callable[[str], None] | None = None,
+            cache: CacheMode = "refresh") -> httpx.Response: ...
 
     def post(self, url: str, body: dict, params: dict[str, str] | None = None, *, timeout_s: float | None = None,
              cost: Callable[[bytes], float | None] | None = None, keep: Callable[[bytes], bool] | None = None,
-             cache: CacheMode = "refresh") -> httpx.Response: ...
+             cache: CacheMode = "refresh", before: Callable[[], None] | None = None) -> httpx.Response: ...
 
 
 class Model(BaseModel):

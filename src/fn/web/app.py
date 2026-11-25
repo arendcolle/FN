@@ -117,7 +117,7 @@ def create_app(settings: Settings, llm: StructuredLLM | None, http: HttpClient |
 
 def serve() -> None:
     """Run the app on settings.host and settings.port; exits when the host is not loopback."""
-    settings = config.from_env()
+    settings = config.from_env(server=True)
     if settings.host not in ("127.0.0.1", "::1"):
         sys.exit(f"fn-serve binds 127.0.0.1 or ::1 only, not {settings.host!r}")
     setup_logging(settings)

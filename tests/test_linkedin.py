@@ -5,16 +5,17 @@ import json
 import logging
 import os
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from unittest import mock
 
 import httpx
 from pydantic import SecretStr
 
-from fn import geo, gold, net, orgs, rank
-from fn.contracts import Chip, Chips, GeoArea, LaneIn, LaneOut, Place, record_source
+from fn import config, evidence, geo, gold, net, orgs, parse, rank
+from fn.contracts import Chip, Chips, GeoArea, LaneIn, LaneOut, Place, Question, record_source
 from fn.lanes import linkedin
 from fn.steps import StepContext, run_step
+from fn.web import app
 from fn.worker import Worker, new_id, now
 from tests.helpers import (
     FIXTURES,
@@ -46,6 +47,13 @@ def gs02_chips() -> Chips:
 def chips(topics: list[str] = (), institutions: list[str] = (), place: Place | None = None) -> Chips:
     return Chips(topics=[Chip(text=t, origin="edited") for t in topics],
                  institutions=[Chip(text=i, origin="edited") for i in institutions], place=place)
+
+
+def asked(roles: list[str], topics: list[str] = (), place: Place | None = None, version: int = 2,
+          research: bool | None = False) -> Chips:
+    """Chips of a version-2 question with role chips, as the parser makes them."""
+    return Chips(roles=[Chip(text=r, origin="edited", research=research) for r in roles],
+                 topics=[Chip(text=t, origin="edited") for t in topics], place=place, version=version)
 
 
 def place(text: str, kind: str | None = "metro") -> Place:
@@ -104,6 +112,33 @@ class ActorInputTest(unittest.TestCase):
                 self.assertEqual(linkedin.search_query(given), expected)
 
 
+class JobTitleTest(unittest.TestCase):
+    def test_role_chips_become_singular_lower_case_job_titles(self):
+        """Roles give singular lower-case titles with no quotes, a closing "people" dropped and no repeat; a title
+        search sends no query and the version-2 size, and chips of version 3 use that size as well.
+        """
+        la = GeoArea(place="Los Angeles", city="Los Angeles, US", lat=34.05, lon=-118.24, radius_km=100.0)
+        body = linkedin.actor_input(asked(["architects", "designers"], place=place("Los Angeles")), la)
+        self.assertEqual((body["currentJobTitles"], body["locations"], body["maxItems"]),
+                         (["architect", "designer"], ["Los Angeles Metropolitan Area"], 10))
+        self.assertNotIn("searchQuery", body)
+        self.assertEqual(linkedin.actor_input(asked(["architects"], version=3), None)["maxItems"], 10)
+        for text, expected in (("business development people", "business development"), ("Economists", "economist"),
+                               ("secretaries", "secretary"), ("business", "business"), ('"Editors"', "editor"),
+                               ("people", ""), ("Persons", "")):
+            self.assertEqual(linkedin.title(text), expected, text)
+        self.assertEqual(linkedin.job_titles(asked(["Architects", "architect people", "people", "Editors"])),
+                         (["architect", "editor"], []))
+        many = linkedin.job_titles(asked([f"title {n}" for n in range(1, 14)]))
+        self.assertEqual((len(many[0]), many[1]), (12, ["title 13"]))
+
+    def test_chicago_and_houston_send_linkedins_own_names(self):
+        """The location table names LinkedIn's areas for Chicago and Houston."""
+        for city, expected in (("Chicago, US", ["Greater Chicago Area"]), ("Houston, US", ["Greater Houston"])):
+            area = GeoArea(place=city, city=city, lat=0.0, lon=0.0, radius_km=100.0)
+            self.assertEqual(linkedin.actor_input(asked(["architects"], place=place(city)), area)["locations"], expected)
+
+
 class CanonicalTest(unittest.TestCase):
     def test_canonical_gives_one_spelling_for_a_profile_url(self):
         """https, www.linkedin.com for the bare and country hosts, no query, fragment or trailing slash."""
@@ -157,16 +192,22 @@ class LinkedInLaneTest(unittest.TestCase):
         self.off = self.live.model_copy(update={"linkedin_live": False})
         self.store = make_db(self, self.live)
         self.answer: object = profiles()
+        self.account: object = {"data": {"plan": {"tier": "STARTER"}, "email": "made.up@example.org"}}
+        self.limits: object = {"data": {"limits": {"maxMonthlyUsageUsd": 39}, "current": {"monthlyUsageUsd": 5.5}}}
         self.sent: list[httpx.Request] = []
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.sent.append(request)
         if request.url.host == "download.geonames.org":
             return httpx.Response(200, content=cities_zip())
+        if str(request.url) == linkedin.ACCOUNT_URL:
+            return httpx.Response(200, json=self.account)
+        if str(request.url) == linkedin.LIMITS_URL:
+            return httpx.Response(200, json=self.limits)
         return httpx.Response(200, json=self.answer)
 
     def posts(self) -> list[httpx.Request]:
-        return [r for r in self.sent if r.url.host == "api.apify.com"]
+        return [r for r in self.sent if r.method == "POST"]
 
     def run_lane(self, given: Chips | None = None, settings=None) -> LaneOut:
         """Run lane:linkedin as a step of a new search over a mock transport; the default chips are the GS-02 ones.
@@ -183,8 +224,8 @@ class LinkedInLaneTest(unittest.TestCase):
         return run_step(ctx, "lane:linkedin", linkedin.run, LaneIn(search_id=self.search_id, chips=given))
 
     def calls(self) -> list:
-        """The calls of the last lane step."""
-        return self.store.list_calls(self.store.list_steps(self.search_id)[-1].id)
+        """The POST calls of the last lane step."""
+        return [c for c in self.store.list_calls(self.store.list_steps(self.search_id)[-1].id) if "POST " in c.request]
 
     def claims(self) -> set[tuple]:
         """Every stored claim as (person, source kind, source URL, kind, relation, org id, value, offsets, dates, method)."""
@@ -233,6 +274,16 @@ class LinkedInLaneTest(unittest.TestCase):
              "2026", "year", "record_field"),
             ("Karel Proef", vendor, KAREL, "affiliation", "studied_at", "ror:00rs45z86", "University College Ghent", 90,
              267, "1998", "2001", "2001", "year", "record_field"),
+            ("Wim Doe", vendor, WIM, "location", "lives_in", None, "New York, New York, United States", 81, 137, None,
+             None, "2026-11-02", "day", "record_field"),
+            ("Wim Doe", vendor, WIM, "role", None, None, "Chief Technology Officer", 567, 782, "2015", "2026", "2026",
+             "year", "record_field"),
+            ("Anja Voorbeeld", vendor, ANJA, "location", "lives_in", None, "United States", 81, 117, None, None,
+             "2026-11-02", "day", "record_field"),
+            ("Anja Voorbeeld", vendor, ANJA, "role", None, None, "Principal Engineer", 656, 856, "2012", "2026", "2026",
+             "year", "record_field"),
+            ("Karel Proef", vendor, KAREL, "location", "lives_in", None, "Newark, New Jersey, United States", 33, 89,
+             None, None, "2026-11-02", "day", "record_field"),
         })
         persons = self.store.get_persons([h.person_id for h in out.hits])
         self.assertEqual([(h.rank, persons[h.person_id].display_name, h.lane) for h in out.hits],
@@ -243,7 +294,7 @@ class LinkedInLaneTest(unittest.TestCase):
             f"result 2, Principal Engineer at Example Labs, {ANJA}", f"result 3, {KAREL}"])
         for hit in out.hits:
             self.assertCountEqual(hit.claim_ids, [c.id for c in self.store.claims_of([hit.person_id])])
-        self.assertEqual(self.store.conn.execute("SELECT count(*) FROM claims").fetchone()[0], 10)
+        self.assertEqual(self.store.conn.execute("SELECT count(*) FROM claims").fetchone()[0], 15)
 
     def test_the_profile_is_stored_as_a_dated_vendor_record_with_the_whole_answer_as_raw(self):
         """The source holds the lines the lane reads, the scrape day as its date, a title with the name and the raw."""
@@ -347,14 +398,17 @@ class LinkedInLaneTest(unittest.TestCase):
             gs02_chips().place.text, CITIES)))
         self.assertEqual(out.query, 'telecom OR "6G research"; locations New York City Metropolitan Area, New Jersey')
 
-    def test_a_place_abroad_or_anywhere_in_the_us_sends_its_text_without_fetching_the_city_list(self):
-        """Only a metro place needs GeoNames; the other kinds make the one Apify call and nothing else."""
+    def test_a_place_abroad_or_anywhere_in_the_us_fetches_the_city_list_only_after_the_post(self):
+        """Only a metro place needs GeoNames before the call; the other kinds send the one Apify call (after the
+        account check) and fetch the city list afterwards, for the profiles' places.
+        """
         for kind, text, expected in (("abroad", "Antwerp area", "Antwerp area"), ("anywhere_us", "the US", "United States")):
             with self.subTest(kind=kind):
                 self.sent.clear()
                 self.run_lane(chips(["6G"], place=place(text, kind)))
-                self.assertEqual([r.url.host for r in self.sent], ["api.apify.com"])
-                self.assertEqual(json.loads(self.sent[0].content)["locations"], [expected])
+                self.assertEqual([r.url.host for r in self.sent],
+                                 ["api.apify.com", "api.apify.com", "api.apify.com", "download.geonames.org"])
+                self.assertEqual(json.loads(self.posts()[0].content)["locations"], [expected])
 
     def test_a_live_run_records_its_estimated_cost_and_a_cache_served_one_records_zero(self):
         """The estimate is $0.10 for the search page plus $0.004 a profile; the second, cached call costs nothing."""
@@ -394,7 +448,7 @@ class LinkedInLaneTest(unittest.TestCase):
         given = chips(["6G"])
         first = self.run_lane(given)
         out = self.run_lane(given, self.off)
-        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(len(self.posts()), 1)
         self.assertEqual([h.person_id for h in out.hits], [h.person_id for h in first.hits])
         self.assertEqual(len(out.hits), 3)
 
@@ -471,7 +525,7 @@ class LinkedInLaneTest(unittest.TestCase):
         answer = profiles()[:1]
         self.answer = [answer[0], {**answer[0], "linkedinUrl": "linkedin.com/in/wim-doe-invented/"}]
         out = self.run_lane(chips(["6G"]))
-        self.assertEqual((len(out.hits), self.count("persons"), self.count("sources"), self.count("claims")), (1, 1, 1, 5))
+        self.assertEqual((len(out.hits), self.count("persons"), self.count("sources"), self.count("claims")), (1, 1, 1, 7))
         self.assertEqual(out.total_seen, 2)
 
     def test_a_person_listed_twice_is_one_hit_holding_the_claims_of_both_entries(self):
@@ -481,9 +535,9 @@ class LinkedInLaneTest(unittest.TestCase):
         self.answer = [first, second]
         out = self.run_lane(chips(["6G"]))
         (hit,) = out.hits
-        self.assertEqual((self.count("persons"), self.count("sources"), self.count("claims")), (1, 2, 11))
+        self.assertEqual((self.count("persons"), self.count("sources"), self.count("claims")), (1, 2, 15))
         self.assertCountEqual(hit.claim_ids, [c.id for c in self.store.claims_of([hit.person_id])])
-        self.assertEqual(len(hit.claim_ids), 11)
+        self.assertEqual(len(hit.claim_ids), 15)
 
     def test_chips_with_only_a_place_or_only_quote_marks_note_it_and_make_no_call(self):
         """Without a topic or institution chip with text the lane sends nothing, not even the GeoNames request."""
@@ -525,6 +579,8 @@ class LinkedInLaneTest(unittest.TestCase):
     def test_a_refusal_from_apify_fails_the_step_with_its_message(self):
         """A 402 from the actor call is not a note: the step fails and the error carries the response body."""
         def refuse(request: httpx.Request) -> httpx.Response:
+            if request.method == "GET":
+                return httpx.Response(200, json=self.account if str(request.url) == linkedin.ACCOUNT_URL else self.limits)
             return httpx.Response(402, json={"error": {"message": "Free plan run limit reached"}})
 
         http = net.Client(self.live, httpx.MockTransport(refuse))
@@ -536,6 +592,199 @@ class LinkedInLaneTest(unittest.TestCase):
         with self.assertRaisesRegex(net.HttpError, "Free plan run limit reached"):
             run_step(ctx, "lane:linkedin", linkedin.run, LaneIn(search_id=search, chips=chips(["6G"])))
         self.assertEqual(self.store.list_steps(search)[-1].status, "error")
+
+    def auto(self, **update):
+        """Settings of the staff server: the lane on by itself, no FN_LINKEDIN=1."""
+        return self.live.model_copy(update={"linkedin_live": False, "linkedin_auto": True} | update)
+
+    def test_titles_win_over_topics_and_version_1_sends_todays_input(self):
+        """A version-2 question with roles searches by title only, with the version-2 timeouts and size; the same
+        chips as version 1 send the topics' query and round three's timeouts and size. More than 12 titles leave
+        the rest out with a note.
+        """
+        ny = place("New York")
+        out = self.run_lane(asked(["architects", "designers"], ["6G"], ny))
+        (post,) = self.posts()
+        sent = json.loads(post.content)
+        self.assertEqual((sent["currentJobTitles"], sent["maxItems"], "searchQuery" in sent),
+                         (["architect", "designer"], 10, False))
+        self.assertEqual((dict(post.url.params), post.extensions["timeout"]["read"]),
+                         ({"timeout": "270", "maxTotalChargeUsd": "0.25"}, 295))
+        self.assertEqual(out.query, "job titles architect, designer; locations New York City Metropolitan Area, New Jersey")
+        self.sent.clear()
+        out = self.run_lane(asked(["architects"], ["6G"], ny, version=1))
+        (post,) = self.posts()
+        sent = json.loads(post.content)
+        self.assertEqual((sent["searchQuery"], sent["maxItems"], "currentJobTitles" in sent), ("6G", 25, False))
+        self.assertEqual((dict(post.url.params), post.extensions["timeout"]["read"]),
+                         ({"timeout": "240", "maxTotalChargeUsd": "0.25"}, 290))
+        self.sent.clear()
+        out = self.run_lane(asked([f"title {n}" for n in range(1, 14)]))
+        self.assertEqual(len(json.loads(self.posts()[0].content)["currentJobTitles"]), 12)
+        self.assertEqual([c.reason for c in out.considered if c.stage == "query"],
+                         ["more than 12 job titles; left out: title 13"])
+        self.sent.clear()
+        out = self.run_lane(asked(["people"]))
+        self.assertEqual(([c.reason for c in out.considered], self.sent), ([linkedin.NO_QUERY], []))
+
+    def test_a_question_for_researchers_only_gets_the_note_and_no_call(self):
+        """Roles that all ask for researchers make no call, not even for the city list; a null or mixed answer runs."""
+        self.assertEqual([parse.researchers_only(asked(["x"], research=r)) for r in (True, None, False)],
+                         [True, False, False])
+        self.assertFalse(parse.researchers_only(asked([])))
+        out = self.run_lane(asked(["physicists", "chemists"], place=place("New York"), research=True))
+        self.assertEqual(([c.reason for c in out.considered], self.sent), ([linkedin.RESEARCHERS], []))
+        mixed = asked(["physicists", "architects"], research=True)
+        mixed = mixed.model_copy(update={"roles": [mixed.roles[0], mixed.roles[1].model_copy(update={"research": False})]})
+        for given in (asked(["architects"], research=None), mixed):
+            self.sent.clear()
+            self.run_lane(given)
+            self.assertEqual(len(self.posts()), 1)
+
+    def test_only_the_staff_server_runs_version_2_chips_without_fn_linkedin(self):
+        """serve sets linkedin_auto unless FN_LINKEDIN=0; a version-2 question with a token then runs, while version 1
+        or no token serve only a recorded run, with no warning.
+        """
+        seen = []
+        for env, expected in (({}, True), ({"FN_LINKEDIN": "0"}, False), ({"FN_LINKEDIN": "1"}, True)):
+            var = make_settings(self).var_dir
+            with self.subTest(env=env), mock.patch.dict(os.environ, {"FN_VAR": str(var)} | env, clear=True), \
+                    mock.patch("fn.config.keychain", return_value=None), mock.patch.object(app.uvicorn, "run"), \
+                    mock.patch.object(app, "create_app", side_effect=lambda settings, *_: seen.append(settings)), \
+                    mock.patch.object(app, "from_settings"), mock.patch.object(app, "setup_logging"), \
+                    mock.patch.object(app.net, "Client"):
+                app.serve()
+                self.assertEqual(seen[-1].linkedin_auto, expected)
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch("fn.config.keychain", return_value=None):
+            self.assertFalse(config.from_env().linkedin_auto)
+        self.run_lane(asked(["architects"]), self.auto())
+        self.assertEqual(len(self.posts()), 1)
+        for given, settings in ((asked(["architects"], ["6G"], version=1), self.auto()),
+                                (asked(["designers"]), self.auto(apify_token=None))):
+            self.sent.clear()
+            with self.assertNoLogs("fn.step", "WARNING"):
+                out = self.run_lane(given, settings)
+            self.assertEqual(([c.reason for c in out.considered], self.sent), ([linkedin.OFF], []))
+
+    def test_the_account_decides_a_paid_run_and_its_answer_is_kept_nowhere(self):
+        """Each account answer that cannot back a run gives its note and no POST; a paid plan with room for the
+        $0.25 cap calls the account, the limits and then the actor, and the account's email is stored nowhere.
+        """
+        def limits(cap, used):
+            return httpx.Response(200, json={"data": {"limits": {"maxMonthlyUsageUsd": cap},
+                                                      "current": {"monthlyUsageUsd": used}}})
+
+        def tier(value):
+            return httpx.Response(200, json={"data": {"plan": {"tier": value}}})
+
+        paid, base = tier("STARTER"), self.handle
+        cases = {
+            "free": (tier("FREE"), None, linkedin.FREE_PLAN),
+            "no tier": (httpx.Response(200, json={"data": {"plan": {}}}), None, linkedin.NO_ACCOUNT),
+            "empty tier": (tier(""), None, linkedin.NO_ACCOUNT),
+            "not json": (httpx.Response(200, content=b"<html>"), None, linkedin.NO_ACCOUNT),
+            "account 500": (httpx.Response(500, text="down"), None, linkedin.NO_ACCOUNT),
+            "limits 500": (paid, httpx.Response(500, text="down"), linkedin.NO_ACCOUNT),
+            "limits not json": (paid, httpx.Response(200, content=b"nope"), linkedin.NO_ACCOUNT),
+            "no cap": (paid, httpx.Response(200, json={"data": {"current": {"monthlyUsageUsd": 1}}}), linkedin.NO_ACCOUNT),
+            "bool cap": (paid, limits(True, 0), linkedin.NO_ACCOUNT),
+            "text used": (paid, limits(39, "5"), linkedin.NO_ACCOUNT),
+            "a cent short": (paid, limits(5.24, 5.0), linkedin.NO_ROOM.format(used=5.0, cap=5.24)),
+        }
+        for label, (account, limit, note) in cases.items():
+            def handle(request, account=account, limit=limit):
+                if str(request.url) in (linkedin.ACCOUNT_URL, linkedin.LIMITS_URL):
+                    self.sent.append(request)
+                    return account if str(request.url) == linkedin.ACCOUNT_URL else limit
+                return base(request)
+
+            with self.subTest(label), mock.patch.object(self, "handle", handle):
+                self.sent.clear()
+                out = self.run_lane(asked(["architects"]), self.auto())
+                self.assertEqual(([c.reason for c in out.considered], self.posts(), out.hits), ([note], [], []))
+        self.assertEqual(linkedin.NO_ROOM.format(used=5.0, cap=5.24),
+                         "the month's Apify budget has no room for a run ($5.00 of $5.24 used)")
+        replayed = self.auto(http_mode="replay")
+        self.sent.clear()
+        out = self.run_lane(asked(["architects"]), replayed)
+        self.assertEqual(([c.reason for c in out.considered], self.sent),
+                         (["FN_HTTP=replay has no recorded LinkedIn run for this input"], []))
+        for role, cap, used in (("architects", 5.25, 5.0), ("designers", 10.3, 10.05)):
+            with self.subTest(cap=cap), mock.patch.object(self, "handle", lambda r: base(r)):
+                self.limits = {"data": {"limits": {"maxMonthlyUsageUsd": cap}, "current": {"monthlyUsageUsd": used}}}
+                self.sent.clear()
+                with self.assertLogs(level="DEBUG") as logs:
+                    out = self.run_lane(asked([role]), self.auto())
+                self.assertEqual([(r.method, str(r.url).split("?")[0]) for r in self.sent],
+                                 [("GET", linkedin.ACCOUNT_URL), ("GET", linkedin.LIMITS_URL), ("POST", linkedin.ACTOR_URL),
+                                  ("GET", geo.CITIES_URL)])
+                self.assertEqual(len(out.hits), 3)
+        email = b"made.up@example.org"
+        self.assertNotIn(email.decode(), "\n".join(logs.output))
+        stored = [path.read_bytes() for path in self.live.var_dir.rglob("*") if path.is_file()]
+        stored.append("\n".join(self.store.conn.iterdump()).encode())
+        self.assertTrue(stored)
+        self.assertFalse([b for b in stored if email in b])
+
+    def stored(self, kind: str) -> list[tuple]:
+        """(person, relation, value, quote, has a point) of the stored claims of that kind."""
+        rows = self.store.conn.execute(
+            "SELECT p.display_name, c.relation, c.value, c.quote, c.lat IS NOT NULL FROM claims c "
+            "JOIN persons p ON p.id = c.person_id WHERE c.kind = ?", (kind,))
+        return sorted(tuple(r) for r in rows)
+
+    def test_a_profile_gives_a_located_place_and_a_role_per_current_job(self):
+        """A profile with a place gets a lives_in claim of its parsed text, else its location text, quoting the
+        location line; each current job with a position and a company gets a role claim.
+        """
+        wim = profiles()[0]
+        base = {k: wim[k] for k in ("headline", "_meta", "education")}
+        job = {"companyName": "Foo Studio", "position": "Lead Architect", "startDate": {"text": "Jan 2020", "year": 2020},
+               "endDate": {"text": "Present"}}
+
+        def person(first: str, slug: str, location, *experience):
+            return base | {"firstName": first, "lastName": "Tester", "linkedinUrl": f"https://www.linkedin.com/in/{slug}",
+                           "location": location, "experience": list(experience)}
+
+        here = {"linkedinText": "Newark, NJ", "parsed": {"text": "Newark, New Jersey, United States"}}
+        self.answer = [
+            person("Ida", "ida", here, job, job | {"companyName": "Bar Group", "position": "Advisor"}),
+            person("Bo", "bo", None, job | {"companyName": None}, job | {"position": None, "companyName": "Baz"},
+                   job | {"endDate": {"text": "Dec 2021", "year": 2021}}),
+            person("Cy", "cy", {"linkedinText": "Gotham, Nowhere"}),
+            person("Di", "di", {"parsed": {"text": "Newark, New Jersey, United States"}}),
+        ]
+        self.run_lane(chips(["6G"]))
+        line = "location.linkedinText: "
+        self.assertEqual(self.stored("location"), [
+            ("Cy Tester", "lives_in", "Gotham, Nowhere", line + "Gotham, Nowhere", 0),
+            ("Ida Tester", "lives_in", "Newark, New Jersey, United States", line + "Newark, NJ", 1)])
+        self.assertEqual([(p, v) for p, _, v, _, _ in self.stored("role")],
+                         [("Ida Tester", "Advisor"), ("Ida Tester", "Lead Architect")])
+        works = self.store.conn.execute("SELECT count(*) FROM claims WHERE person_id = (SELECT id FROM persons "
+                                        "WHERE display_name = 'Bo Tester') AND relation = 'works_at'").fetchone()[0]
+        self.assertEqual(works, 1)
+        self.answer = [person("Bo", "bo", {"linkedinText": "Newark, NJ"}, job)]
+        self.run_lane(chips(["quantum"]))
+        self.assertEqual(self.count("persons"), 4)
+        self.assertIn(("Bo Tester", "lives_in", "Newark, NJ", line + "Newark, NJ", 1), self.stored("location"))
+
+    def test_a_linkedin_person_has_a_known_job_and_a_place_that_fits_the_area(self):
+        """With its role and employer claims a profile's person has a known job, and its stored place is inside
+        the New York area and outside the Los Angeles one.
+        """
+        out = self.run_lane()
+        person = out.hits[0].person_id
+        claims = self.store.claims_of([person])
+        ny = geo.locate("New York", CITIES)
+        la = GeoArea(place="Los Angeles", city="Los Angeles, US", lat=34.05, lon=-118.24, radius_km=100.0)
+        card = {person: frozenset({"profile_url"})}
+        fits = []
+        for area in (ny, la):
+            ask = Question(chips=Chips(version=2, place=place(area.place)), area=area, country="US")
+            found = evidence.of(card, claims, {}, ask, date(2027, 1, 15))
+            fits.append((found.job, rank.place_fit(found, ask)))
+        self.assertEqual(fits, [("known", "inside"), ("known", "outside")])
 
 
 class GoldGuardTest(unittest.TestCase):
