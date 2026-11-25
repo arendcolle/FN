@@ -1,10 +1,12 @@
 import logging
 import unittest
+from unittest import mock
 
 import httpx
 
 from fn import net, usindex
 from fn.contracts import IndexIn
+from fn.lanes import openalex
 from fn.steps import StepContext, run_step
 from fn.worker import Worker, new_id, now
 from tests.helpers import make_db, make_settings
@@ -118,6 +120,13 @@ class UsIndexTest(unittest.TestCase):
         out = self.index(served)
         self.assertEqual((out.pages, out.authors, out.stopped), (1, 1, "2999 credits left, under the reserve of 3000"))
         self.assertEqual(len(served.paths("/authors")), 1)
+
+    def test_the_reserve_is_the_one_in_the_openalex_module(self):
+        """The credit reserve fn-index stops at is openalex.RESERVE, the one fn-enrich shares."""
+        served = Served({"*": page(author(1), next_cursor="c2"), "c2": page(author(2, "Test Other"))}, left={"*": 9000})
+        with mock.patch.object(openalex, "RESERVE", 9500):
+            out = self.index(served)
+        self.assertEqual((out.pages, len(served.paths("/authors"))), (1, 1))
 
     def test_a_429_stops_the_job_and_keeps_the_authors_stored_before_it(self):
         """A refusal on page two ends the run with its message; page one's author stays stored."""

@@ -1,8 +1,6 @@
 """fn-index: store every OpenAlex author in the US with a Belgian affiliation, with main topics and years with works."""
 import sys
 
-import httpx
-
 from fn.config import Settings, from_env
 from fn.contracts import HttpClient, IndexIn, IndexOut, Search
 from fn.lanes import openalex
@@ -16,15 +14,6 @@ SELECT = "id,display_name,orcid,affiliations,last_known_institutions,updated_dat
 PER_PAGE = 100
 MAX_WORKS = 1000
 MIN_BELGIAN_YEARS = 2
-RESERVE = 3000
-
-
-def remaining(response: httpx.Response) -> float | None:
-    """The credits OpenAlex says are left today, from the x-ratelimit-remaining header; None without a number."""
-    try:
-        return float(response.headers["x-ratelimit-remaining"])
-    except (KeyError, ValueError):
-        return None
 
 
 def belgian_years(record: dict) -> int:
@@ -51,7 +40,8 @@ def run(ctx: StepContext, inp: IndexIn) -> IndexOut:
     """Page through the authors matching FILTER and store each, until the end or the credit reserve.
 
     Leaves out a result without id or name, an id seen before in the run, and an author with over MAX_WORKS works
-    or under MIN_BELGIAN_YEARS Belgian years. Stops after a page that leaves under RESERVE credits and on a 429.
+    or under MIN_BELGIAN_YEARS Belgian years. Stops after a page that leaves under openalex.RESERVE credits and on
+    a 429.
     Raises RuntimeError without an HTTP client, in prefer mode, or in live mode without an OpenAlex key.
     """
     if ctx.http is None:
@@ -97,11 +87,11 @@ def run(ctx: StepContext, inp: IndexIn) -> IndexOut:
             save(ctx, record, institutions)
         out["pages"] += 1
         out["authors"] += len(kept)
-        left = remaining(response)
+        left = openalex.remaining(response)
         ctx.log.info("fn-index: page %d, %d authors stored so far, %s credits left", out["pages"], out["authors"],
                      "unknown" if left is None else f"{left:.0f}")
-        if left is not None and left < RESERVE:
-            out["stopped"] = f"{left:.0f} credits left, under the reserve of {RESERVE}"
+        if left is not None and left < openalex.RESERVE:
+            out["stopped"] = f"{left:.0f} credits left, under the reserve of {openalex.RESERVE}"
             break
         cursor = body["meta"].get("next_cursor")
     return IndexOut(**out)
