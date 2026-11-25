@@ -105,6 +105,11 @@ def asks_researchers(chips: Chips) -> bool:
     return chips.version < 2 or any(r.research for r in chips.roles)
 
 
+def researchers_only(chips: Chips) -> bool:
+    """Whether every role chip says researchers: false without a role chip, and a null research counts as false."""
+    return bool(chips.roles) and all(r.research for r in chips.roles)
+
+
 def wants_research(chips: Chips) -> bool:
     """Whether the question asks for research expertise: researchers asked for, or no role named."""
     return asks_researchers(chips) or not chips.roles

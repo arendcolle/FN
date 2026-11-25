@@ -27,6 +27,7 @@ class Settings(BaseModel):
     parallel_api_key: SecretStr | None = None
     apify_token: SecretStr | None = None
     linkedin_live: bool = False
+    linkedin_auto: bool = False
     llm_workers: int = Field(12, ge=1)
     llm_procs: int = Field(16, ge=1)
     scout: bool = True
@@ -56,8 +57,11 @@ def keychain(name: str) -> str | None:
     return done.stdout.strip() or None
 
 
-def from_env() -> Settings:
-    """Settings from FN_* env vars; each key from the env var of its field name in capitals, else the Keychain."""
+def from_env(server: bool = False) -> Settings:
+    """Settings from FN_* env vars; each key from the env var of its field name in capitals, else the Keychain.
+
+    The staff server (server=True) runs the LinkedIn lane on its own unless FN_LINKEDIN=0.
+    """
     env = os.environ
 
     def secret(name: str) -> str | None:
@@ -75,6 +79,7 @@ def from_env() -> Settings:
         "parallel_api_key": secret("PARALLEL_API_KEY"),
         "apify_token": secret("APIFY_TOKEN"),
         "linkedin_live": env.get("FN_LINKEDIN") == "1",
+        "linkedin_auto": server and env.get("FN_LINKEDIN") != "0",
         "llm_workers": env.get("FN_LLM_WORKERS"),
         "llm_procs": env.get("FN_LLM_PROCS"),
         "scout": None if env.get("FN_SCOUT") is None else env["FN_SCOUT"].lower() not in ("0", "false"),
