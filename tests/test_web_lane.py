@@ -228,6 +228,14 @@ class WebLaneTest(unittest.TestCase):
         search, extract = self.sent
         self.assertEqual((search.extensions["timeout"]["read"], extract.extensions["timeout"]["read"]), (30.0, 90.0))
 
+    def test_extract_body_takes_a_character_limit(self):
+        """The full-content limit is 12,000 characters a page unless the caller gives another."""
+        def limit(body: dict) -> int:
+            return body["advanced_settings"]["full_content"]["max_chars_per_result"]
+
+        self.assertEqual((limit(websearch.extract_body(["u"], "o")), limit(websearch.extract_body(["u"], "o", 40_000))),
+                         (12_000, 40_000))
+
     def test_a_page_takes_its_text_from_extract_content_then_extract_excerpts_then_search_excerpts(self):
         """The text is the first of those with text, excerpts joined by blank lines, stored as plain text.
 

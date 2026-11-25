@@ -1,0 +1,62 @@
+{
+ "extract_id": "extract_invented",
+ "results": [
+  {
+   "url": "https://linkedin.com/in/wim-doe-invented",
+   "title": "linkedin.com",
+   "publish_date": null,
+   "excerpts": [
+    "invented excerpt"
+   ],
+   "full_content": "* URL: https://linkedin.com/in/wim-doe-invented\n * Name: Wim Doe\n * first name: Wim\n * last name: Doe\n * company name: Acme Networks\n * Title: Chief Technology Officer\n * country iso: US\n * country name: United States\n * Locality: New York City Metropolitan Area\n * Headline: Chief Technology Officer at Acme Networks\n * connection count: 500\n * jobs count: 2\n * Summary\n   - An invented summary with the words Ghent University and KU Leuven in it.\n * Skills: invented skill alpha, invented skill beta\n\n# Experience\n   - is current: true\n   - company name: Acme Networks\n   - Locality: New York, NY\n   - start date: 2015-01-01\n   - start date year: 2015\n   - Title: Chief Technology Officer\n\n## Inferred Location\n   - Latitude: 40.713\n   - Longitude: -74.0072\n   - Name: Invented Place\n\n## Seniority\n     + seniority: Senior\n\n# Experience\n   - is current: false\n   - company name: Example Labs\n   - Locality: Murray Hill, NJ\n   - start date: 2005-01-01\n   - start date year: 2005\n   - end date: 2014-12-01\n   - end date year: 2014\n   - Title: Research Scientist\n\n## Inferred Location\n   - Latitude: 40.713\n   - Longitude: -74.0072\n   - Name: Invented Place\n\n## Seniority\n     + seniority: Senior\n\n# Education\n   - Degree: PhD\n   - start date: 1990-01-01\n   - start date year: 1990\n   - end date: 1994-12-31\n   - end date year: 1994\n\n## School\n   - Name: KU Leuven\n\n## Field Of Study\n   - Name: Electrical Engineering\n\n# Education\n\n## School\n   - Name: Ghent University\n\n# Education\n   - Degree: Diploma\n   - start date: 1985-01-01\n   - start date year: 1985\n   - end date: 1986-12-31\n   - end date year: 1986\n\n## School\n   - Name: Fantasie Instituut voor Kunsten\n\n# Seniority\n + seniority: Senior\n\n# Collaborators\n   - Name: Someone Else\n\n# Recommendations\n   - Text: An invented recommendation from Someone Else.\n",
+   "acquired_at": "2026-11-02T00:00:00Z"
+  },
+  {
+   "url": "https://linkedin.com/in/anja-voorbeeld-invented/",
+   "title": "linkedin.com",
+   "publish_date": null,
+   "excerpts": [
+    "invented excerpt"
+   ],
+   "full_content": "* URL: https://linkedin.com/in/anja-voorbeeld-invented\n * Name: Anja Voorbeeld\n * first name: Anja\n * last name: Voorbeeld\n * company name: Example Labs\n * Title: Principal Engineer\n * country iso: US\n * country name: United States\n * Locality: New York City Metropolitan Area\n * headline\n   - Principal Engineer at Example Labs\n * connection count: 500\n * jobs count: 2\n * Summary\n   - An invented summary with the words Ghent University and KU Leuven in it.\n * Skills: invented skill alpha, invented skill beta\n\n# Experience\n   - is current: true\n   - company name: Example Labs\n   - Locality: New York, NY\n   - start date: 2012-01-01\n   - start date year: 2012\n   - Title: Principal Engineer\n\n## Inferred Location\n   - Latitude: 40.713\n   - Longitude: -74.0072\n   - Name: Invented Place\n\n## Seniority\n     + seniority: Senior\n\n# Experience\n   - is current: false\n   - Locality: Antwerp\n   - start date: 2006-01-01\n   - start date year: 2006\n   - end date: 2012-12-01\n   - end date year: 2012\n   - Title: Engineer\n\n## Inferred Location\n   - Latitude: 40.713\n   - Longitude: -74.0072\n   - Name: Invented Place\n\n## Seniority\n     + seniority: Senior\n\n# Education\n   - Degree: MSc\n   - start date: 2001-01-01\n   - start date year: 2001\n   - end date: 2005-12-31\n   - end date year: 2005\n\n## School\n   - Name: Université libre de Bruxelles\n\n# Education\n   - Degree: Certificate\n   - end date: 2009-12-31\n   - end date year: 2009\n\n# Seniority\n + seniority: Senior\n\n# Collaborators\n   - Name: Someone Else\n\n# Recommendations\n   - Text: An invented recommendation from Someone Else.\n",
+   "acquired_at": "2026-11-03T00:00:00Z"
+  },
+  {
+   "url": "https://linkedin.com/in/karel-proef-invented",
+   "title": "linkedin.com",
+   "publish_date": null,
+   "excerpts": [
+    "invented excerpt"
+   ],
+   "full_content": "* URL: https://linkedin.com/in/karel-proef-invented\n * Name: Karel Proef\n * first name: Karel\n * last name: Proef\n * company name: Acme Networks\n * Title: Analyst\n * country iso: US\n * country name: United States\n * Locality: Newark, New Jersey, United States\n * connection count: 500\n * jobs count: 2\n * Summary\n   - An invented summary with the words Ghent University and KU Leuven in it.\n * Skills: invented skill alpha, invented skill beta\n",
+   "acquired_at": "2026-11-04T00:00:00Z"
+  },
+  {
+   "url": "https://linkedin.com/in/pat-nobel-invented",
+   "title": "linkedin.com",
+   "publish_date": null,
+   "excerpts": [
+    "invented excerpt"
+   ],
+   "full_content": "* URL: https://linkedin.com/in/pat-nobel-invented\n * Name: Pat Nobel\n * first name: Pat\n * last name: Nobel\n * company name: Studio Invented\n * Title: Designer\n * country iso: US\n * country name: United States\n * Locality: New York City Metropolitan Area\n * connection count: 500\n * jobs count: 2\n * Summary\n   - An invented summary with the words Ghent University and KU Leuven in it.\n * Skills: invented skill alpha, invented skill beta\n\n# Experience\n   - is current: true\n   - company name: Studio Invented\n   - Locality: New York, NY\n   - start date: 2018-01-01\n   - start date year: 2018\n   - Title: Designer\n\n## Inferred Location\n   - Latitude: 40.713\n   - Longitude: -74.0072\n   - Name: Invented Place\n\n## Seniority\n     + seniority: Senior\n\n# Education\n   - Degree: MA\n   - start date: 2012-01-01\n   - start date year: 2012\n   - end date: 2014-12-31\n   - end date year: 2014\n\n## School\n   - Name: Columbia University\n\n## Field Of Study\n   - Name: Design\n\n# Education\n   - start date: 2010-01-01\n   - start date year: 2010\n   - end date: 2011-12-31\n   - end date year: 2011\n\n## School\n   - Name: Estate School of Media\n\n# Seniority\n + seniority: Senior\n\n# Collaborators\n   - Name: Someone Else\n\n# Recommendations\n   - Text: An invented recommendation from Someone Else.\n",
+   "acquired_at": "2026-11-05T00:00:00Z"
+  }
+ ],
+ "errors": [
+  {
+   "url": "https://linkedin.com/in/lena-leeg-invented",
+   "error_type": "fetch_failed",
+   "http_status_code": 404,
+   "content": null
+  }
+ ],
+ "warnings": [],
+ "usage": [
+  {
+   "name": "sku_extract_excerpts",
+   "count": 5
+  }
+ ],
+ "metadata": {},
+ "session_id": "session_invented"
+}

@@ -3,7 +3,7 @@ import json
 import logging
 from dataclasses import dataclass
 
-from fn.contracts import Chips, Considered
+from fn.contracts import CacheMode, Chips, Considered
 from fn.steps import StepContext
 
 log = logging.getLogger("fn.websearch")
@@ -49,10 +49,10 @@ def rule_queries(chips: Chips) -> list[str]:
     return queries[:MAX_QUERIES]
 
 
-def extract_body(urls: list[str], objective: str) -> dict:
-    """The Extract body: full content up to 12,000 characters a page and a 20 s live-fetch timeout."""
+def extract_body(urls: list[str], objective: str, max_chars: int = MAX_CHARS) -> dict:
+    """The Extract body: full content up to max_chars (12,000) characters a page and a 20 s live-fetch timeout."""
     return {"urls": urls, "objective": objective,
-            "advanced_settings": {"full_content": {"max_chars_per_result": MAX_CHARS},
+            "advanced_settings": {"full_content": {"max_chars_per_result": max_chars},
                                   "fetch_policy": {"timeout_seconds": FETCH_TIMEOUT_S}}}
 
 
@@ -67,6 +67,16 @@ def usage_cost(body: bytes) -> float | None:
         log.warning("Parallel usage names SKUs without a price: %s", ", ".join(unknown))
         return None
     return sum(PRICES[u["name"]] * u["count"] for u in usage) if usage else None
+
+
+def extract_pages(ctx: StepContext, urls: list[str], objective: str, max_chars: int = MAX_CHARS,
+                  cache: CacheMode = "refresh") -> dict:
+    """Read the urls in one Extract call with full content up to max_chars a page; the answer as JSON.
+
+    Raises MissingKey without a Parallel key, CacheMiss on a miss that may not go out, HttpError for a failed call.
+    """
+    return ctx.http.post(EXTRACT_URL, extract_body(urls, objective, max_chars), timeout_s=EXTRACT_TIMEOUT_S,
+                         cost=usage_cost, cache=cache).json()
 
 
 def find(ctx: StepContext, objective: str, queries: list[str]) -> Found:
@@ -85,8 +95,7 @@ def find(ctx: StepContext, objective: str, queries: list[str]) -> Found:
                                          reason=f"rank {rank}: same URL as rank {unique[result['url']][0]}"))
         else:
             unique[result["url"]] = (rank, result)
-    answer = ctx.http.post(EXTRACT_URL, extract_body(list(unique), objective), timeout_s=EXTRACT_TIMEOUT_S,
-                           cost=usage_cost).json()
+    answer = extract_pages(ctx, list(unique), objective)
     read = {r["url"]: r for r in answer.get("results") or []}
     failed = {e["url"]: e for e in answer.get("errors") or []}
     pages = []
