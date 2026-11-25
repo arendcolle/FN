@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 from fn import config, evidence, geo, gold, identity, net, parse, present, search
 from fn.config import ROOT, Settings
 from fn.contracts import Candidate, Chips, GeoArea, GoldCase, GoldPick, HttpClient, Question, Search, name_key
+from fn.lanes import linkedin
 from fn.llm import from_settings
 from fn.steps import StepContext
 from fn.store import Store
@@ -33,7 +34,7 @@ PAIRS = ROOT / "data" / "gold" / "identity-pairs.jsonl"
 PAIR_LABELS = ("same", "different", "unclear")
 PAIR_WINDOW = 50
 WAYBACK = re.compile(r"^(?:https?://)?web\.archive\.org/web/\d+[a-z_]*/(.+)$", re.IGNORECASE)
-# The LinkedIn lane asks the cache only and notes "off" on a miss, so its miss is not a fault.
+# The LinkedIn lane notes "off" on a miss of its strict run or its first Google query, so those misses are not faults.
 OFF_BY_DESIGN = "lane:linkedin"
 MODES = ("rescore", "rerank", "replay")
 # A gate fails when the metric moves this way from A to B; complete may fall by 0.02.
@@ -290,14 +291,16 @@ def step_seconds(store: Store, stored: Search) -> dict[str, float]:
 def degraded(store: Store, search_id: str, known: set[str]) -> bool:
     """Whether a step the run added (not in known) failed, logged FixtureMissing or had a response cache error.
 
-    The LinkedIn lane's cache miss does not count.
+    The LinkedIn lane's misses that linkedin.expected_misses names do not count.
     """
     for step in store.list_steps(search_id):
         if step.id in known:
             continue
         if step.status not in ("ok", "skipped") or "FixtureMissing" in step.log:
             return True
-        if step.step != OFF_BY_DESIGN and any("response cache" in (call.error or "") for call in store.list_calls(step.id)):
+        calls = store.list_calls(step.id)
+        skipped = linkedin.expected_misses(calls) if step.step == OFF_BY_DESIGN else set()
+        if any("response cache" in (call.error or "") and call.seq not in skipped for call in calls):
             return True
     return False
 

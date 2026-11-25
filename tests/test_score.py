@@ -11,7 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from fn import geo, gold, score, search
+from fn import geo, gold, score, search, websearch
 from fn.contracts import (
     Candidate,
     Chips,
@@ -25,8 +25,10 @@ from fn.contracts import (
     Place,
     Search,
     Source,
+    StepCall,
     StepRun,
 )
+from fn.lanes import linkedin
 from fn.steps import StepContext
 from fn.worker import new_id, now
 from tests.helpers import cities_zip, make_db, make_settings
@@ -583,6 +585,32 @@ class CompareTest(unittest.TestCase):
         self.assertIn("gold_at_20: 3 -> 4 (+1)", text)
         self.assertNotIn("kept", text)
         self.assertIn("GS-90#1 (search s1): 30 -> 12", text)
+
+
+class DegradedTest(unittest.TestCase):
+    def step_with(self, step: str, requests: list[str]) -> bool:
+        """degraded for an ok step of that name whose calls, in order, each missed the response cache."""
+        store = make_db(self)
+        search_id = make_search(store, "dddddddd", QUESTION, Chips())
+        run = StepRun(id="s1", search_id=search_id, seq=1, step=step, status="ok", started_at=CREATED, input_model="LaneIn")
+        store.start_step(run, "{}")
+        for seq, request in enumerate(requests, 1):
+            store.add_call(StepCall(step_run_id="s1", seq=seq, kind="http", request=request, duration_ms=0,
+                                    error="not in the response cache"))
+        store.finish_step(run.model_copy(update={"ended_at": CREATED}), "{}")
+        return score.degraded(store, search_id, set())
+
+    def test_a_linkedin_step_counts_a_miss_that_is_not_off_by_design(self):
+        """The strict run's miss and the first Google query's are off by design; a later Google query or the read
+        missing is a fault, and so is any miss of another step.
+        """
+        actor, google, extract = (f"replay POST {u}" for u in (linkedin.ACTOR_URL, linkedin.GOOGLE_URL, websearch.EXTRACT_URL))
+        for step, requests, expected in (
+            ("lane:linkedin", [actor, google], False), ("lane:linkedin", [google], False), ("lane:linkedin", [actor], False),
+            ("lane:linkedin", [actor, google, google], True), ("lane:linkedin", [google, google, extract], True),
+            ("lane:linkedin", [google, extract], True), ("lane:web", [actor, google], True)):
+            with self.subTest(step=step, requests=[r.split()[-1][-20:] for r in requests]):
+                self.assertEqual(self.step_with(step, requests), expected)
 
 
 if __name__ == "__main__":

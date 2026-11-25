@@ -11,7 +11,7 @@ from unittest import mock
 import httpx
 from pydantic import SecretStr
 
-from fn import config, evidence, geo, gold, net, orgs, parse, rank
+from fn import config, evidence, geo, gold, net, orgs, parse, rank, score, websearch
 from fn.contracts import Chip, Chips, GeoArea, LaneIn, LaneOut, Place, Question, record_source
 from fn.lanes import linkedin
 from fn.steps import StepContext, run_step
@@ -28,6 +28,7 @@ from tests.helpers import (
 
 RECORDED = FIXTURES / "http" / "linkedin"
 TOKEN = "apify_api_test_0123456789"
+PARALLEL = "px-parallel-0123456789"
 CITIES = geo.index((FIXTURES / "geo" / "cities15000-extract.txt").read_text(encoding="utf-8"))
 READ = datetime(2027, 1, 15, tzinfo=UTC)
 GS02_QUESTION = "Flemish experts in telecom and 6G research in the New York and New Jersey area"
@@ -185,6 +186,105 @@ class AliasTest(unittest.TestCase):
             "ror:00rs45z86": ("HOGENT University of Applied Sciences and Arts", "BE")})
 
 
+NEW_YORK = place("New York")
+JOURNALISTS = asked(["journalists", "editors"], place=NEW_YORK)
+FREE_ACCOUNT = {"data": {"plan": {"tier": "FREE"}}}
+SEATTLE = GeoArea(place="Seattle", city="Seattle, US", lat=47.6, lon=-122.3, radius_km=100.0)
+
+
+def site(roles: str, where: str, named: str) -> str:
+    return f"site:www.linkedin.com/in ({roles}) ({where}) ({named})"
+
+
+class GoogleQueryTest(unittest.TestCase):
+    ny = '"New York City Metropolitan Area" OR "New York, New York"'
+
+    def queries(self, given: Chips, area: GeoArea | None = None) -> tuple[list[str], list[str]]:
+        return linkedin.google_queries(given, area or geo.locate("New York", CITIES))
+
+    def test_google_queries_name_three_titles_the_area_phrases_and_three_schools(self):
+        """One query per group of three schools in SCHOOLS order; the first is the brief's; roles come from the job
+        titles of a version-2 question, else from query_terms, which has quoted a multi-word term once already.
+        """
+        found, left = self.queries(asked(["journalists", "editors"], place=NEW_YORK))
+        self.assertEqual(found, [
+            site("journalist OR editor", self.ny, '"KU Leuven" OR "Ghent University" OR "University of Antwerp"'),
+            site("journalist OR editor", self.ny,
+                 '"Vrije Universiteit Brussel" OR "Hasselt University" OR "Université libre de Bruxelles"'),
+            site("journalist OR editor", self.ny, '"UCLouvain" OR "University of Liège" OR "Vlerick Business School"')])
+        self.assertEqual(left, [])
+        leuven = asked(["journalists"], place=NEW_YORK).model_copy(update={"institutions": [Chip(text="KU Leuven", origin="edited")]})
+        self.assertEqual(self.queries(leuven)[0], [site("journalist", self.ny, '"KU Leuven"')])
+        for given, roles in (
+            (chips(["6G", "wireless networks"], place=NEW_YORK), '6G OR "wireless networks"'),
+            (asked([], ["6G research"], NEW_YORK), '"6G research"'),
+            (asked(["business development people"], place=NEW_YORK), '"business development"'),
+            (asked(["Editors"], ["6G"], NEW_YORK, version=1), "6G"),
+        ):
+            with self.subTest(roles=roles):
+                self.assertEqual({q.split(") (")[0] for q in self.queries(given)[0]}, {f"site:www.linkedin.com/in ({roles}"})
+        other = asked(["journalists"], place=NEW_YORK).model_copy(update={"institutions": [Chip(text="Acme Networks", origin="edited")]})
+        self.assertEqual(self.queries(other), self.queries(asked(["journalists"], place=NEW_YORK)))
+        only_school = asked([], place=NEW_YORK).model_copy(update={"institutions": [Chip(text="KU Leuven", origin="edited")]})
+        self.assertEqual(self.queries(only_school)[0], [site('"KU Leuven"', self.ny, '"KU Leuven"')])
+
+    def test_roles_past_the_third_are_returned_and_no_role_makes_no_query(self):
+        """Four roles send the first three and name the fourth; no role, topic or institution gives no query."""
+        found, left = self.queries(asked(["architects", "designers", "planners", "painters"], place=NEW_YORK))
+        self.assertEqual({q.split(") (")[0] for q in found}, {"site:www.linkedin.com/in (architect OR designer OR planner"})
+        self.assertEqual(left, ["painter"])
+        self.assertEqual(self.queries(asked([], place=NEW_YORK)), ([], []))
+
+    def test_the_place_phrases_follow_the_area_and_the_kind_of_place(self):
+        """A table city sends its two phrases; no place and anywhere in the US send United States; a place abroad or
+        one FN cannot locate sends its own text with inner quote marks dropped; another located city sends its name.
+        """
+        roles = asked(["architects"])
+        for given, area, where in (
+            (roles, None, '"United States"'),
+            (roles.model_copy(update={"place": place("the US", "anywhere_us")}), SEATTLE, '"United States"'),
+            (roles.model_copy(update={"place": place("Seattle")}), SEATTLE, '"Greater Seattle Area" OR "Seattle, Washington"'),
+            (roles.model_copy(update={"place": place('Antwerp "area"', "abroad")}), None, '"Antwerp area"'),
+            (roles.model_copy(update={"place": place("Gotham", None)}), None, '"Gotham"'),
+            (roles.model_copy(update={"place": place("Menlo Park area")}), geo.locate("Menlo Park area", CITIES),
+             '"Menlo Park"'),
+        ):
+            with self.subTest(where=where):
+                self.assertEqual(linkedin.google_queries(given, area)[0][0].split(") (")[1], where)
+        self.assertEqual(sorted(linkedin.PLACES), sorted(linkedin.LOCATIONS))
+        self.assertTrue(all(len(v) == 2 for v in linkedin.PLACES.values()))
+
+
+class GoogleAddressTest(unittest.TestCase):
+    def test_a_profile_address_is_on_a_linkedin_host_under_in_and_is_made_canonical(self):
+        """www.linkedin.com and linkedin.com give the one address; a country host, a company page, a bare /in and
+        any other site give none; segments after the id and a query string are dropped.
+        """
+        want = "https://www.linkedin.com/in/ada-tester-invented"
+        for url in ("https://www.linkedin.com/in/ada-tester-invented", "https://linkedin.com/in/ada-tester-invented/",
+                    "http://www.linkedin.com/in/ada-tester-invented/en?trk=x#top", " https://linkedin.com/in/ada-tester-invented/details/"):
+            self.assertEqual(linkedin.profile_address(url), want, url)
+        for url in ("https://be.linkedin.com/in/ada", "https://www.linkedin.com/company/acme", "https://www.linkedin.com/in/",
+                    "https://www.linkedin.com/in", "https://example.org/in/ada", "https://www.youtube.com/watch?v=x", "", "not a url"):
+            self.assertIsNone(linkedin.profile_address(url), url)
+
+    def test_addresses_alternate_queries_drop_repeats_and_non_profiles_and_stop_at_20(self):
+        """The first result of each answer in turn, then the second; a repeat in another spelling and a result that is
+        no profile address are left out and the latter counted; 20 distinct addresses are the most.
+        """
+        def result(slug: str) -> dict:
+            return {"url": f"https://www.linkedin.com/in/{slug}"}
+
+        answers = [[result("a1"), result("a2"), {"url": "https://www.youtube.com/watch?v=x"}],
+                   [result("b1"), {"url": "https://linkedin.com/in/a1/?trk=x"}, {"position": 3}], [], [result("c1")]]
+        self.assertEqual(linkedin.addresses(answers), ([f"https://www.linkedin.com/in/{s}" for s in ("a1", "b1", "c1", "a2")], 2))
+        many = [[result(f"{q}{n}") for n in range(10)] for q in "abc"]
+        found, others = linkedin.addresses(many)
+        self.assertEqual((len(found), others, found[:4]), (20, 0, [f"https://www.linkedin.com/in/{s}" for s in ("a0", "b0", "c0", "a1")]))
+        self.assertEqual(found[-2:], [f"https://www.linkedin.com/in/{s}" for s in ("a6", "b6")])
+        self.assertEqual(linkedin.addresses([]), ([], 0))
+
+
 class LinkedInLaneTest(unittest.TestCase):
     def setUp(self):
         self.live = make_settings(self).model_copy(
@@ -194,10 +294,17 @@ class LinkedInLaneTest(unittest.TestCase):
         self.answer: object = profiles()
         self.account: object = {"data": {"plan": {"tier": "STARTER"}, "email": "made.up@example.org"}}
         self.limits: object = {"data": {"limits": {"maxMonthlyUsageUsd": 39}, "current": {"monthlyUsageUsd": 5.5}}}
+        self.google: list = json.loads((RECORDED / "google.json").read_text(encoding="utf-8"))
+        self.extract: object = json.loads((RECORDED / "extract.json").read_text(encoding="utf-8"))
         self.sent: list[httpx.Request] = []
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.sent.append(request)
+        if str(request.url).split("?")[0] == linkedin.GOOGLE_URL:
+            answer = self.google[sum(str(r.url).startswith(linkedin.GOOGLE_URL) for r in self.sent) - 1]
+            return httpx.Response(200, content=answer) if isinstance(answer, bytes) else httpx.Response(200, json=answer)
+        if str(request.url) == websearch.EXTRACT_URL:
+            return httpx.Response(200, json=self.extract)
         if request.url.host == "download.geonames.org":
             return httpx.Response(200, content=cities_zip())
         if str(request.url) == linkedin.ACCOUNT_URL:
@@ -214,14 +321,17 @@ class LinkedInLaneTest(unittest.TestCase):
 
         The step's clock reads READ, a year after the fixture's scrapedAt, so a scrape year cannot pass for the read year.
         """
-        settings, given = settings or self.live, given or gs02_chips()
+        return self.in_step(given or gs02_chips(), settings or self.live, linkedin.run)
+
+    def in_step(self, given: Chips, settings, work) -> LaneOut:
+        """Run work(ctx, inp) as the lane:linkedin step of a new search over a mock transport."""
         http = net.Client(settings, httpx.MockTransport(self.handle))
         worker = Worker(self.store, settings, llm=StubLLM(error=AssertionError("the LLM must not be called")), http=http)
         self.addCleanup(worker.shutdown)
         self.search_id = worker.create_search("question", given, "edited").id
         ctx = StepContext(search_id=self.search_id, store=self.store, llm=None, http=http, now=lambda: READ, new_id=new_id,
                           log=logging.getLogger("fn.step"), settings=settings)
-        return run_step(ctx, "lane:linkedin", linkedin.run, LaneIn(search_id=self.search_id, chips=given))
+        return run_step(ctx, "lane:linkedin", work, LaneIn(search_id=self.search_id, chips=given))
 
     def calls(self) -> list:
         """The POST calls of the last lane step."""
@@ -440,8 +550,9 @@ class LinkedInLaneTest(unittest.TestCase):
         self.assertEqual([c.reason for c in out.considered], [linkedin.OFF])
         self.assertIn("FN_LINKEDIN=1", linkedin.OFF)
         self.assertEqual(self.store.list_steps(self.search_id)[-1].status, "ok")
-        (call,) = self.calls()
-        self.assertEqual(call.error, "not in the response cache")
+        actor, google = self.calls()
+        self.assertEqual((actor.error, google.error), ("not in the response cache", "not in the response cache"))
+        self.assertEqual((linkedin.ACTOR_URL in actor.request, linkedin.GOOGLE_URL in google.request), (True, True))
 
     def test_the_lane_off_serves_a_recorded_run_without_a_transport_call(self):
         """A run made with the lane on is served to a search with it off: same hits, the transport called once in all."""
@@ -701,7 +812,8 @@ class LinkedInLaneTest(unittest.TestCase):
             with self.subTest(label), mock.patch.object(self, "handle", handle):
                 self.sent.clear()
                 out = self.run_lane(asked(["architects"]), self.auto())
-                self.assertEqual(([c.reason for c in out.considered], self.posts(), out.hits), ([note], [], []))
+                self.assertEqual(([c.reason for c in out.considered], self.posts(), out.hits),
+                                 ([note, linkedin.NO_PARALLEL], [], []))
         self.assertEqual(linkedin.NO_ROOM.format(used=5.0, cap=5.24),
                          "the month's Apify budget has no room for a run ($5.00 of $5.24 used)")
         replayed = self.auto(http_mode="replay")
@@ -785,6 +897,274 @@ class LinkedInLaneTest(unittest.TestCase):
             found = evidence.of(card, claims, {}, ask, date(2027, 1, 15))
             fits.append((found.job, rank.place_fit(found, ask)))
         self.assertEqual(fits, [("known", "inside"), ("known", "outside")])
+
+    def keyed(self, **update):
+        """Settings of the lane on, with a Parallel key unless update changes it."""
+        return self.live.model_copy(update={"parallel_api_key": SecretStr(PARALLEL)} | update)
+
+    def accounts(self, account: httpx.Response, limit: httpx.Response):
+        """Patch handle so the account and the limits calls answer with these responses."""
+        base = self.handle
+
+        def handle(request: httpx.Request) -> httpx.Response:
+            if str(request.url) not in (linkedin.ACCOUNT_URL, linkedin.LIMITS_URL):
+                return base(request)
+            self.sent.append(request)
+            return account if str(request.url) == linkedin.ACCOUNT_URL else limit
+
+        return mock.patch.object(self, "handle", handle)
+
+    def sent_to(self, url: str) -> list[httpx.Request]:
+        return [r for r in self.sent if str(r.url).split("?")[0] == url]
+
+    def searched(self, settings, queries: list[str], live: bool) -> list[list[dict]]:
+        """The results search_google gives for each query, called inside a step so the client records its calls."""
+        found = []
+
+        def work(ctx: StepContext, inp: LaneIn) -> LaneOut:
+            found.extend(linkedin.search_google(ctx, q, live) for q in queries)
+            return LaneOut(lane="linkedin", query="", total_seen=0)
+
+        self.in_step(chips(["6G"]), settings, work)
+        return found
+
+    def test_without_a_paid_run_google_runs_and_with_one_only_the_scraper(self):
+        """A free plan, no room in the month and an unreadable account send no actor call and three Google calls with
+        the caps, a 150 s timeout and $0.001 each, then one read. A paid plan with room sends the actor call only, and
+        a recorded strict answer is served alone.
+        """
+        free = httpx.Response(200, json=FREE_ACCOUNT)
+        paid = httpx.Response(200, json=self.account)
+        room = httpx.Response(200, json={"data": {"limits": {"maxMonthlyUsageUsd": 5.1}, "current": {"monthlyUsageUsd": 5.0}}})
+        down = httpx.Response(500, text="down")
+        for role, account, limit in (("architects", free, down), ("economists", paid, room), ("traders", down, down)):
+            with self.subTest(role=role), self.accounts(account, limit):
+                self.sent.clear()
+                given = asked([role], place=NEW_YORK)
+                self.run_lane(given, self.keyed())
+                self.assertEqual(self.sent_to(linkedin.ACTOR_URL), [])
+                posts = self.sent_to(linkedin.GOOGLE_URL)
+                queries, _ = linkedin.google_queries(given, geo.locate("New York", CITIES))
+                for post, query in zip(posts, queries, strict=True):
+                    self.assertEqual(dict(post.url.params), {"maxTotalChargeUsd": "0.05", "timeout": "120"})
+                    self.assertEqual(post.headers["authorization"], f"Bearer {TOKEN}")
+                    self.assertEqual(post.extensions["timeout"]["read"], 150)
+                    self.assertEqual(json.loads(post.content), {"keyword": query, "limit": "10", "country": "US", "hl": "en"})
+                self.assertEqual([c.cost_usd for c in self.calls() if linkedin.GOOGLE_URL in c.request], [0.001] * 3)
+                self.assertEqual(len(self.sent_to(websearch.EXTRACT_URL)), 1)
+        self.sent.clear()
+        given = asked(["designers"], place=NEW_YORK)
+        self.run_lane(given, self.keyed())
+        self.assertEqual((len(self.sent_to(linkedin.ACTOR_URL)), self.sent_to(linkedin.GOOGLE_URL)), (1, []))
+        self.sent.clear()
+        out = self.run_lane(given, self.keyed(linkedin_live=False))
+        (served,) = self.calls()
+        self.assertEqual((self.posts(), len(out.hits), served.request.startswith("cache POST " + linkedin.ACTOR_URL)),
+                         ([], 3, True))
+
+    def test_a_kept_profile_is_one_person_with_dated_education_job_role_and_place(self):
+        """Wim Doe's profile gives a studied_at claim per school with its years, a works_at and a worked_at claim,
+        a role claim and a lives_in claim, all in one vendor_record source dated by Parallel's copy; his job is known
+        and his place is inside the New York area.
+        """
+        self.account = FREE_ACCOUNT
+        out = self.run_lane(JOURNALISTS, self.keyed())
+        person = next(h.person_id for h in out.hits if self.store.get_persons([h.person_id])[h.person_id].display_name == "Wim Doe")
+        rows = self.store.conn.execute(
+            "SELECT s.kind, s.url, s.source_date, c.kind, c.relation, c.org_id, c.value, c.valid_from, c.valid_to, c.claim_date, "
+            "c.lat IS NOT NULL FROM claims c JOIN sources s ON s.id = c.source_id WHERE c.person_id = ?", (person,))
+        vendor = ("vendor_record", WIM, "2026-11-02")
+        self.assertEqual({tuple(r) for r in rows}, {
+            (*vendor, "affiliation", "studied_at", "ror:05f950310", "KU Leuven", "1990", "1994", "1994", 0),
+            (*vendor, "affiliation", "studied_at", "ror:00cv9y106", "Ghent University", None, None, None, 0),
+            (*vendor, "affiliation", "studied_at", None, "Fantasie Instituut voor Kunsten", "1985", "1986", "1986", 0),
+            (*vendor, "affiliation", "works_at", None, "Acme Networks", "2015", "2026", "2026", 0),
+            (*vendor, "affiliation", "worked_at", None, "Example Labs", "2005", "2014", "2014", 0),
+            (*vendor, "role", None, None, "Chief Technology Officer", "2015", "2026", "2026", 0),
+            (*vendor, "location", "lives_in", None, "New York City Metropolitan Area", None, None, "2026-11-02", 1)})
+        ny = geo.locate("New York", CITIES)
+        ask = Question(chips=Chips(version=2, place=place(ny.place)), area=ny, country="US")
+        found = evidence.of({person: frozenset({"profile_url"})}, self.store.claims_of([person]), {}, ask, date(2027, 1, 15))
+        self.assertEqual((found.job, rank.place_fit(found, ask)), ("known", "inside"))
+        self.assertEqual([(h.rank, h.lane) for h in out.hits], [(1, "linkedin"), (2, "linkedin")])
+        self.assertEqual([h.matched_on for h in out.hits], [
+            f"result 1, Chief Technology Officer at Acme Networks, {WIM}",
+            f"result 4, Principal Engineer at Example Labs, {ANJA}"])
+
+    def test_a_profile_without_a_belgian_school_stores_nothing_and_names_nobody(self):
+        """A school counts by its name or by the Belgian country of its org: a Dutch spelling, a French one and a
+        school inside a Leuven name count; two other schools do not. Such a profile leaves a row with its result
+        number and no person, source, claim or name anywhere.
+        """
+        other = make_settings(self)
+        self.store = make_seeded_db(self, other)
+        facts = self.store.get_orgs([i for i in map(orgs.org_id, ("Universiteit Gent", "Université libre de Bruxelles")) if i])
+        for school, expected in (("Universiteit Gent", True), ("Université libre de Bruxelles", True),
+                                 ("Rega School, KU Leuven", True), ("Université Libre de Bruxelles ", True),
+                                 ("Columbia University", False), ("Estate School of Media", False), ("", False)):
+            self.assertEqual(linkedin.belgian_school(school, facts), expected, school)
+        self.assertEqual(facts[orgs.org_id("Universiteit Gent")].country_code, "BE")
+        self.account = FREE_ACCOUNT
+        out = self.run_lane(JOURNALISTS, self.keyed(var_dir=other.var_dir))
+        dropped = [(c.person_key, c.name, c.stage, c.kept, c.reason) for c in out.considered if "not kept" in c.reason]
+        self.assertEqual(dropped, [
+            ("result 2", "", "profile", False, "result 2: no Belgian school among 0 schools; not kept"),
+            ("result 3", "", "profile", False, "result 3: no Belgian school among 2 schools; not kept")])
+        self.assertEqual(sorted(p.display_name for p in self.store.get_persons([h.person_id for h in out.hits]).values()),
+                         ["Anja Voorbeeld", "Wim Doe"])
+        gone = self.store.conn.execute(
+            "SELECT (SELECT count(*) FROM persons WHERE display_name IN ('Pat Nobel', 'Karel Proef')), "
+            "(SELECT count(*) FROM sources WHERE url LIKE '%pat-nobel%' OR url LIKE '%karel-proef%'), "
+            "(SELECT count(*) FROM claims WHERE value LIKE '%Estate School%' OR quote LIKE '%Studio Invented%'), "
+            "(SELECT count(*) FROM person_identifiers WHERE value LIKE '%pat-nobel%' OR value LIKE '%karel-proef%')").fetchone()
+        self.assertEqual(tuple(gone), (0, 0, 0, 0))
+        self.assertNotRegex(repr(out.considered), "Nobel|nobel|Karel|karel")
+
+    def test_only_the_header_experience_and_education_are_read(self):
+        """Summary, skills, collaborators and recommendations reach neither the stored source nor its raw record. An
+        education without a school, a school block without a name, a job without a company, a header alone and an
+        empty block are read as far as they go; a one-word name is no profile; a cut text loses its last line.
+        """
+        self.account = FREE_ACCOUNT
+        self.run_lane(JOURNALISTS, self.keyed())
+        rows = self.store.conn.execute("SELECT text || raw_json FROM sources").fetchall()
+        self.assertTrue(rows)
+        for (stored,) in rows:
+            for absent in ("invented summary", "skill alpha", "Someone Else", "recommendation"):
+                self.assertNotIn(absent, stored)
+        page = {r["url"]: r for r in self.extract["results"]}
+        anja = linkedin.read_profile(page["https://linkedin.com/in/anja-voorbeeld-invented/"]["full_content"], ANJA, "")
+        self.assertEqual(anja["education"][1], {"degree": "Certificate", "endDate": {"year": 2009}})
+        self.assertNotIn("companyName", anja["experience"][1])
+        self.assertEqual((anja["headline"], anja["_meta"]), ("Principal Engineer at Example Labs", {"scrapedAt": ""}))
+        karel = linkedin.read_profile(page["https://linkedin.com/in/karel-proef-invented"]["full_content"], KAREL, "x")
+        self.assertEqual((karel["experience"], karel["education"], karel["location"]),
+                         ([], [], {"linkedinText": "Newark, New Jersey, United States"}))
+        unnamed = " * first name: Cher\n * Locality: Newark\n"
+        nameless = "# Education\n   - Degree: MA\n\n## School\n   - Name: \n"
+        self.assertIsNone(linkedin.read_profile(unnamed, KAREL, ""))
+        self.assertIsNone(linkedin.read_profile(nameless, KAREL, ""))
+        named = " * first name: Ada\n * last name: Tester\n"
+        self.assertEqual(linkedin.read_profile(named + nameless, KAREL, "")["education"], [{"degree": "MA"}])
+        bare = named + " * headline\n * Summary\n   - invented summary of Ada\n"
+        self.assertNotIn("headline", linkedin.read_profile(bare, KAREL, ""))
+        head, tail = named + " * Summary\n   - ", "\n# Education\n   - Degree: Master of Sci"
+        filler = linkedin.PROFILE_CHARS - len(head) - len(tail)
+        cut, whole = (linkedin.read_profile(head + "x" * (filler - drop) + tail, KAREL, "") for drop in (0, 1))
+        self.assertEqual((cut["education"], whole["education"]), ([], [{"degree": "Master of Sci"}]))
+        self.extract["results"] = [dict(r, full_content=" * first name: Solo\n") for r in self.extract["results"]]
+        self.sent.clear()
+        out = self.run_lane(JOURNALISTS, self.keyed())
+        self.assertEqual((out.hits, [c.reason for c in out.considered if c.stage == "profile"]), ([], [
+            "result 1: no first and last name; not read", "result 2: no first and last name; not read",
+            "result 3: no first and last name; not read", "result 4: no first and last name; not read",
+            "result 5: not read (fetch_failed)"]))
+        self.assertIn(linkedin.NONE_PARSED, [c.reason for c in out.considered])
+
+    def test_an_answer_that_lost_the_site_limit_is_asked_once_more_with_the_limit_at_the_end(self):
+        """When under half of a query's results are profile addresses, the query goes out once more with the site
+        limit at the end and the answer with more profile addresses is used. Two such answers make no third call,
+        and an empty answer is not asked again.
+        """
+        self.account = FREE_ACCOUNT
+        kept, second, third = self.google
+        lost = [{"page_number": 1, "results": [{"position": n, "url": f"https://example.org/page-{n}"} for n in (1, 2, 3)]}]
+        weak = [{"page_number": 1, "results": [*lost[0]["results"][:2], kept[0]["results"][0]]}]
+        empty = [{"page_number": 1, "results": []}]
+        queries, _ = linkedin.google_queries(JOURNALISTS, geo.locate("New York", CITIES))
+        moved = queries[0].removeprefix("site:www.linkedin.com/in ") + " site:www.linkedin.com/in"
+        for served, used, asked_again in (([lost, kept, second, third], [kept, second, third], True),
+                                          ([lost, weak, second, third], [weak, second, third], True),
+                                          ([empty, second, third], [second, third], False)):
+            with self.subTest(served=len(served), asked_again=asked_again):
+                self.google, self.sent = served, []
+                out = self.run_lane(JOURNALISTS, self.keyed())
+                sent = [json.loads(r.content)["keyword"] for r in self.sent_to(linkedin.GOOGLE_URL)]
+                self.assertEqual(sent, [queries[0], moved, *queries[1:]] if asked_again else queries)
+                self.assertEqual(linkedin.ASKED_AGAIN.format(n=1) in [c.reason for c in out.considered], asked_again)
+                self.assertEqual(out.total_seen, len(linkedin.addresses([a[0]["results"] for a in used])[0]))
+
+    def test_a_parallel_error_or_missing_result_leaves_a_row(self):
+        """An address Parallel reports as failed, one it leaves out and one it returns without content each get a row
+        with the result number and the reason, and no person.
+        """
+        self.account = FREE_ACCOUNT
+        out = self.run_lane(JOURNALISTS, self.keyed())
+        rows = {c.person_key: c for c in out.considered if c.stage == "profile" and not c.kept}
+        self.assertEqual((rows["result 5"].reason, rows["result 5"].name, rows["result 5"].kept),
+                         ("result 5: not read (fetch_failed)", "", False))
+        self.extract["errors"] = []
+        self.extract["results"][0]["full_content"] = None
+        del self.extract["results"][1]
+        self.sent.clear()
+        out = self.run_lane(JOURNALISTS, self.keyed())
+        self.assertEqual([c.reason for c in out.considered if "not read" in c.reason],
+                         ["result 1: not read (missing)", "result 4: not read (missing)", "result 5: not read (missing)"])
+        self.assertEqual([h.matched_on.split(",")[0] for h in out.hits], [])
+
+    def test_off_without_a_recorded_first_query_is_ok_and_a_later_miss_fails(self):
+        """Off, the actor and the first Google query miss and the step is ok and not degraded. With the first query
+        recorded, the second missing fails the step; with all three recorded, a missing read fails it too.
+        """
+        out = self.run_lane(JOURNALISTS, self.off)
+        self.assertEqual(([c.reason for c in out.considered], self.posts(), self.store.list_steps(self.search_id)[-1].status),
+                         ([linkedin.OFF], [], "ok"))
+        self.assertFalse(score.degraded(self.store, self.search_id, set()))
+        queries, _ = linkedin.google_queries(JOURNALISTS, geo.locate("New York", CITIES))
+        for recorded in (1, 3):
+            self.sent.clear()
+            self.searched(self.live, queries[:recorded], True)
+            self.sent.clear()
+            with self.subTest(recorded=recorded), self.assertRaises(net.CacheMiss):
+                self.run_lane(JOURNALISTS, self.off)
+            self.assertEqual(self.store.list_steps(self.search_id)[-1].status, "error")
+            self.assertTrue(score.degraded(self.store, self.search_id, set()))
+
+    def test_an_answer_without_a_results_list_is_not_cached_and_an_empty_one_is(self):
+        """A refused run, an empty list, an item without results and text that is no JSON leave no cache file; a
+        results list that is empty is cached, so a replay serves it.
+        """
+        for answer in ({"error": "run failed"}, [], [{"page_number": 1}], [{"results": "none"}], [3], b"<html>"):
+            with self.subTest(answer=answer):
+                self.google, self.sent = [answer], []
+                self.assertEqual(self.searched(self.live, ["query"], True), [[]])
+                with self.assertRaises(net.CacheMiss):
+                    self.searched(self.live, ["query"], False)
+        self.google, self.sent = [[{"page_number": 1, "results": []}]], []
+        self.assertEqual(self.searched(self.live, ["other"], True), [[]])
+        self.assertEqual(self.searched(self.live, ["other"], False), [[]])
+        self.assertEqual(len(self.sent_to(linkedin.GOOGLE_URL)), 1)
+
+    def test_the_strict_routes_person_is_the_same_record_through_google(self):
+        """A person the actor stored is the person Google finds under the same address: one record and one
+        profile_url identifier each.
+        """
+        strict = self.run_lane(asked(["architects"], place=NEW_YORK), self.keyed())
+        known = {p.display_name: p.id for p in self.store.get_persons([h.person_id for h in strict.hits]).values()}
+        self.account = FREE_ACCOUNT
+        found = self.run_lane(JOURNALISTS, self.keyed())
+        again = {p.display_name: p.id for p in self.store.get_persons([h.person_id for h in found.hits]).values()}
+        self.assertEqual(again, {k: known[k] for k in ("Wim Doe", "Anja Voorbeeld")})
+        identifiers = self.store.conn.execute("SELECT count(*) FROM person_identifiers WHERE scheme = 'profile_url'")
+        self.assertEqual((self.count("persons"), identifiers.fetchone()[0]), (3, 3))
+
+    def test_researchers_only_no_token_and_no_parallel_key_note_and_call_nothing(self):
+        """A question for researchers only, a missing Apify token and a missing Parallel key each give a note and
+        send no Apify or Parallel call; the key note is logged as a warning.
+        """
+        out = self.run_lane(asked(["physicists"], place=NEW_YORK, research=True), self.keyed())
+        self.assertEqual(([c.reason for c in out.considered], self.sent), ([linkedin.RESEARCHERS], []))
+        self.account = FREE_ACCOUNT
+        with self.assertLogs("fn.step", "WARNING"):
+            out = self.run_lane(JOURNALISTS, self.keyed(apify_token=None))
+        self.assertEqual([c.reason for c in out.considered],
+                         ["LinkedIn lane skipped: no key for api.apify.com; set APIFY_TOKEN or store it in the Keychain"])
+        self.assertEqual({r.url.host for r in self.sent} - {"download.geonames.org"}, set())
+        self.sent.clear()
+        with self.assertLogs("fn.step", "WARNING") as logged:
+            out = self.run_lane(JOURNALISTS, self.live)
+        self.assertEqual([c.reason for c in out.considered], [linkedin.FREE_PLAN, linkedin.NO_PARALLEL])
+        self.assertEqual((self.posts(), out.hits, logged.records[0].getMessage()), ([], [], linkedin.NO_PARALLEL))
 
 
 class GoldGuardTest(unittest.TestCase):

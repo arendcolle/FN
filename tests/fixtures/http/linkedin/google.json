@@ -1,0 +1,94 @@
+[
+ [
+  {
+   "page_number": 1,
+   "search_term": "q1",
+   "results": [
+    {
+     "position": 1,
+     "url": "https://www.linkedin.com/in/wim-doe-invented",
+     "title": "Wim Doe - Chief Technology Officer - Acme Networks | LinkedIn",
+     "description": "An invented snippet for Wim Doe - Chief Technology Officer - Acme Networks | LinkedIn."
+    },
+    {
+     "position": 2,
+     "url": "https://www.linkedin.com/in/anja-voorbeeld-invented/en",
+     "title": "Anja Voorbeeld - Principal Engineer | LinkedIn",
+     "description": "An invented snippet for Anja Voorbeeld - Principal Engineer | LinkedIn."
+    },
+    {
+     "position": 3,
+     "url": "https://www.youtube.com/watch?v=invented",
+     "title": "An invented video",
+     "description": "An invented snippet for An invented video."
+    }
+   ],
+   "next_page": "https://www.google.com/search?q=invented",
+   "next_start": 10
+  },
+  {
+   "page_number": 1,
+   "search_term": "q1",
+   "results": [
+    {
+     "position": 1,
+     "url": "https://www.linkedin.com/in/wim-doe-invented",
+     "title": "Repeated first item",
+     "description": "An invented snippet for Repeated first item."
+    }
+   ]
+  }
+ ],
+ [
+  {
+   "page_number": 1,
+   "search_term": "q2",
+   "results": [
+    {
+     "position": 1,
+     "url": "https://linkedin.com/in/karel-proef-invented/",
+     "title": "Karel Proef - Newark | LinkedIn",
+     "description": "An invented snippet for Karel Proef - Newark | LinkedIn."
+    },
+    {
+     "position": 2,
+     "url": "https://www.linkedin.com/in/wim-doe-invented?trk=public_profile",
+     "title": "Wim Doe again | LinkedIn",
+     "description": "An invented snippet for Wim Doe again | LinkedIn."
+    },
+    {
+     "position": 3,
+     "url": "https://www.linkedin.com/company/acme-networks-invented",
+     "title": "Acme Networks | LinkedIn",
+     "description": "An invented snippet for Acme Networks | LinkedIn."
+    }
+   ]
+  }
+ ],
+ [
+  {
+   "page_number": 1,
+   "search_term": "q3",
+   "results": [
+    {
+     "position": 1,
+     "url": "https://www.linkedin.com/in/pat-nobel-invented",
+     "title": "Pat Nobel - Designer | LinkedIn",
+     "description": "An invented snippet for Pat Nobel - Designer | LinkedIn."
+    },
+    {
+     "position": 2,
+     "url": "https://be.linkedin.com/in/bram-fout-invented",
+     "title": "Bram Fout | LinkedIn",
+     "description": "An invented snippet for Bram Fout | LinkedIn."
+    },
+    {
+     "position": 3,
+     "url": "https://www.linkedin.com/in/lena-leeg-invented",
+     "title": "Lena Leeg | LinkedIn",
+     "description": "An invented snippet for Lena Leeg | LinkedIn."
+    }
+   ]
+  }
+ ]
+]
