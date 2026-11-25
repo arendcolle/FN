@@ -256,6 +256,8 @@ class FlowTest(unittest.TestCase):
         while True:
             status = self.client.get(page.attr("data-status")).json()
             if until(status):
+                if status["status"] not in ("queued", "running"):
+                    self.client.app.state.worker.pool.submit(int).result(timeout=10)
                 return status
             self.assertLess(time.monotonic(), deadline, f"the search never got past {status}")
             time.sleep(0.01)

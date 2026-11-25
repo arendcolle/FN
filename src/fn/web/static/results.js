@@ -70,7 +70,7 @@ async function poll() {
   const progress = response?.ok ? await response.json() : null;
   if (progress) wanted = `${progress.status} ${progress.version}${progress.looking ? " looking" : ""}`;
   if (wanted !== seen) await swap();
-  if (!progress || ["queued", "running"].includes(progress.status) || wanted !== seen) setTimeout(poll, 2000);
+  if (!progress || ["queued", "running"].includes(progress.status) || progress.looking || wanted !== seen) setTimeout(poll, 2000);
 }
 
 if (live) {

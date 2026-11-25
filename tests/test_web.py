@@ -515,6 +515,7 @@ class WebTest(unittest.TestCase):
         self.assertEqual(response.status_code, 303)
         new_id = response.headers["location"].rsplit("/", 1)[1]
         self.wait_ended(new_id)
+        client.app.state.worker.pool.submit(int).result(timeout=10)
         found = self.store.get_search(new_id)
         self.assertEqual((found.status, found.rerun_of, found.chips_origin), ("done", source_id, "edited"))
         self.assertEqual([(c.text, c.origin, c.span) for c in found.chips.topics],
@@ -522,7 +523,7 @@ class WebTest(unittest.TestCase):
         self.assertEqual((found.chips.place.text, found.chips.place.origin, found.chips.ask), ("Boston", "edited", "talk"))
         steps = [(s.step, s.status) for s in self.store.list_steps(new_id)]
         self.assertEqual(steps[:2], [("parse", "skipped"), ("cities", "ok")])
-        self.assertEqual(steps[-5:], [("resolve", "ok"), ("rank", "ok"), ("save", "ok"), ("deepen", "ok"), ("fit", "ok")])
+        self.assertEqual(steps[-5:], [("resolve", "ok"), ("rank", "ok"), ("save", "ok"), ("fit", "ok"), ("deepen", "ok")])
         self.assertEqual(sorted(steps[2:-5]), sorted([(f"lane:{n}", "ok") for n in
                                                       ("seeds", "openalex", "web", "web_topic", "scout", "linkedin")]
                                                      + [("publish", "ok")] * 5 + [("deepen", "ok")]))

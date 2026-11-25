@@ -406,6 +406,48 @@ class SetAsideGroupsTest(ResultsPageCase):
                 self.assertEqual(self.page("/searches/s1/cards").count("Looking up missing facts…"), int(looking))
                 self.assertEqual(self.client.get("/searches/s1/status").json().get("looking"), True if looking else None)
 
+    def run_step(self, step: str, status: str = "running") -> StepRun:
+        run = StepRun(id=f"r-{step}", search_id="s1", seq=0, step=step, status=status, started_at=now(), input_model="DeepenIn")
+        return self.store.start_step(run, "{}")
+
+    def test_a_done_search_still_looking_up_shows_the_count_line_then_the_status_line_and_polls(self):
+        """A done search with a running lookup step has the count line with Export, then the status line, and keeps
+        polling and refreshing; once the step and a save ended ok the count line stands alone and the version is one
+        higher."""
+        self.listing([("new", 1, None)], chips=Chips(version=2, place=BOSTON))
+        running = self.run_step("deepen")
+        html = self.page()
+        status = re.search(r'<div role="status">(.*?)</div>', html, re.DOTALL).group(1)
+        self.assertRegex(status, r'^<p class="fn-count text-meta">.*Export.*</p><p class="fn-status text-strong">'
+                                 r'<span>Looking up missing facts…</span>')
+        progress = re.search(r'data-progress="([^"]*)"', html).group(1)
+        self.assertTrue(progress.endswith(" looking"))
+        self.assertIn('http-equiv="refresh"', html)
+        self.assertIs(self.client.get("/searches/s1/status").json()["looking"], True)
+        self.store.finish_step(running.model_copy(update={"status": "ok", "ended_at": now()}), None)
+        saved = self.run_step("save", "ok")
+        html = self.page()
+        self.assertEqual(re.search(r'<div role="status">(.*?)</div>', html, re.DOTALL).group(1).count("fn-status"), 0)
+        self.assertIn('fn-count', html)
+        self.assertNotIn("data-status", html)
+        self.assertNotIn("refresh", html)
+        self.assertNotIn("looking", html)
+        self.assertEqual(saved.status, "ok")
+        self.assertNotIn("looking", self.client.get("/searches/s1/status").json())
+        self.assertEqual(self.client.get("/searches/s1/status").json()["version"], int(progress.split()[1]) + 1)
+
+    def test_a_done_search_looks_up_only_with_version_2_chips_and_a_running_step(self):
+        """A done version-2 search with any running step is looking; version 1, no running step, or a failed search
+        is not."""
+        cases = [(2, "done", "rank", "running", True), (1, "done", "deepen", "running", False),
+                 (2, "done", "deepen", "ok", False), (2, "failed", "deepen", "running", False)]
+        for version, status, step, step_status, expected in cases:
+            with self.subTest(version=version, status=status, step=step, step_status=step_status):
+                self.setUp()
+                self.listing([("new", 1, None)], chips=Chips(version=version, place=BOSTON), status=status)
+                self.run_step(step, step_status)
+                self.assertIs(present.looking(self.store, self.store.get_search("s1")), expected)
+
     def test_an_old_first_record_ends_the_second_line_on_version_2_only(self):
         """A first record from 1958 with nothing recent says so on a version-2 card and not on a version-1 card."""
         for version, ends in ((2, True), (1, False)):
