@@ -11,7 +11,7 @@ from unittest import mock
 import httpx
 from pydantic import SecretStr
 
-from fn import config, evidence, geo, gold, net, orgs, parse, rank, score, websearch
+from fn import config, evidence, extract, geo, gold, net, orgs, parse, rank, score, websearch
 from fn.contracts import Chip, Chips, GeoArea, LaneIn, LaneOut, Place, Question, record_source
 from fn.lanes import linkedin
 from fn.steps import StepContext, run_step
@@ -418,8 +418,10 @@ class LinkedInLaneTest(unittest.TestCase):
                          (1, 1))
         self.assertEqual(self.count("sources"), 3)
         identifiers = self.store.conn.execute("SELECT scheme, value FROM person_identifiers").fetchall()
+        named = ((WIM, "wim doe"), (ANJA, "anja voorbeeld"), (KAREL, "karel proef"))
         self.assertEqual({tuple(r) for r in identifiers},
-                         {("profile_url", WIM), ("profile_url", ANJA), ("profile_url", KAREL)})
+                         {("profile_url", url) for url, _ in named}
+                         | {("mention", f"{page}#{who}") for url, who in named for page in (url, url.replace("www.", ""))})
 
     def test_an_education_entry_dated_1990_to_1994_runs_from_1990_to_1994(self):
         """valid_from and valid_to are the start and end years, claim_date is the end year, and each year counts."""
@@ -1060,6 +1062,21 @@ class LinkedInLaneTest(unittest.TestCase):
             "result 3: no first and last name; not read", "result 4: no first and last name; not read",
             "result 5: not read (fetch_failed)"]))
         self.assertIn(linkedin.NONE_PARSED, [c.reason for c in out.considered])
+
+    def test_a_profile_the_web_lane_read_is_the_same_person_in_either_order(self):
+        """A person the web lane stored from a profile page, under the page address without www and the name, is the
+        record the LinkedIn lane writes to; and a person the LinkedIn lane stored first is the one the web lane finds.
+        """
+        self.account = FREE_ACCOUNT
+        page = extract.identifier("https://linkedin.com/in/wim-doe-invented", "Wim Doe")
+        first = self.store.resolve_person([page], "Wim Doe")
+        out = self.run_lane(JOURNALISTS, self.keyed())
+        self.assertIn(first.id, [h.person_id for h in out.hits])
+        self.assertEqual(self.count("persons"), len(out.hits))
+        later = extract.identifier("https://linkedin.com/in/anja-voorbeeld-invented", "Anja Voorbeeld")
+        anja = self.store.resolve_person([later], "Anja Voorbeeld")
+        self.assertIn(anja.id, [h.person_id for h in out.hits])
+        self.assertEqual(self.count("persons"), len(out.hits))
 
     def test_an_answer_that_lost_the_site_limit_is_asked_once_more_with_the_limit_at_the_end(self):
         """When under half of a query's results are profile addresses, the query goes out once more with the site

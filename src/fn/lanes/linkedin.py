@@ -4,7 +4,7 @@ import re
 from datetime import datetime
 from urllib.parse import urlsplit
 
-from fn import geo, orgs, parse, websearch
+from fn import extract, geo, orgs, parse, websearch
 from fn.config import Settings
 from fn.contracts import (
     Chips,
@@ -298,6 +298,11 @@ def place_claim(person_id: str, source: Source, spans: dict[str, tuple[int, int]
                       quote=source.text[start:end], quote_start=start, quote_end=end, source=source, **dated)
 
 
+def mentions(address: str, who: str) -> list[Identifier]:
+    """The web lane's identifiers for the owner of a profile page, without and with www, so both lanes meet in one person."""
+    return [extract.identifier(url, who) for url in (address.replace("://www.", "://", 1), address)]
+
+
 def people(ctx: StepContext, profiles: list[dict], considered: list[Considered],
            numbers: list[int] | None = None) -> list[LaneHit]:
     """One hit per person in the profiles, in the actor's order, with every profile's source and claims stored.
@@ -326,7 +331,8 @@ def people(ctx: StepContext, profiles: list[dict], considered: list[Considered],
                 continue
             now, day = ctx.now(), str(dig(profile, "_meta.scrapedAt") or "")[:10] or None
             source, spans = profile_source(profile, now, day)
-            person = ctx.store.resolve_person([Identifier(scheme="profile_url", value=source.url)], who)
+            known = [Identifier(scheme="profile_url", value=source.url), *mentions(source.url, who)]
+            person = ctx.store.resolve_person(known, who)
             made = drafts(person.id, source, spans, profile, (day or now.date().isoformat())[:4])
             lives = place_claim(person.id, source, spans, profile, ctx)
             claims = [ctx.store.upsert_claim(d, now) for d in [*made, *([lives] if lives else [])]]
