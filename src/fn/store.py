@@ -429,6 +429,13 @@ class Store:
                                  "AND relation IN (SELECT value FROM json_each(?)) ORDER BY id", (json.dumps(relations),))
         return [(r[0], r[1]) for r in rows]
 
+    def linked_affiliations(self, relations: tuple[str, ...], org_ids: list[str]) -> list[tuple[str, str, str]]:
+        """The id, value and org of every claim with one of the relations and orgs, rejected ones too, by id."""
+        rows = self.conn.execute("SELECT id, value, org_id FROM claims WHERE org_id IN (SELECT value FROM json_each(?)) "
+                                 "AND relation IN (SELECT value FROM json_each(?)) ORDER BY id",
+                                 (json.dumps(org_ids), json.dumps(relations)))
+        return [(r[0], r[1], r[2]) for r in rows]
+
     def org_answers(self) -> dict[str, str | None]:
         """The stored ROR answer of every asked name by its folded key: an org id, or None for no match."""
         return {r[0]: r[1] for r in self.conn.execute("SELECT fold_key, org_id FROM org_matches")}
@@ -442,6 +449,11 @@ class Store:
         """Give the claims without an org this org; returns the number of rows changed."""
         return self.conn.execute("UPDATE claims SET org_id = ? WHERE org_id IS NULL "
                                  "AND id IN (SELECT value FROM json_each(?))", (org_id, json.dumps(claim_ids))).rowcount
+
+    def relink_claims(self, claim_ids: list[str], org_id: str) -> int:
+        """Give the claims this org unless they have it; returns the number of rows changed."""
+        return self.conn.execute("UPDATE claims SET org_id = ? WHERE org_id IS NOT ? "
+                                 "AND id IN (SELECT value FROM json_each(?))", (org_id, org_id, json.dumps(claim_ids))).rowcount
 
     def unlocated_places(self) -> list[tuple[str, str]]:
         """The id and place text of every location claim without coordinates that is not a birthplace or an origin."""

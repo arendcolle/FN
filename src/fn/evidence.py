@@ -141,7 +141,8 @@ def places(claims: list[Claim], facts: dict[str, Org], today: date, names: geo.N
     """The stated places of a person's claims, then the cities of their recent employers, in claim order.
 
     A stated place is a located location claim of any date that is not a birthplace or an origin; its country comes from names.
-    An employer's city needs a works_at or affiliated_with claim whose valid_to, else claim_date, is recent.
+    An employer's city needs a works_at or affiliated_with claim whose valid_to, else claim_date, is recent, and a
+    spelling the alias file does not mark as a post away from home; a post gives no city.
     """
     found = [Place(c.lat, c.lon, c.value, geo.country_at(names, c.lat, c.lon) if names else None, "stated", c.id,
                    rank.year(c.valid_to or c.claim_date))
@@ -149,7 +150,8 @@ def places(claims: list[Claim], facts: dict[str, Org], today: date, names: geo.N
     for c in claims:
         org = facts.get(c.org_id or "")
         stamp = c.valid_to or c.claim_date
-        if c.relation in EMPLOYER and org and org.city and org.lat is not None and org.lon is not None and recent(stamp, today):
+        if c.relation in EMPLOYER and org and org.city and org.lat is not None and org.lon is not None and recent(stamp, today) \
+                and not orgs.post(c.value, c.org_id):
             found.append(Place(org.lat, org.lon, org.city, org.country_code, "employer", c.id, rank.year(stamp)))
     return found
 

@@ -13,6 +13,8 @@ MIT = Org(id="ror:042nb2s44", name="MIT", country_code="US", city="Cambridge", l
 LEUVEN = Org(id="ror:05f950310", name="KU Leuven", country_code="BE", city="Leuven", lat=50.87959, lon=4.70093,
              source_id="s", fetched_at=FETCHED)
 NO_CITY = Org(id="ror:0abc12399", name="Other Lab", country_code="US", source_id="s", fetched_at=FETCHED)
+VRT = Org(id="ror:048954822", name="Flemish Radio and Television Broadcasting Organisation", country_code="BE",
+          city="Brussels", lat=50.85045, lon=4.34878, source_id="s", fetched_at=FETCHED)
 FACTS = {o.id: o for o in (MIT, LEUVEN, NO_CITY)}
 NAMES = geo.from_zip(cities_zip())
 
@@ -69,6 +71,18 @@ class PlacesTest(unittest.TestCase):
     def test_an_origin_is_never_a_place(self):
         """An origin claim with coordinates is left out, as a birthplace is."""
         self.assertEqual(evidence.places([lives("c1", "Belgian", 50.5, 4.4, "origin")], FACTS, TODAY), [])
+
+    def test_a_post_spelling_gives_a_tie_and_no_employer_city(self):
+        """The alias file marks VRT NWS as a post: a medium belgian_org tie, no place; VRT gives Brussels, and the
+        mark belongs to the spelling at VRT, not at another org."""
+        facts = FACTS | {VRT.id: VRT}
+        post, home = job("c1", VRT, "2026").model_copy(update={"value": "VRT NWS"}), job("c2", VRT, "2026")
+        elsewhere = job("c3", MIT, "2026").model_copy(update={"value": "VRT NWS"})
+        self.assertEqual(evidence.places([post], facts, TODAY), [])
+        self.assertEqual([p.text for p in evidence.places([home], facts, TODAY)], ["Brussels"])
+        self.assertEqual([p.text for p in evidence.places([elsewhere], facts, TODAY)], ["Cambridge"])
+        found = evidence.of({"p1": frozenset({"mention"})}, [post], facts, question(), TODAY, NAMES)
+        self.assertEqual((found.belgian.grade, "belgian_org" in found.belgian.kinds), ("medium", True))
 
 
 class TopicTest(unittest.TestCase):
@@ -135,6 +149,15 @@ class WhereTest(unittest.TestCase):
         self.assertEqual(of([leuven], question(area=BOSTON)).place.fit, "outside")
         self.assertEqual(of([], question(area=BOSTON)).place.fit, "unknown")
         self.assertEqual(of([leuven], question()).place.fit, "unknown")
+
+    def test_a_post_employer_leaves_the_place_unknown(self):
+        """In a Boston search VRT NWS is unknown, VRT is outside, and a stated home in Boston is inside."""
+        facts = FACTS | {VRT.id: VRT}
+        post, home = job("c1", VRT, "2026").model_copy(update={"value": "VRT NWS"}), job("c2", VRT, "2026")
+        card = {"p1": frozenset({"mention"})}
+        fits = [evidence.of(card, claims, facts, question(area=BOSTON), TODAY, NAMES).place.fit
+                for claims in ([post], [home], [post, lives("c3", "Boston", 42.36, -71.06)])]
+        self.assertEqual(fits, ["unknown", "outside", "inside"])
 
     def test_a_stated_place_decides_and_an_employers_city_only_counts_without_one(self):
         """Stated in Leuven with a recent employer in Cambridge is outside Boston; stated in Boston is inside."""
