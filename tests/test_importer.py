@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from fn import importer, network
-from fn.contracts import ClaimDraft, Identifier, Org, Source
+from fn.contracts import ClaimDraft, Identifier, ImportRow, Org, Source
 from fn.worker import Worker
 from tests.helpers import StubHttp, make_db, make_settings
 
@@ -164,6 +164,16 @@ class OutcomeTest(ImporterTest):
                   for r in done.rows]
         self.assertEqual(places, [[("Cambridge, Massachusetts", True)], [("Cambridge, MA", True)],
                                   [("Gotham, NY, USA", False)]])
+
+    def test_a_located_row_keeps_its_coordinates(self):
+        """A row whose city FN finds keeps its latitude and longitude, one it cannot find has none, and a summary
+        stored before the columns existed still validates."""
+        found = self.upload(csv_bytes("Ann Example,,,,,Cambridge,MA,USA,,", "Cas Example,,,,,Gotham,NY,USA,,"))
+        self.assertAlmostEqual(found.rows[0].lat, 42.37, places=1)
+        self.assertIsNotNone(found.rows[0].lon)
+        self.assertEqual((found.rows[1].lat, found.rows[1].lon), (None, None))
+        old = {"n": 2, "name": "Ann Example", "outcome": "new", "cells": {}}
+        self.assertEqual(ImportRow.model_validate(old).lat, None)
 
 
 class ConfirmTest(ImporterTest):

@@ -289,5 +289,88 @@ class ReadingTest(unittest.TestCase):
         self.assertIsNone(present.group_key(outside, None))
 
 
+def value(field: str, text: str, **fields) -> present.Value:
+    return present.keyed(field, text, **fields)
+
+
+class CompareViewTest(unittest.TestCase):
+    def view(self, left: present.Side, right: present.Side, fields=present.COMPARE_FIELDS):
+        return present.compare_view(left, right, fields, ("Left", "Right"), "Caption", "Not known")
+
+    def differs(self, field: str, left: list[present.Value], right: list[present.Value]) -> bool:
+        (row,) = self.view({field: left}, {field: right}, (field,)).rows
+        return row.differs
+
+    def test_a_row_differs_only_when_no_value_on_one_side_equals_one_on_the_other(self):
+        """Same organization id, same spot, case, digits and identifier forms agree; Job and Name never differ."""
+        self.assertFalse(self.differs("Employer", [value("Employer", "MIT", org="ror:1")],
+                                      [value("Employer", "Massachusetts Institute", org="ror:1")]))
+        self.assertTrue(self.differs("Employer", [value("Employer", "MIT", org="ror:1")], [value("Employer", "MIT", org="ror:2")]))
+        city = value("Place", "Cambridge, MA", spot=(42.37, -71.11))
+        employer_based = value("Place", "Harvard University", spot=(42.375, -71.12))
+        self.assertFalse(self.differs("Place", [city], [employer_based]))
+        self.assertFalse(self.differs("Place", [city], [value("Place", "Leuven", spot=(50.88, 4.7)),
+                                                         value("Place", "Boston", spot=(42.36, -71.06))]))
+        self.assertTrue(self.differs("Place", [city], [value("Place", "Leuven", spot=(50.88, 4.7))]))
+        self.assertTrue(self.differs("Place", [value("Place", "Cambridge, MA")], [value("Place", "Cambridge")]))
+        self.assertFalse(self.differs("Place", [value("Place", "Murray Hill, NJ, USA")], [value("Place", "Murray Hill, NJ")]))
+        self.assertFalse(self.differs("Email", [value("Email", "Ann@Example.org")], [value("Email", "ann@example.org")]))
+        self.assertFalse(self.differs("Phone", [value("Phone", "+1 (617) 555-0101")], [value("Phone", "1 617 555 0101")]))
+        self.assertFalse(self.differs("LinkedIn", [value("LinkedIn", "linkedin.com/in/ann", href="https://www.linkedin.com/in/ann")],
+                                      [value("LinkedIn", "linkedin.com/in/ann", href="https://www.linkedin.com/in/ann")]))
+        self.assertFalse(self.differs("ORCID", [value("ORCID", "0000-0002-1825-0097")], [value("ORCID", "0000-0002-1825-0097")]))
+        self.assertTrue(self.differs("ORCID", [value("ORCID", "0000-0002-1825-0097")], [value("ORCID", "0000-0001-5109-3700")]))
+        for field in ("Job", "Name"):
+            self.assertFalse(self.differs(field, [value(field, "Ann")], [value(field, "Bo")]))
+        self.assertFalse(self.differs("Email", [value("Email", "ann@example.org")], []))
+
+    def test_rows_keep_order_and_a_side_shows_three_then_and_n_more(self):
+        """Twelve employers give three values and 9 more, a repeated value shows once, an empty field is left out and
+        the left Name has no link."""
+        left = {"Employer": [value("Employer", f"Firm {n}") for n in range(12)] + [value("Employer", "firm 0")],
+                "Name": [value("Name", "Ann Example", href="/people/p1")], "Job": [value("Job", "Chair")]}
+        right = {"Name": [value("Name", "Ann Example", href="/people/p2")], "Found in": [value("Found in", "OpenAlex record, 2024")]}
+        view = self.view(left, right)
+        self.assertEqual([r.field for r in view.rows], ["Name", "Job", "Employer", "Found in"])
+        name, _, employer, found = view.rows
+        self.assertEqual(([v.text for v in employer.left], employer.left_more, employer.right), (["Firm 0", "Firm 1", "Firm 2"], 9, []))
+        self.assertEqual((name.left[0].href, name.right[0].href), (None, "/people/p2"))
+        self.assertEqual((found.left, found.right[0].text), ([], "OpenAlex record, 2024"))
+
+    def test_one_employer_written_two_ways_does_not_differ(self):
+        """An employer without an id is the one with an id when one name stands inside the other as whole words, or
+        differs only by a country in brackets. Two ids of one registry still decide, and one word never matches a longer name."""
+        dallas = value("Employer", "The University of Example at Springfield", org="ror:049")
+        self.assertFalse(self.differs("Employer", [value("Employer", "University of Example at Springfield")], [dallas]))
+        self.assertFalse(self.differs("Employer", [value("Employer", "Imec (Belgium)")], [value("Employer", "imec", org="ror:02k")]))
+        self.assertFalse(self.differs("Employer", [value("Employer", "Example Labs", org="wikidata:Q1")],
+                                      [value("Employer", "Example Labs", org="ror:03x")]))
+        self.assertTrue(self.differs("Employer", [value("Employer", "University")], [dallas]))
+        self.assertTrue(self.differs("Employer", [value("Employer", "University of Example", org="ror:01a")], [dallas]))
+        self.assertTrue(self.differs("Employer", [value("Employer", "University of Example (Springfield campus)")],
+                                     [value("Employer", "University of Example (Shelbyville campus)")]))
+
+    def test_a_shared_value_shows_first_and_values_at_one_spot_show_once(self):
+        """Of five employers the one the other side also holds is shown first, not hidden behind 'and 2 more', and two
+        wordings of one place at one spot are one value."""
+        left = {"Employer": [value("Employer", "Example Labs")],
+                "Place": [value("Place", "Springfield IL", spot=(39.8, -89.65)), value("Place", "Springfield", spot=(39.8, -89.65))]}
+        right = {"Employer": [value("Employer", f"Firm {n}") for n in range(4)] + [value("Employer", "Example Labs", org="ror:03x")],
+                 "Place": [value("Place", "Shelbyville", spot=(39.41, -88.79))]}
+        employer, place = self.view(left, right, ("Employer", "Place")).rows
+        self.assertEqual(([v.text for v in employer.right], employer.right_more, employer.differs),
+                         (["Example Labs", "Firm 0", "Firm 1"], 2, False))
+        self.assertEqual(([v.text for v in place.left], place.left_more), (["Springfield IL"], 0))
+
+    def test_a_shared_value_is_kept_when_it_also_matches_an_unshared_one(self):
+        """A side holds a campus with an id and the bare university name. The other side holds another campus. The bare
+        name is what both share, so it is the value shown, and the row does not differ."""
+        left = {"Employer": [value("Employer", "University of Example, Springfield", org="ror:01a"),
+                             value("Employer", "University of Example")]}
+        right = {"Employer": [value("Employer", "University of Example, Shelbyville", org="ror:01b")]}
+        (employer,) = self.view(left, right, ("Employer",)).rows
+        self.assertEqual(([v.text for v in employer.left], employer.differs), (["University of Example"], False))
+
+
 if __name__ == "__main__":
     unittest.main()

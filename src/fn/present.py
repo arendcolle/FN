@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 
 from fn import deepen
 from fn import evidence as ev
-from fn import identity, network, orgs, parse, rank
+from fn import identity, importer, network, orgs, parse, rank
 from fn.contracts import (
     AsideGroup,
     Candidate,
@@ -20,10 +20,16 @@ from fn.contracts import (
     Chips,
     Claim,
     ClaimView,
+    CompareRow,
+    CompareValue,
+    CompareView,
     ContactView,
     Event,
     FactGroup,
     FoldView,
+    Identifier,
+    ImportPreview,
+    ImportRow,
     LaneOut,
     LastView,
     LookupView,
@@ -49,7 +55,7 @@ from fn.contracts import (
     profile_url,
 )
 from fn.evidence import places
-from fn.geo import regions_of
+from fn.geo import distance_km, regions_of
 from fn.store import Store, fold
 
 EMPLOYED = ("works_at", "worked_at", "affiliated_with")
@@ -96,6 +102,13 @@ FIELD_LABEL = re.compile(r"[*•-]\s*(?:[^\W_]| ){1,30}:")
 ENTITY = re.compile(r"&#?\w+;")
 IMAGE_TOKENS = ("orcid image", "author orcid", "![", "[image")
 MIN_QUOTE_WORDS = 4
+COMPARE_FIELDS = ("Name", "Job", "Employer", "Place", "Studied", "Belgian tie", "Email", "Phone", "LinkedIn", "ORCID", "Found in")
+FILE_FIELDS = ("Name", "Job", "Employer", "Place", "Email", "Phone", "LinkedIn", "ORCID")
+DIFFERS = ("Employer", "Place", "Email", "Phone", "LinkedIn", "ORCID")
+COMPARE_SHOWN = 3
+SAME_SPOT_KM = 10.0  # an employer-based place sits on the org's coordinates, not the city centre
+IMPORT_ROW = re.compile(r", row \d+$")
+SOURCE_DAY = re.compile(r"(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?")
 
 
 def in_city(org: Org | None, place: str | None) -> bool:
@@ -1426,9 +1439,20 @@ def profile(store: Store, person_id: str, today: date, card: list[str] | None = 
     name_match = None
     if not member:
         name_match = next(iter(network.name_matches(store, card or [canonical])), None)
-    matches = network.possible_matches(store, canonical)
+    matches = network.possible_matches(store, canonical) if member else []
     possible = [p for p in matches if p != name_match and p not in persons]
-    views = person_views(store, [persons, *([[name_match]] if name_match else []), *[[p] for p in possible]], today)
+    groups_of = [persons, *([[name_match]] if name_match else []), *[[p] for p in possible]]
+    views = person_views(store, groups_of, today)
+    sides = person_sides(store, groups_of, today) if len(groups_of) > 1 else []
+    name_compare = None
+    if name_match:
+        name_compare = compare_view(sides[0], sides[1], COMPARE_FIELDS, ("This person", "In your network"),
+                                    f"This person and {views[1].name} in your network", "Not known")
+    first = 2 if name_match else 1
+    compares = [compare_view(sides[0], theirs, COMPARE_FIELDS, ("This person", "Possible match"),
+                             f"This person and possible match {n} of {len(possible)}" if len(possible) > 1
+                             else "This person and the possible match", "Not known")
+                for n, theirs in enumerate(sides[first:], 1)]
     lines = {title: fact_lines(found, facts, sources, seen_at, person.display_name, words) for title, found in groups.items()
              if title != "Work"}
     work = work_lines(groups.get("Work", []), facts, sources, today, views[0].place)
@@ -1448,14 +1472,249 @@ def profile(store: Store, person_id: str, today: date, card: list[str] | None = 
     contact = [c for c in [*contact, linkedin_of(store, persons)] if c and (c.value or c.removed)]
     shown_tie = evidence_tie(store, persons, claims, facts, today) if tie_ids is None else tie_ids
     fold_line = fold_of(work, sources)
-    rows = found_as(store, persons, claims, sources, matches, facts, today, not (any(lines.values()) or fold_line or titles))
+    separable = matches if member else persons[1:]
+    rows = found_as(store, persons, claims, sources, separable, facts, today,
+                    not (any(lines.values()) or fold_line or titles))
     return ProfileView(
         person=views[0], contact=contact,
         facts=[FactGroup(title=title, facts=lines.get(title, []), fold=fold_line if title == "Work" else None,
                          titles=titles if title == "Work" else None)
                for title in GROUPS if lines.get(title) or (title == "Work" and (fold_line or titles))],
         found_as=rows, possible=views[2:] if name_match else views[1:],
-        name_match=views[1] if name_match else None, last=last_of(store, person, event, removed),
+        name_match=views[1] if name_match else None, compares=compares, name_compare=name_compare,
+        last=last_of(store, person, event, removed),
         summary=summary_of(claims, facts, sources, shown_tie, member), records=len(rows) if len(persons) > 1 else 1,
         lookup=lookup_view(store, list(dict.fromkeys(r.id for p in persons for r in store.records_of(p))), canonical, today),
     )
+
+
+@dataclass(frozen=True)
+class Value:
+    text: str
+    key: str
+    href: str | None = None
+    org: str | None = None
+    spot: tuple[float, float] | None = None
+    bare: str | None = None
+
+
+Side = dict[str, list[Value]]
+
+
+def keyed(field: str, text: str, href: str | None = None, org: str | None = None,
+          spot: tuple[float, float] | None = None) -> Value:
+    """The value with the key two values of the field are compared by: a phone's digits, a LinkedIn address, an
+    employer's words, else the folded text with single spaces, a place without a trailing US country word. An
+    employer that ends in brackets, as "Imec (Belgium)" does, also gets its words without them as bare."""
+    key = " ".join(text.split()).casefold()
+    if field == "Phone":
+        key = re.sub(r"\D", "", text) or key
+    elif field == "LinkedIn":
+        key = fold(href or text)
+    elif field == "Place":
+        key = re.sub(r",? (usa|us|united states)$", "", key)
+    elif field == "Employer":
+        key = " ".join(orgs.words(text)) or key
+        cut = re.sub(r"\s*\([^()]*\)\s*$", "", text)
+        return Value(text=text, key=key, href=href, org=org, bare=" ".join(orgs.words(cut)) if cut != text else None)
+    return Value(text=text, key=key, href=href, org=org, spot=spot)
+
+
+def same(field: str, a: Value, b: Value) -> bool:
+    """Whether two values of the field are one: an employer by its organization when both have an id of one registry,
+    else by its name, by one name without its brackets being the other, or by a name of two words or more standing
+    inside the other; a place by distance when both have coordinates; else by key."""
+    if field == "Employer":
+        if a.org and b.org and a.org.split(":")[0] == b.org.split(":")[0]:
+            return a.org == b.org
+        if a.key == b.key or a.bare == b.key or b.bare == a.key:
+            return True
+        short, long = sorted((a.key, b.key), key=len)
+        return " " in short and f" {short} " in f" {long} "
+    if field == "Place" and a.spot and b.spot:
+        return distance_km(*a.spot, *b.spot) <= SAME_SPOT_KM
+    return a.key == b.key
+
+
+def compare_values(field: str, found: list[Value], other: list[Value], link: bool) -> tuple[list[CompareValue], int]:
+    """The first COMPARE_SHOWN values and how many more there are: one value per group the field calls the same,
+    and those the other side also holds first, so a shared value is never among the hidden ones."""
+    kept: list[Value] = []
+    for value in sorted(found, key=lambda v: not any(same(field, v, o) for o in other)):
+        if not any(same(field, value, k) for k in kept):
+            kept.append(value)
+    shown = [CompareValue(text=v.text, href=v.href if link else None) for v in kept[:COMPARE_SHOWN]]
+    return shown, max(len(kept) - COMPARE_SHOWN, 0)
+
+
+def compare_view(left: Side, right: Side, fields: tuple[str, ...], titles: tuple[str, str], caption: str,
+                 left_none: str) -> CompareView:
+    """The fields in order as rows, a field empty on both sides left out.
+
+    A row differs when its field can, both sides hold a value and no value on one side is the same as one on the other.
+    The left Name never links: only the other person's name does.
+    """
+    rows = []
+    for field in fields:
+        a, b = left.get(field, []), right.get(field, [])
+        if not (a or b):
+            continue
+        shown_a, more_a = compare_values(field, a, b, field != "Name")
+        shown_b, more_b = compare_values(field, b, a, True)
+        differs = field in DIFFERS and bool(a and b) and not any(same(field, x, y) for x in a for y in b)
+        rows.append(CompareRow(field=field, left=shown_a, right=shown_b, left_more=more_a, right_more=more_b,
+                               differs=differs))
+    return CompareView(caption=caption, titles=titles, left_none=left_none, rows=rows)
+
+
+def newest_first(claims: list[Claim]) -> list[Claim]:
+    return sorted(claims, key=lambda c: (c.claim_date or "", c.id), reverse=True)
+
+
+def job_values(claims: list[Claim], facts: dict[str, Org], sources: dict[str, Source], today: date,
+               place: str | None) -> tuple[list[Value], list[Value]]:
+    """The Job and Employer values of the Work lines, the head line first."""
+    lines = work_lines(job_claims(claims, sources), facts, sources, today, place)
+    jobs = [keyed("Job", what_of(line.role, None)) for line in lines if line.role]
+    employers = [keyed("Employer", line.org.name if line.org else line.shown.value, org=line.org.id if line.org else None)
+                 for line in lines if line.shown.relation in JOINING]
+    return jobs, employers
+
+
+def place_values(claims: list[Claim], facts: dict[str, Org], today: date) -> list[Value]:
+    """The place the page shows, then the newest stated places, each with its coordinates when it has them."""
+    text, lat, lon, _ = located(claims, facts, today)
+    found = [keyed("Place", text, spot=(lat, lon) if lat is not None and lon is not None else None)] if text else []
+    stated = [c for c in newest_first(claims) if c.kind == "location" and c.relation not in ("born_in", "origin")]
+    return found + [keyed("Place", c.value, spot=(c.lat, c.lon) if c.lat is not None and c.lon is not None else None)
+                    for c in stated]
+
+
+def studied_values(claims: list[Claim], facts: dict[str, Org], sources: dict[str, Source]) -> list[Value]:
+    """Each study as '{organization}, {years}', the newest first."""
+    lines: dict[tuple, list[Claim]] = {}
+    for claim in newest_first([c for c in claims if c.relation == "studied_at"]):
+        lines.setdefault(line_key(claim), []).append(claim)
+    found = []
+    for same_line in lines.values():
+        org = facts.get(same_line[0].org_id or "")
+        years = span_words(frozenset().union(*(own_years(c, sources[c.source_id]) for c in same_line)))
+        found.append(keyed("Studied", ", ".join(x for x in (org.name if org else same_line[0].value, years) if x)))
+    return found
+
+
+def tel_href(phone: str) -> str | None:
+    """The tel: address of a phone value, None when it holds no digit."""
+    return f"tel:{re.sub(r'[^0-9+]', '', phone)}" if re.search(r"\d", phone) else None
+
+
+def contact_values(claims: list[Claim], held: list[Identifier]) -> tuple[list[Value], list[Value]]:
+    """The email values, claims newest first and then the email identifiers, and the phone values."""
+    emails = [c.value for c in newest_first([c for c in claims if c.kind == "email"])] + [
+        i.value for i in held if i.scheme == "email"]
+    phones = [c.value for c in newest_first([c for c in claims if c.kind == "phone"])]
+    return ([keyed("Email", e, href=f"mailto:{e}") for e in emails],
+            [keyed("Phone", p, href=tel_href(p)) for p in phones])
+
+
+def identifier_values(held: list[Identifier]) -> tuple[list[Value], list[Value]]:
+    """The LinkedIn addresses, shown without 'https://www.', and the bare ORCID iDs."""
+    urls = [keyed("LinkedIn", i.value.removeprefix("https://www."), href=i.value) for i in held if i.scheme == "profile_url"]
+    return urls, [keyed("ORCID", i.value.removeprefix("https://orcid.org/")) for i in held if i.scheme == "orcid"]
+
+
+def source_day(source: Source) -> str | None:
+    """The source's own date as '3 November 2026', 'May 2024' or '2024', else the day FN fetched it, else None."""
+    found = SOURCE_DAY.match(source.source_date or "")
+    if found and (month := int(found[2] or 0)) <= 12:
+        year, day = found[1], found[3]
+        if month and day:
+            return f"{int(day)} {month_name[month]} {year}"
+        return f"{month_name[month]} {year}" if month else year
+    return day_words(source.fetched_at) if source.fetched_at else None
+
+
+def found_values(records: list[str], mine: dict[str, list[Claim]], sources: dict[str, Source]) -> list[Value]:
+    """Per record with claims, its source with most claims as '{label}, {date}', an import without its row."""
+    found = []
+    for record in records:
+        if not mine.get(record):
+            continue
+        source = sources[Counter(c.source_id for c in mine[record]).most_common(1)[0][0]]
+        label = IMPORT_ROW.sub("", record_label(source)) if source.kind == "import" else record_label(source)
+        found.append(keyed("Found in", ", ".join(x for x in (label, source_day(source)) if x)))
+    return found
+
+
+def person_sides(store: Store, groups: list[list[str]], today: date) -> list[Side]:
+    """One Side per group of stored person ids, named after its first, from one claims_of call."""
+    canonical = store.canonical_ids([p for g in groups for p in g])
+    groups = [list(dict.fromkeys(canonical[p] for p in g)) for g in groups]
+    ids = list(dict.fromkeys(p for g in groups for p in g))
+    by_person: dict[str, list[Claim]] = {}
+    for claim in store.claims_of(ids):
+        by_person.setdefault(claim.person_id, []).append(claim)
+    persons, records = store.get_persons(ids), {p: [r.id for r in store.records_of(p)] for p in ids}
+    held = store.identifiers_of([r for found in records.values() for r in found])
+    owned = [[c for p in g for c in by_person.get(p, [])] for g in groups]
+    facts = store.get_orgs(list({c.org_id for claims in owned for c in claims if c.org_id}))
+    sources = store.get_sources(list({c.source_id for claims in owned for c in claims}))
+    owner = store.claim_records([c.id for claims in owned for c in claims])
+    sides = []
+    for group, claims in zip(groups, owned):
+        mine: dict[str, list[Claim]] = {}
+        for claim in claims:
+            mine.setdefault(owner[claim.id], []).append(claim)
+        ordered = [r for p in group for r in records[p]]
+        idents = [i for r in ordered for i in held.get(r, [])]
+        place = place_values(claims, facts, today)
+        jobs, employers = job_values(claims, facts, sources, today, place[0].text if place else None)
+        tie = tie_claim(claims, facts, evidence_tie(store, group, claims, facts, today))
+        emails, phones = contact_values(claims, idents)
+        urls, orcids = identifier_values(idents)
+        side = {"Name": [keyed("Name", persons[group[0]].display_name, href=f"/people/{group[0]}")], "Job": jobs,
+                "Employer": employers, "Place": place, "Studied": studied_values(claims, facts, sources),
+                "Belgian tie": [keyed("Belgian tie", what_of(tie, facts.get(tie.org_id or "")))] if tie else [],
+                "Email": emails, "Phone": phones, "LinkedIn": urls, "ORCID": orcids,
+                "Found in": found_values(ordered, mine, sources)}
+        sides.append({field: found for field, found in side.items() if found})
+    return sides
+
+
+def row_side(row: ImportRow) -> Side:
+    """The file row's cells as a Side; a LinkedIn or ORCID cell FN does not use as an identifier stays plain text."""
+    cells = row.cells
+    held = {i.scheme: i.value for i in importer.identifiers(cells)[0]}
+    side = {"Name": [keyed("Name", row.name)]}
+    if "role" in cells:
+        side["Job"] = [keyed("Job", cells["role"])]
+    if "phone" in cells:
+        side["Phone"] = [keyed("Phone", cells["phone"], href=tel_href(cells["phone"]))]
+    if "organization" in cells:
+        side["Employer"] = [keyed("Employer", cells["organization"], org=orgs.org_id(cells["organization"]))]
+    if place := importer.place_of(cells):
+        spot = (row.lat, row.lon) if row.lat is not None and row.lon is not None else None
+        side["Place"] = [keyed("Place", place, spot=spot)]
+    if "@" in cells.get("email", ""):
+        side["Email"] = [keyed("Email", cells["email"], href=f"mailto:{cells['email']}")]
+    elif "email" in cells:
+        side["Email"] = [keyed("Email", cells["email"])]
+    if "profile_url" in held:
+        side["LinkedIn"] = [keyed("LinkedIn", held["profile_url"].removeprefix("https://www."), href=held["profile_url"])]
+    elif "linkedin_url" in cells:
+        side["LinkedIn"] = [keyed("LinkedIn", cells["linkedin_url"])]
+    if "orcid" in held:
+        side["ORCID"] = [keyed("ORCID", held["orcid"].removeprefix("https://orcid.org/"))]
+    elif "orcid" in cells:
+        side["ORCID"] = [keyed("ORCID", cells["orcid"])]
+    return side
+
+
+def import_compares(store: Store, preview: ImportPreview, today: date) -> dict[int, CompareView]:
+    """The Compare table of each name match row, by row number: the file's row beside the network person."""
+    matched = [r for r in preview.rows if r.outcome == "name_match" and r.person_id]
+    sides = person_sides(store, [[r.person_id] for r in matched], today)
+    return {row.n: compare_view(
+        row_side(row), theirs, FILE_FIELDS, ("In the file", "In your network"),
+        f"Row {row.n} of {preview.filename} and {theirs['Name'][0].text} in your network", "Not in the file")
+        for row, theirs in zip(matched, sides)}
